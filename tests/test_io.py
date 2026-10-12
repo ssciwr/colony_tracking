@@ -129,3 +129,91 @@ def test_discover_wells_filter_and_ordering(tmp_path):
 def test_discover_missing_root(tmp_path):
     with pytest.raises(FileNotFoundError):
         io.discover_wells(tmp_path / "no-such-dir")
+
+
+# --- 1/99 percentile stretch -------------------------------------------------
+
+
+def test_stretch_known_values():
+    # 100 values: one 0, one 100, ninety-eight 50s.
+    # p1  = 0.01*99 = 0.99  -> 0.01*0 + 0.99*50   = 49.5
+    # p99 = 0.99*99 = 98.01 -> 50 + 0.01*(100-50) = 50.5
+    im = np.full((10, 10), 50.0)
+    im[0, 0] = 0.0
+    im[0, 1] = 100.0
+    out = io.stretch_uint8(im)
+    assert out.dtype == np.uint8
+    assert out[0, 0] == 0    # (0 - 49.5) / 1 * 255 -> clamped to 0
+    assert out[0, 1] == 255  # (100 - 49.5) / 1 * 255 -> clamped to 255
+    assert out[5, 5] == 127  # (50 - 49.5) / 1 * 255 = 127.5 -> truncated
+
+
+def test_stretch_accepts_uint16_and_float():
+    u16 = np.array([[0, 1000]], np.uint16)
+    out = io.stretch_uint8(u16)
+    assert out.dtype == np.uint8
+    assert out[0, 0] < out[0, 1]
+    assert io.stretch_uint8(np.array([[0.0, 1e4]])).dtype == np.uint8
+
+
+def test_stretch_flat_frame_is_zero():
+    out = io.stretch_uint8(np.full((8, 8), 1234, np.uint16))
+    assert out.dtype == np.uint8
+    assert (out == 0).all()
+
+
+# --- 128-neutral difference mapping ------------------------------------------
+
+
+def test_map_to_uint8_zero_diff_is_128():
+    out = io.map_to_uint8(np.zeros((4, 4)), 123.0)
+    assert out.dtype == np.uint8
+    assert (out == 128).all()
+
+
+def test_map_to_uint8_known_values():
+    diff = np.array([[0.0, 64.0, -64.0, 127.0, -127.0]])
+    # limit 127 -> 128 + diff * 127/127 = 128 + diff
+    out = io.map_to_uint8(diff, 127.0)
+    assert out[0].tolist() == [128, 192, 64, 255, 1]
+
+
+def test_map_to_uint8_clamps_at_the_edges():
+    out = io.map_to_uint8(np.array([[500.0, -500.0]]), 100.0)
+    assert out[0].tolist() == [255, 0]
+
+
+def test_map_to_uint8_rejects_nonpositive_limit():
+    with pytest.raises(ValueError):
+        io.map_to_uint8(np.zeros(3), 0.0)
+
+
+# --- display limit -----------------------------------------------------------
+
+
+def test_display_limit_known_distribution():
+    # 100x100 with a stride-8 grid: 13x13 = 169 samples; 4 of them (2.4% >
+    # the 0.5% tail) carry the only nonzero value, so the 99.5th percentile
+    # is exactly that value.
+    diff = np.zeros((100, 100))
+    diff[88::8, 88::8] = 1000.0
+    assert io.display_limit(diff, 99.5, 8) == 1000.0
+
+
+def test_display_limit_uses_the_subsampled_grid():
+    diff = np.zeros((100, 100))
+    diff[99, 99] = 1000.0  # off the stride-8 grid
+    assert io.display_limit(diff, 99.5, 8) == 1.0
+
+
+def test_display_limit_over_several_frames():
+    d1 = np.zeros((20, 20))
+    d2 = np.zeros((20, 20))
+    for y, x in [(0, 0), (0, 2), (2, 0), (2, 2), (4, 4)]:  # stride-2 grid
+        d2[y, x] = 2000.0  # 5 of 200 samples (2.5%)
+    assert io.display_limit([d1, d2], 99.5, 2) == 2000.0
+
+
+def test_display_limit_floors_at_one():
+    assert io.display_limit(np.zeros((10, 10)), 99.5, 1) == 1.0
+    assert io.display_limit([], 99.5, 8) == 1.0

@@ -22,6 +22,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from . import log
 
 #: Suffixes of the frame files accepted during discovery.
@@ -125,3 +127,56 @@ def discover_wells(
         well: sorted(fs, key=lambda f: (f.frame, f.t))
         for well, fs in sorted(frames.items())
     }
+
+
+def stretch_uint8(image: np.ndarray | Sequence[float]) -> np.ndarray:
+    """Percentile-stretch an image (uint16 or any float) to uint8.
+
+    Clips at the 1st and 99th percentiles of the image and maps the range to
+    0..255 — the shared stretch that feeds uint8-based tools (the segment
+    stage and the finetune data conversion). A flat image comes out
+    all-zero.
+    """
+    im = np.asarray(image, dtype=np.float32)
+    lo, hi = np.percentile(im, (1, 99))
+    if hi <= lo:  # flat image; avoid division by zero
+        return np.zeros(im.shape, dtype=np.uint8)
+    return np.clip((im - lo) / (hi - lo) * 255.0, 0, 255).astype(np.uint8)
+
+
+def map_to_uint8(diff: np.ndarray, limit: float) -> np.ndarray:
+    """Map a signed difference to uint8 with 128 = no change.
+
+    ``128 + diff * 127 / limit``, clamped to 0..255: with the well's display
+    limit, +/-limit counts map to the edges of the 8-bit range and a zero
+    difference maps to exactly 128 (ADR 0001).
+    """
+    if limit <= 0:
+        raise ValueError(f"display limit must be positive, got {limit!r}")
+    scaled = 128.0 + np.asarray(diff) * (127.0 / limit)
+    return np.clip(scaled, 0, 255).astype(np.uint8)
+
+
+def display_limit(
+    diffs: np.ndarray | Sequence[np.ndarray],
+    percentile: float = 99.5,
+    subsample: int = 8,
+) -> float:
+    """Estimate a difference run's display limit.
+
+    The ``percentile``-th percentile of |diff|, estimated on the subsampled
+    grid (stride ``subsample``) of one difference frame or a sequence of
+    them (one per frame). The result is floored at 1.0 so a well with no
+    change still gets a defined mapping (and the reference frame, whose
+    difference is all zero, can be included or skipped at will).
+    """
+    if isinstance(diffs, np.ndarray):
+        diffs = [diffs]
+    samples = []
+    for d in diffs:
+        arr = np.abs(np.asarray(d, dtype=np.float32))
+        if arr.size:
+            samples.append(arr[::subsample, ::subsample].ravel())
+    if not samples:
+        return 1.0
+    return max(float(np.percentile(np.concatenate(samples), percentile)), 1.0)

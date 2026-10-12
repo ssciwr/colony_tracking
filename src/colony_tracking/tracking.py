@@ -277,6 +277,10 @@ def track_colonies(
             segs = sorted(per_group[g][t], key=lambda s: -s.area)
             matched: dict[int, dict[str, object]] = {}  # id(segment) -> colony
             taken: set[int] = set()  # colonies already continued this frame
+            # The colonies' territory as of this frame's start: an already
+            # continued colony's updated mask no longer contains the pieces
+            # the decoder split off it, so forks are judged against this.
+            start_masks = [o["mask"] for o in active]
             for s in segs:
                 # colonies whose last-known extent this segment matches
                 cands = []
@@ -294,12 +298,34 @@ def track_colonies(
                     matched[id(s)] = o
                     o["mask"] = s.mask  # the colony grows into this segment
                     o["area"] = s.area
-                else:  # no colony continued by this segment: a new colony
-                    o = {"id": next_id, "mask": s.mask, "area": s.area,
-                         "first": number}
-                    next_id += 1
-                    active.append(o)
-                    matched[id(s)] = o
+                else:  # no colony continued by this segment
+                    # Does it split one known colony (fork: the same ID
+                    # continues) or start a new one?
+                    host: dict[str, object] | None = None
+                    best = 0.0
+                    for o, start_mask in zip(active, start_masks):
+                        cov = float((s.mask & start_mask).sum()) / s.area
+                        if cov > best:
+                            host, best = o, cov
+                    if host is not None and best >= ABSORB_COVERAGE:
+                        matched[id(s)] = host
+                        counters["forked_segments"] += 1
+                        log.warning(
+                            "%sframe %d: segment of %d px in group %d "
+                            "continues no colony but splits colony %d; "
+                            "forking (the same ID continues)",
+                            where, number, s.area, g, host["id"],
+                        )
+                        if host["id"] not in taken:
+                            # the fork is the colony's latest-known extent
+                            host["mask"] = s.mask
+                            host["area"] = s.area
+                    else:  # first appearance: a new colony
+                        o = {"id": next_id, "mask": s.mask, "area": s.area,
+                             "first": number}
+                        next_id += 1
+                        active.append(o)
+                        matched[id(s)] = o
             # merges: colonies covered by this segment but continued by no
             # segment — the survivor keeps its ID, the covered ones are
             # absorbed (their stale masks stay tracked; see the docstring)

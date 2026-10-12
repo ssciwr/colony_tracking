@@ -187,3 +187,26 @@ def test_ancestor_counts_identity_direct_transitive_independent():
     assert parse_merged("2;3") == {2, 3}
     assert parse_merged("") == set()
     assert parse_merged(None) == set()
+
+
+# --- fork --------------------------------------------------------------------
+
+
+def test_fork_continues_the_same_id_and_is_counted():
+    groups = one_group()
+    frames = [
+        # frame 1: colony 1, 30x30
+        (1, box_image({1: (5, 5, 35, 35)})),
+        # frame 2: the decoder splits the colony: a main body that matches
+        # (IoU 400/900) and a detached fragment (> 3 px away, so the pre-merge
+        # does not fold it) lying entirely inside the colony's territory
+        (2, box_image({1: (5, 5, 25, 25), 2: (28, 28, 35, 35)})),
+    ]
+    res = track_colonies(frames, groups)
+    assert [r["colony_id"] for r in res.rows] == [1, 1, 1]  # fragment keeps the ID
+    assert [r["area_px"] for r in res.rows] == [900, 400, 49]
+    assert res.counters["forked_segments"] == 1
+    assert res.counters["colonies"] == 1  # the fork starts no new colony
+    assert (res.labels[1][28:35, 28:35] == 1).all()  # fragment labelled colony 1
+    # the continued main body owns the colony's extent for the next frame
+    assert res.rows[1]["merged_with"] == ""

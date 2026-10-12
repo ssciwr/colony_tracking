@@ -15,6 +15,14 @@ import pytest
 import tifffile
 
 from colony_tracking import io
+from conftest import (
+    DiskSpec,
+    RingSpec,
+    build_label_series,
+    build_mini_plate,
+    disk_mask,
+    frame_name,
+)
 
 # A realistic raw-plate frame name (real acquisition vocabulary, the
 # millisecond T field zero-padded to 10 digits).
@@ -22,14 +30,6 @@ RAW_NAME = (
     "-A001--PO01--LO001--CO1--SL001--PX32500--PW0050--IN0020"
     "--TM366--X014222--Y011210--Z220046--T0000000000--WE00001.tif"
 )
-
-
-def _frame_name(well: str, lo: int, t_ms: int) -> str:
-    """Build a canonical raw-plate frame name for discovery tests."""
-    return (
-        f"{well}--PO01--LO{lo:03d}--CO1--SL001--PX32500--PW0050--IN0020"
-        f"--TM366--X014222--Y011210--Z220046--T{t_ms:010d}--WE00001.tif"
-    )
 
 
 def _write_frame(directory, name: str, shape=(4, 4)) -> None:
@@ -78,20 +78,20 @@ def test_parse_time():
 def test_discover_flat_layout(tmp_path):
     # Written out of order on purpose: discovery must sort by frame number.
     for lo, t in [(2, 2 * HOUR), (1, 0), (3, 3 * HOUR)]:
-        _write_frame(tmp_path, _frame_name("-A001", lo, t))
+        _write_frame(tmp_path, frame_name("-A001", lo, t))
     for lo, t in [(1, 0), (2, 2 * HOUR)]:
-        _write_frame(tmp_path, _frame_name("-B004", lo, t))
+        _write_frame(tmp_path, frame_name("-B004", lo, t))
     # Non-frame files are ignored.
     (tmp_path / "notes.txt").write_text("nope")
-    _write_frame(tmp_path, "._" + _frame_name("-C001", 1, 0))  # resource fork
+    _write_frame(tmp_path, "._" + frame_name("-C001", 1, 0))  # resource fork
     _write_frame(tmp_path, "ref__labels.tif")  # no well, no LO field
 
     wells = io.discover_wells(tmp_path)
     assert set(wells) == {"-A001", "-B004"}
     assert [f.frame for f in wells["-A001"]] == [1, 2, 3]
     assert [f.t for f in wells["-A001"]] == [0, 2 * HOUR, 3 * HOUR]
-    assert wells["-A001"][0].name == _frame_name("-A001", 1, 0)
-    assert wells["-A001"][0].path == tmp_path / _frame_name("-A001", 1, 0)
+    assert wells["-A001"][0].name == frame_name("-A001", 1, 0)
+    assert wells["-A001"][0].path == tmp_path / frame_name("-A001", 1, 0)
     assert wells["-A001"][0].well == "-A001"
 
 
@@ -101,27 +101,27 @@ def test_discover_per_well_layout(tmp_path):
     a.mkdir()
     b.mkdir()
     for lo, t in [(3, 3 * HOUR), (1, 0), (2, 2 * HOUR)]:
-        _write_frame(a, _frame_name("-A001", lo, t))
+        _write_frame(a, frame_name("-A001", lo, t))
     _write_frame(a, "ref__labels.tif")  # no LO field: not a frame
-    _write_frame(b, _frame_name("-B004", 1, 0))
+    _write_frame(b, frame_name("-B004", 1, 0))
     # A stray top-level frame is ignored in the per-well layout.
-    _write_frame(tmp_path, _frame_name("-C001", 1, 0))
+    _write_frame(tmp_path, frame_name("-C001", 1, 0))
 
     wells = io.discover_wells(tmp_path)
     assert set(wells) == {"-A001", "-B004"}
     assert [f.frame for f in wells["-A001"]] == [1, 2, 3]
-    assert wells["-A001"][2].path == a / _frame_name("-A001", 3, 3 * HOUR)
+    assert wells["-A001"][2].path == a / frame_name("-A001", 3, 3 * HOUR)
 
 
 def test_discover_wells_filter_and_ordering(tmp_path):
     for lo, t in [(1, 0), (2, 2 * HOUR)]:
-        _write_frame(tmp_path, _frame_name("-A001", lo, t))
-    _write_frame(tmp_path, _frame_name("-B004", 1, 0))
+        _write_frame(tmp_path, frame_name("-A001", lo, t))
+    _write_frame(tmp_path, frame_name("-B004", 1, 0))
 
     assert set(io.discover_wells(tmp_path, wells=["-B004"])) == {"-B004"}
 
     # Frames with the same LO order by the T field.
-    _write_frame(tmp_path, _frame_name("-A001", 2, HOUR + 1))
+    _write_frame(tmp_path, frame_name("-A001", 2, HOUR + 1))
     ordered = io.discover_wells(tmp_path)["-A001"]
     assert [f.t for f in ordered if f.frame == 2] == [HOUR + 1, 2 * HOUR]
 
@@ -423,3 +423,169 @@ def test_label_image_roundtrip(tmp_path):
     back = io.read_label_image(path)
     assert back.dtype == np.uint32
     assert (back == labels).all()
+
+
+# --- the conftest builders (sanity: later tickets inherit these) --------------
+
+
+def test_frame_name_uses_the_packages_acquisition_vocabulary():
+    # The fixture's file names must round-trip through the package parsers.
+    name = frame_name("-C006", 15, 14_399_594)
+    assert io.parse_well(name) == "-C006"
+    assert io.parse_frame(name) == 15
+    assert io.parse_time(name) == 14_399_594
+    # Millisecond T fields, zero-padded to 10 digits.
+    assert "--T0014399594--" in name
+
+
+def test_mini_plate_flat_layout_and_ground_truth(tmp_path):
+    # One "full" well at the real plate size, noise-free (exact arithmetic).
+    # The default planting is calibrated for 2048x2048 with the ring at R 920.
+    root = tmp_path / "plate"
+    plate = build_mini_plate(
+        root, layout="flat", wells=("-A001",), n_frames=8,
+        size=2048, noise_sigma=0,
+    )
+
+    # The tree: all 8 frames of the one well in one directory.
+    assert plate.layout == "flat"
+    names = plate.wells["-A001"]
+    assert len(names) == 8
+    for lo in range(1, 9):
+        assert (root / names[lo - 1]).is_file()
+    assert names[0] == frame_name("-A001", 1, 0)
+    # Millisecond T fields (hourly frames).
+    assert plate.t_values == [i * 3_600_000 for i in range(8)]
+    assert [io.parse_time(n) for n in names] == plate.t_values
+
+    # 2048x2048 uint16 frames, readable.
+    img1 = tifffile.imread(root / names[0])
+    assert img1.shape == (2048, 2048) and img1.dtype == np.uint16
+    assert img1[0, 0] == 5000  # plain background in the corner
+
+    # Discovery of the built tree agrees with the planted ground truth.
+    wells = io.discover_wells(root)
+    assert set(wells) == {"-A001"}
+    assert [f.frame for f in wells["-A001"]] == list(range(1, 9))
+    assert [f.t for f in wells["-A001"]] == plate.t_values
+
+    # The planted ring: R ~ 920 at the image centre, visible in frame 1.
+    assert plate.ring["-A001"] == (1024.0, 1024.0, 920.0)
+    row = img1[1024, :]
+    r_min = abs(int(np.argmin(row)) - 1024)
+    assert 900 <= r_min <= 940  # the meniscus dip is at R ~ 920
+    assert row.min() <= 5000 - 2000  # deep enough for a circle fit
+
+    # The default "full" well planting: a growing pair, a static disk, one
+    # present from frame 1, and one that grows into the rim.
+    assert [d.name for d in plate.disks["-A001"]] == [
+        "pair_a", "pair_b", "static", "from_start", "rim",
+    ]
+    for d in plate.disks["-A001"]:  # last_frame resolves to the plate's end
+        assert d.last_frame == 8
+
+    pair_a = plate.disk("-A001", "pair_a")
+    pair_b = plate.disk("-A001", "pair_b")
+    assert pair_a.radius_at(1) is None  # first appears at frame 2
+    assert pair_a.radius_at(2) == 30.0
+    assert pair_a.radius_at(3) > pair_a.radius_at(2)  # grows
+    # The pair grows until it touches: the centres are 200 px apart.
+    assert 2 * pair_a.radius_at(6) < 200 <= 2 * pair_a.radius_at(7)
+    assert (pair_b.cy, pair_b.cx) == (650.0, 950.0)
+
+    static = plate.disk("-A001", "static")
+    assert static.radius_at(2) == static.radius_at(8) == 50.0  # no_growth
+    # Ground-truth painted area: a full disk, far from the well wall.
+    assert (disk_mask(plate, "-A001", "static", 8).sum()
+            == pytest.approx(static.area_at(8), rel=0.02))
+
+    from_start = plate.disk("-A001", "from_start")
+    assert from_start.radius_at(1) == 30.0  # present from frame 1
+    assert disk_mask(plate, "-A001", "from_start", 1) is not None
+    assert disk_mask(plate, "-A001", "pair_a", 1) is None
+
+    rim = plate.disk("-A001", "rim")
+    assert rim.first_frame == 3
+    # The rim disk starts well inside the wall and grows through it.
+    assert 800 + rim.radius_at(3) < 860  # outside the 60 px rim band
+    assert 800 + rim.radius_at(8) > 920  # crosses the well circle
+    # The painted (wall-clipped) area is smaller than the unclipped one.
+    assert disk_mask(plate, "-A001", "rim", 8).sum() < rim.area_at(8)
+
+    # The planted disks are actually in the pixels.
+    img8 = tifffile.imread(root / names[7])
+    assert img8[1450, 1450] == 5000 - 2000  # the static disk (no noise)
+
+
+def test_mini_plate_per_well_layout(tmp_path):
+    # A cheap small plate (no ring, no disks) to check the layout plumbing.
+    root = tmp_path / "plate"
+    wells = ("-A001", "-B004")
+    plate = build_mini_plate(
+        root, layout="per_well", wells=wells, n_frames=2, size=256,
+        noise_sigma=0, rings={w: None for w in wells}, disks={},
+    )
+
+    assert plate.layout == "per_well"
+    for w in wells:
+        well_dir = root / w
+        assert well_dir.is_dir()
+        assert plate.wells[w] == [frame_name(w, 1, 0), frame_name(w, 2, 3_600_000)]
+        for name in plate.wells[w]:
+            img = tifffile.imread(well_dir / name)
+            assert img.shape == (256, 256) and img.dtype == np.uint16
+            assert (img == 5000).all()  # background only (no planting)
+    # No frames at the top level.
+    assert [p for p in root.iterdir() if p.is_file()] == []
+
+    # The per-well layout is discovered via the directory names.
+    discovered = io.discover_wells(root)
+    assert set(discovered) == set(wells)
+    for w in wells:
+        assert [f.frame for f in discovered[w]] == [1, 2]
+        assert [f.t for f in discovered[w]] == [0, 3_600_000]
+
+    # The overrides were honoured: no ring, no disks.
+    assert all(plate.ring[w] is None for w in wells)
+    assert all(plate.disks[w] == [] for w in wells)
+    with pytest.raises(KeyError):
+        plate.disk("-A001", "growing")
+
+
+def test_mini_plate_rejects_bad_arguments(tmp_path):
+    with pytest.raises(ValueError):
+        build_mini_plate(tmp_path / "p", layout="grid")
+    with pytest.raises(ValueError):
+        build_mini_plate(tmp_path / "p", wells=[])
+    with pytest.raises(ValueError):
+        build_mini_plate(tmp_path / "p", n_frames=0)
+
+
+def test_build_label_series(tmp_path):
+    root = tmp_path / "-A001"
+    labels = [np.zeros((8, 8), np.uint32) for _ in range(3)]
+    labels[0][2, 2] = 1
+    labels[1][2, 2] = 1
+    labels[1][5, 5] = 2
+    labels[2][3, 3] = 1  # the colony moved
+
+    series = build_label_series(root, labels)
+
+    # Canonical input names: the in-memory frame list later tickets pass on.
+    assert series.names == [
+        frame_name("-A001", lo, t)
+        for lo, t in [(1, 0), (2, 3_600_000), (3, 2 * 3_600_000)]
+    ]
+    assert [io.parse_frame(n) for n in series.names] == [1, 2, 3]
+
+    # One <frame-stem>__labels.tif per frame, round-tripping the values.
+    assert len(series.label_paths) == 3
+    for name, path, expected in zip(series.names, series.label_paths, labels):
+        assert path == root / (name[:-4] + "__labels.tif")
+        assert path.is_file()
+        back = io.read_label_image(path)
+        assert back.dtype == np.uint32
+        assert (back == expected).all()
+
+    with pytest.raises(ValueError):
+        build_label_series(root, labels, names=[series.names[0]])

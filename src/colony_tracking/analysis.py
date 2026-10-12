@@ -113,6 +113,7 @@ from scipy import ndimage as ndi
 
 from . import io, log
 from ._options import AnalysisOptions
+from .tracking import ancestor_counts
 
 #: Plausible fitted well circles: the wells are ~870–920 px in radius and
 #: roughly centred in the 2048×2048 frames; fits outside these bounds are
@@ -317,11 +318,6 @@ def rim_stats(rows, seg_dir, geo, rim_width: int) -> dict:
 # ---------------------------------------------------------- trajectories ----
 
 
-def parse_merged(s: str) -> set:
-    """The colony IDs listed in a ``merged_with`` field (empty when none)."""
-    return {int(v) for v in s.split(";") if v}
-
-
 def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
     """Per-frame colony records: ancestors, rim exclusion, bad flags.
 
@@ -334,7 +330,8 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
       ``merged_with`` (cumulative union): the pipeline keeps listing
       absorbed colonies whose last-known masks stay covered, so an absorbed
       merge product contributes its own history — A merging with B, which
-      had merged with C earlier, ends at 3;
+      had merged with C earlier, ends at 3 (resolved by the shared
+      :func:`tracking.ancestor_counts`);
     - ``rim_excluded`` turns 1 at the first frame whose ``rim_frac`` exceeds
       ``rim_overlap_max`` and stays 1 (colonies only grow into the rim);
       rows with no rim fraction (no geometry / missing labels) never
@@ -363,52 +360,30 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
     for r in order:
         per_colony.setdefault((r["well"], int(r["colony_id"])), []).append(r)
 
-    # Colonies each colony ever absorbed (union over its frames; the
-    # pipeline's `merged_with` lists the colonies whose last-known masks a
-    # segment covers - including colonies an absorbed colony had taken over
-    # earlier, whose stale masks stay covered). Colony IDs are per-well, so
-    # every merge-graph key below is (well, colony_id).
-    absorbed = {}
-    for key, crows in per_colony.items():
-        s = set()
-        for r in crows:
-            s |= parse_merged(r["merged_with"])
-        absorbed[key] = s
-
-    # All original colonies combined in each colony's segment, transitively:
-    # an absorbed merge product contributes its own constituents (A absorbs
-    # B, B had absorbed C -> A's segment comprises A, B and C). Memoised; the
-    # tracker follows time, so cycles cannot arise (guarded anyway).
-    constituents = {}
-
-    def constituents_of(key, visiting=()):
-        if key in constituents:
-            return constituents[key]
-        if key in visiting:
-            return set()
-        comp = {key[1]}
-        for y in absorbed.get(key, ()):
-            comp |= constituents_of((key[0], y), visiting + (key,))
-        constituents[key] = comp
-        return comp
-
-    for key in per_colony:
-        constituents_of(key)
+    # Ancestors: the shared identity machinery
+    # (:func:`tracking.ancestor_counts`), resolved one well at a time.
+    # Colony IDs are per-well, so the merge graph must not bleed across
+    # wells either way — grouping rows by well and keying by colony_id
+    # inside the call is exactly the (well, colony_id) keying the prototype
+    # used. The pipeline's `merged_with` lists the colonies whose
+    # last-known masks a segment covers - including colonies an absorbed
+    # colony had taken over earlier, whose stale masks stay covered; an
+    # absorbed merge product contributes its own history.
+    per_well = {}
+    for r in order:
+        per_well.setdefault(r["well"], []).append(r)
+    for wrows in per_well.values():
+        for r, n in zip(wrows, ancestor_counts(wrows)):
+            r["ancestors"] = n
 
     baseline = {}
     for key, crows in per_colony.items():
         well, cid = key
-        seen = set()  # raw IDs listed in merged_with so far
-        counted = set()  # constituents of everything absorbed so far
         base = None
         excluded = False  # once in the rim, always in the rim (colonies only grow)
         valid = []  # (frame, area) of frames with usable measurements
         for r in crows:
             frame = int(r["frame"])
-            ids = parse_merged(r["merged_with"])
-            for y in ids - seen:
-                counted |= constituents_of((well, y))
-            seen |= ids
             # rim_stats keys by (frame, colony_id) for its per-well input; the
             # (well, frame, colony_id) form is accepted as well.
             frac = rim_fracs.get((well, frame, cid), rim_fracs.get((frame, cid)))
@@ -416,7 +391,6 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
                 excluded = True
             r["rim_excluded"] = int(excluded)
             r["rim_frac"] = frac
-            r["ancestors"] = 1 + len(counted - {cid})
             if not r["rim_excluded"]:
                 valid.append((frame, int(r["area_px"])))
                 if base is None:

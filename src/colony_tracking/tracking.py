@@ -445,6 +445,9 @@ def ancestor_counts(rows: Sequence[Mapping[str, object]]) -> list[int]:
     walked chronologically (sorted by ``frame`` when every row of the
     colony carries one, otherwise in the order given). The tracker follows
     time, so the histories cannot cycle; the resolution guards anyway.
+
+    Prototype-tolerant on the input: rows without a ``merged_with`` field,
+    or with an empty/``None`` one, simply merge nothing.
     """
     per_colony: dict[int, list[tuple[int, Mapping[str, object]]]] = {}
     for pos, r in enumerate(rows):

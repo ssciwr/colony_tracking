@@ -287,3 +287,13 @@ def test_exclude_before_needs_no_matching_frame():
     assert res.counters["pre_existing_colonies"] == 0
     assert res.counters["colonies"] == 2
     assert not res.labels[0].any()
+
+
+def test_empty_reference_produces_nothing_but_keeps_the_frame_count():
+    groups = one_group()
+    frames = [(1, box_image({1: (5, 5, 15, 15)})), (2, box_image({1: (5, 5, 15, 15)}))]
+    for ref in (None, np.zeros((40, 40), np.uint32)):
+        res = track_colonies(frames, ref)
+        assert len(res.labels) == 2 and not res.labels[0].any()
+        assert res.rows == []
+        assert res.counters["groups"] == 0 and res.counters["colonies"] == 0

@@ -24,6 +24,7 @@ from colony_tracking.segmentation import (
     filter_to_mask,
     run_segmentation,
 )
+from conftest import T_STEP_MS, build_label_series, build_mini_plate, frame_name
 
 
 # --- the drift gate -----------------------------------------------------------
@@ -169,8 +170,6 @@ def test_filter_without_groups_applies_the_mask_rule_only():
 
 def _diff_name(well: str, lo: int, t_ms: int) -> str:
     """The canonical difference-frame file name for one frame."""
-    from conftest import frame_name
-
     return frame_name(well, lo, t_ms)[:-4] + "__diff_uint8.tif"
 
 
@@ -226,6 +225,141 @@ def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
                 wells=["-Z009"],
             )
         )
+
+
+# --- re-ID end-to-end on a synthetic label tree -----------------------------------
+
+WELLS = ("-A001", "-B002")
+
+
+def _seed_series(well_dir, well, names, labels):
+    """Write a completed-looking well output tree (labels, ref, CSV, marker).
+
+    The initial label values are deliberately not colony IDs (and one label
+    value is shared by two disjoint objects) — re-ID must re-derive the
+    segments and the identity, not copy anything.
+    """
+    build_label_series(well_dir, labels, well=well, names=names)
+    io.write_label_image(
+        well_dir / "ref__labels.tif", np.ones(labels[0].shape, np.uint32)
+    )
+    io.write_colonies(well_dir / "colonies.csv", [])
+    io.write_done(well_dir, dict.fromkeys(io.SEGMENT_DONE_KEYS, 0))
+
+
+def _labels_a():
+    """Well A, frames 1..5 (40x60): a merge, a newcomer, frame 1 below the cutoff."""
+    shape = (40, 60)
+    f1 = np.zeros(shape, np.uint32)
+    f1[5:15, 5:15] = 1
+    f2 = np.zeros(shape, np.uint32)
+    f2[5:15, 5:15] = 1  # one value, two components: A and B
+    f2[5:15, 25:35] = 1
+    f3 = f2.copy()
+    f4 = f2.copy()
+    f4[25:35, 5:15] = 2  # colony C appears
+    f5 = np.zeros(shape, np.uint32)
+    f5[5:15, 5:35] = 5  # A and B grown together: one blob
+    f5[25:35, 5:15] = 2
+    return [f1, f2, f3, f4, f5]
+
+
+def _labels_b():
+    """Well B, frames 1,3,4,5 — the series lacks frame 2."""
+    shape = (40, 60)
+    f1 = np.zeros(shape, np.uint32)
+    f1[10:20, 10:20] = 1
+    f3 = np.zeros(shape, np.uint32)
+    f3[10:20, 10:20] = 1  # D and E, one value, two components
+    f3[10:20, 30:40] = 1
+    f4 = f3.copy()
+    f5 = np.zeros(shape, np.uint32)
+    f5[10:20, 10:40] = 5  # D and E grown together
+    return [f1, f3, f4, f5]
+
+
+def test_reid_retracks_and_rewrites_outputs(tmp_path):
+    plate = build_mini_plate(
+        tmp_path / "raw", layout="per_well", wells=WELLS, n_frames=5, size=64,
+        rings={w: None for w in WELLS}, disks={w: [] for w in WELLS},
+        noise_sigma=0.0,
+    )
+    out = tmp_path / "seg"
+    names_a = plate.wells["-A001"]
+    _seed_series(out / "-A001", "-A001", names_a, _labels_a())
+    # well B: frame 2 is missing from the input tree and the label series
+    names_b = plate.wells["-B002"]
+    (plate.root / "-B002" / names_b[1]).unlink()
+    _seed_series(out / "-B002", "-B002", names_b[:1] + names_b[2:], _labels_b())
+
+    summary = run_segmentation(
+        SegmentationOptions(
+            input="raw", raw_dir=plate.root, out_dir=out,
+            exclude_before=2, reid_only=True,
+        )
+    )
+
+    assert (summary.processed, summary.skipped, summary.failed) == (2, 0, 0)
+    assert summary.gate_skipped_frames == 0
+    # re-ID never touches the model
+    assert not any(name.startswith("micro_sam") for name in sys.modules)
+    assert not any(name == "torch" or name.startswith("torch.") for name in sys.modules)
+
+    # -- well A: IDs continue, the merge is recorded, frame 1 is blanked -----
+    a_dir = out / "-A001"
+    for name in names_a:  # outputs stay 1:1 with the input frames
+        assert (a_dir / (name[:-4] + "__labels.tif")).exists()
+    labels = [io.read_label_image(a_dir / (n[:-4] + "__labels.tif"))
+              for n in names_a]
+    assert not labels[0].any()  # frame 1 < exclude_before: blanked
+    assert (labels[1][5:15, 5:15] == 1).all()  # colony 1 continues
+    assert (labels[1][5:15, 25:35] == 2).all()  # colony 2
+    assert (labels[3][25:35, 5:15] == 3).all()  # colony 3 from frame 4
+    assert (labels[4][5:15, 5:35] == 1).all()  # the merge product keeps ID 1
+    assert (labels[4][25:35, 5:15] == 3).all()
+
+    rows = io.read_colonies(a_dir / "colonies.csv")
+    assert [(r["frame"], r["colony_id"], r["merged_with"], r["pre_existing"])
+            for r in rows] == [
+        ("2", "1", "", "1"), ("2", "2", "", "1"),  # first detected at 2 <= N
+        ("3", "1", "", "1"), ("3", "2", "", "1"),
+        ("4", "1", "", "1"), ("4", "2", "", "1"), ("4", "3", "", "0"),
+        ("5", "1", "2", "1"),  # the merge: colony 2 absorbed
+        ("5", "3", "", "0"),
+    ]
+    assert rows[0]["well"] == "-A001"
+    assert rows[0]["group_id"] == "1"
+    assert rows[0]["t_seconds"] == str(T_STEP_MS)  # LO002's T field (ms)
+    assert rows[0]["image"] == names_a[1]
+    assert io.read_done(a_dir) == {
+        "frames": 5, "groups": 1, "colonies": 1, "pre_existing_colonies": 2,
+        "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
+    }
+
+    # -- well B: the series lacks frame 2 (N need not exist) ------------------
+    b_dir = out / "-B002"
+    kept_names = names_b[:1] + names_b[2:]
+    for name in kept_names:
+        assert (b_dir / (name[:-4] + "__labels.tif")).exists()
+    assert not (b_dir / (names_b[1][:-4] + "__labels.tif")).exists()
+    labels_b = [io.read_label_image(b_dir / (n[:-4] + "__labels.tif"))
+                for n in kept_names]
+    assert not labels_b[0].any()  # frame 1 < exclude_before: blanked
+    assert (labels_b[1][10:20, 10:20] == 1).all()  # first seen at 3: new growth
+    assert (labels_b[1][10:20, 30:40] == 2).all()
+    assert (labels_b[3][10:20, 10:40] == 1).all()  # merge product keeps ID 1
+
+    rows_b = io.read_colonies(b_dir / "colonies.csv")
+    assert [(r["frame"], r["colony_id"], r["merged_with"], r["pre_existing"])
+            for r in rows_b] == [
+        ("3", "1", "", "0"), ("3", "2", "", "0"),
+        ("4", "1", "", "0"), ("4", "2", "", "0"),
+        ("5", "1", "2", "0"),  # the merge: colony 2 absorbed
+    ]
+    assert io.read_done(b_dir) == {
+        "frames": 4, "groups": 1, "colonies": 2, "pre_existing_colonies": 0,
+        "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
+    }
 
 
 # --- the module import stays torch/micro-sam free --------------------------------

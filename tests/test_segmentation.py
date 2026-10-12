@@ -8,16 +8,21 @@ the final frame, and the re-ID mode over a synthetic label tree). No model,
 no GPU, no network: the model path itself is never entered.
 """
 
+import logging
 import sys
 
 import numpy as np
 import pytest
+import tifffile
 
+from colony_tracking import io
+from colony_tracking._options import SegmentationOptions
 from colony_tracking.segmentation import (
     build_growth_mask,
     drift_gate_limit,
     drift_gate_skips,
     filter_to_mask,
+    run_segmentation,
 )
 
 
@@ -157,6 +162,70 @@ def test_filter_without_groups_applies_the_mask_rule_only():
     out, discarded = filter_to_mask(instances, mask, None, min_overlap=0.5)
     assert discarded == 0
     assert (out[2:12, 10:30] == 1).all()
+
+
+# --- run_segmentation: validation and the up-front reference rejection ----------
+
+
+def _diff_name(well: str, lo: int, t_ms: int) -> str:
+    """The canonical difference-frame file name for one frame."""
+    from conftest import frame_name
+
+    return frame_name(well, lo, t_ms)[:-4] + "__diff_uint8.tif"
+
+
+def _write_diff_tree(diff_dir, well, los):
+    """A minimal difference well: uint8 frames as written (128 = no change)."""
+    well_dir = diff_dir / well
+    well_dir.mkdir(parents=True)
+    names = []
+    for lo in los:
+        name = _diff_name(well, lo, (lo - 1) * 3_600_000)
+        tifffile.imwrite(well_dir / name, np.full((8, 8), 128, np.uint8))
+        names.append(name)
+    return names
+
+
+def test_run_segmentation_requires_the_input_directory(tmp_path):
+    with pytest.raises(ValueError, match="raw_dir is required"):
+        run_segmentation(SegmentationOptions(out_dir=tmp_path / "out"))
+    with pytest.raises(ValueError, match="diff_dir is required"):
+        run_segmentation(
+            SegmentationOptions(input="diff", out_dir=tmp_path / "out")
+        )
+
+
+def test_run_segmentation_rejects_diff_reference_equal_to_final_frame(
+    tmp_path, caplog
+):
+    diff_dir = tmp_path / "difference_LO003"
+    names = _write_diff_tree(diff_dir, "-A001", los=(1, 2, 3))
+    # the difference reference is the final frame itself: the growth mask
+    # would be empty
+    io.write_scale(diff_dir / "-A001", reference=names[-1], display_limit=100.0)
+    out_dir = tmp_path / "seg"
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_segmentation(
+            SegmentationOptions(input="diff", diff_dir=diff_dir, out_dir=out_dir)
+        )
+
+    assert (summary.processed, summary.skipped, summary.failed) == (0, 1, 0)
+    assert "growth mask would be empty" in caplog.text
+    # no outputs: the well directory is not even created
+    assert not (out_dir / "-A001").exists()
+
+
+def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
+    diff_dir = tmp_path / "difference_LO001"
+    _write_diff_tree(diff_dir, "-A001", los=(1, 2, 3))
+    with pytest.raises(ValueError, match="-Z009"):
+        run_segmentation(
+            SegmentationOptions(
+                input="diff", diff_dir=diff_dir, out_dir=tmp_path / "seg",
+                wells=["-Z009"],
+            )
+        )
 
 
 # --- the module import stays torch/micro-sam free --------------------------------

@@ -14,7 +14,11 @@ __version__ = "0.1.0"
 #: The single package logger. All runtime output goes through it — never print.
 log = logging.getLogger("colony_tracking")
 
+from ._options import SegmentationOptions
+from .segmentation import SegmentationSummary, run_segmentation
+
 __all__: list[str] = [
-    # Public API re-exports land here as their tickets do:
-    # option dataclasses, run_* functions, PipelineConfig, summary types.
+    "SegmentationOptions",
+    "SegmentationSummary",
+    "run_segmentation",
 ]

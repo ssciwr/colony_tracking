@@ -18,7 +18,7 @@ location.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,3 +180,92 @@ def display_limit(
     if not samples:
         return 1.0
     return max(float(np.percentile(np.concatenate(samples), percentile)), 1.0)
+
+
+#: The per-well done-marker file name. Presence marks the well complete.
+DONE_MARKER = "_done.txt"
+
+#: The canonical segment-stage marker keys (spec: I/O contract).
+SEGMENT_DONE_KEYS = (
+    "frames",
+    "groups",
+    "colonies",
+    "pre_existing_colonies",
+    "merge_events",
+    "forked_segments",
+    "discarded_instances",
+)
+
+
+def write_scale(well_dir: Path | str, reference: str, display_limit: float) -> Path:
+    """Write a difference well's ``scale.txt`` (tab-separated key/value).
+
+    Records ``reference`` (the reference frame's file name) and
+    ``display_limit_int16`` (the float display limit), so the uint8
+    previews can be converted back to counts.
+    """
+    path = Path(well_dir) / "scale.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(f"reference\t{reference}\n")
+        f.write(f"display_limit_int16\t{float(display_limit)!r}\n")
+    return path
+
+
+def read_scale(well_dir: Path | str) -> dict[str, str]:
+    """Read a difference well's ``scale.txt`` (empty dict when absent).
+
+    Tolerates missing and extra lines (the prototype also wrote
+    ``flatfield``/``sigma``).
+    """
+    path = Path(well_dir) / "scale.txt"
+    if not path.exists():
+        return {}
+    values: dict[str, str] = {}
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if line:
+                key, _, value = line.partition("\t")
+                values[key] = value
+    return values
+
+
+def done_marker_path(well_dir: Path | str) -> Path:
+    """Path of the well's done marker."""
+    return Path(well_dir) / DONE_MARKER
+
+
+def is_done(well_dir: Path | str) -> bool:
+    """True when the well's done marker is present (the well is complete)."""
+    return done_marker_path(well_dir).exists()
+
+
+def write_done(well_dir: Path | str, counters: Mapping[str, int | str]) -> Path:
+    """Write the per-well done marker (tab-separated ``key<TAB>value`` lines)."""
+    path = done_marker_path(well_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for key, value in counters.items():
+            f.write(f"{key}\t{value}\n")
+    return path
+
+
+def read_done(well_dir: Path | str) -> dict[str, int | str]:
+    """Read the per-well done marker; absent keys are simply missing.
+
+    Values are parsed as ints when possible, kept as strings otherwise.
+    """
+    path = done_marker_path(well_dir)
+    values: dict[str, int | str] = {}
+    with open(path) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            key, _, value = line.partition("\t")
+            try:
+                values[key] = int(value)
+            except ValueError:
+                values[key] = value
+    return values

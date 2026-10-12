@@ -217,3 +217,86 @@ def test_display_limit_over_several_frames():
 def test_display_limit_floors_at_one():
     assert io.display_limit(np.zeros((10, 10)), 99.5, 1) == 1.0
     assert io.display_limit([], 99.5, 8) == 1.0
+
+
+# --- scale.txt (difference output, per well) ---------------------------------
+
+
+def test_scale_roundtrip(tmp_path):
+    well = tmp_path / "-A001"
+    well.mkdir()
+    io.write_scale(well, RAW_NAME, 3691.0)
+    text = (well / "scale.txt").read_text()
+    assert f"reference\t{RAW_NAME}\n" in text
+    assert "display_limit_int16\t3691.0\n" in text
+
+    scale = io.read_scale(well)
+    assert scale["reference"] == RAW_NAME
+    assert float(scale["display_limit_int16"]) == 3691.0
+    # The reference's frame number is recoverable with the shared parser.
+    assert io.parse_frame(scale["reference"]) == 1
+
+
+def test_scale_reader_tolerates_legacy_lines(tmp_path):
+    # The prototype also wrote flatfield/sigma lines; readers must keep them.
+    well = tmp_path / "-A001"
+    well.mkdir()
+    (well / "scale.txt").write_text(
+        f"reference\t{RAW_NAME}\nflatfield\tFalse\nsigma\t150.0\n"
+        "display_limit_int16\t3691.0\n"
+    )
+    scale = io.read_scale(well)
+    assert scale["reference"] == RAW_NAME
+    assert scale["flatfield"] == "False"
+    assert scale["sigma"] == "150.0"
+    assert float(scale["display_limit_int16"]) == 3691.0
+
+
+def test_scale_reader_missing_file(tmp_path):
+    well = tmp_path / "-A001"
+    well.mkdir()
+    assert io.read_scale(well) == {}
+
+
+# --- done marker (per well) ---------------------------------------------------
+
+
+def test_segment_done_keys_match_spec():
+    assert io.SEGMENT_DONE_KEYS == (
+        "frames",
+        "groups",
+        "colonies",
+        "pre_existing_colonies",
+        "merge_events",
+        "forked_segments",
+        "discarded_instances",
+    )
+
+
+def test_done_marker_roundtrip(tmp_path):
+    well = tmp_path / "-A001"
+    well.mkdir()
+    counters = {
+        "frames": 19, "groups": 4, "colonies": 7, "pre_existing_colonies": 1,
+        "merge_events": 2, "forked_segments": 0, "discarded_instances": 5,
+    }
+    io.write_done(well, counters)
+    assert (well / "_done.txt").exists()
+    assert io.is_done(well)
+    assert io.read_done(well) == counters
+
+
+def test_done_marker_reader_tolerates_missing_keys(tmp_path):
+    well = tmp_path / "-A001"
+    well.mkdir()
+    (well / "_done.txt").write_text("frames\t8\ncolonies\t3\n")
+    assert io.read_done(well) == {"frames": 8, "colonies": 3}
+    assert io.is_done(well)
+
+
+def test_done_marker_absent(tmp_path):
+    well = tmp_path / "-A001"
+    well.mkdir()
+    assert not io.is_done(well)
+    with pytest.raises(FileNotFoundError):
+        io.read_done(well)

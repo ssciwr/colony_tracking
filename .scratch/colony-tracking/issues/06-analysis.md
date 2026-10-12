@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 # 06: `analysis` stage — circle, rim, flags, rates, aggregates, plots, QA
@@ -148,3 +148,7 @@ tmp_path — no model). Matplotlib is Agg in tests.
   re-exported from the package root.
 - Module docstring carries the algorithm detail per the spec.
 - No hardcoded data paths.
+
+## Comments
+
+- 2026-10-12: Resolved by branch t06-analysis (merge commit 50814f5dc21392610d622bc3da4a17a3e26785bc); 152 passed; API: run_analysis(AnalysisOptions) -> AnalysisSummary(roots, geometry, failures) with RootSummary per seg root; canonical output CSVs (trajectories/growth_rates/bad_segments/areas_by_ancestors/rates_by_ancestors) + 3 plots + qa/<well>_rim.png + shared well_geometry.csv; section functions tested as pure seams. Deviations: fit_well_circle called once with all <=3 frames (spec-mandated drop rule actually exercised), rim-zone mgrid from image shape, t_hours_of guards empty input, trajectories keyed by (well, colony_id), raw frames located via io.discover_wells both layouts.

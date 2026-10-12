@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by:
 
 # 01: Project skeleton, tooling, and domain docs
@@ -75,3 +75,7 @@ tooling", "Package layout and public API", "Documentation and records".
 - `uv run colony-tracking` runs the stub without error.
 - GLOSSARY.md, LICENSE, uv.lock, and the three ADRs are committed.
 - No hardcoded data paths anywhere.
+
+## Comments
+
+- 2026-10-12 — Resolved by branch t01-skeleton (merge commit bdcc6ee0a220307e468187e0bdae8dbed16bc3a0); 19 passed; deviations noted in implementer report: options dataclasses live in _options.py, kw_only dataclasses, integration marker placeholder added, PEP 639 license form.

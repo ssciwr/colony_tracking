@@ -10,7 +10,11 @@ fixture plate, no model.
 
 import numpy as np
 
-from colony_tracking.tracking import track_colonies
+from colony_tracking.tracking import (
+    ancestor_counts,
+    parse_merged,
+    track_colonies,
+)
 
 
 def box_image(boxes, shape=(40, 40)):
@@ -119,3 +123,67 @@ def test_segments_are_pooled_under_their_dominant_group():
     # groups are processed by centre of mass (top-left first), so the colony
     # of group 1 gets the lower ID and rows carry the colony's group
     assert [(r["colony_id"], r["group_id"]) for r in res.rows] == [(1, 1), (2, 2)]
+
+
+# --- absorb/merge and ancestors ----------------------------------------------
+
+
+def test_absorb_merge_chain_and_transitive_ancestors():
+    groups = one_group((40, 64))
+    frames = [
+        # frame 1: colony A (300 px) -> ID 1
+        (1, box_image({1: (10, 2, 20, 32)}, shape=(40, 64))),
+        # frame 2: A continues; B (90 px) -> ID 2 and C (72 px) -> ID 3 appear
+        (2, box_image({1: (10, 2, 20, 32), 2: (10, 38, 20, 47), 3: (12, 53, 20, 62)},
+                      shape=(40, 64))),
+        # frame 3: a B+C blob continues colony 2 and absorbs colony 3
+        (3, box_image({1: (10, 2, 20, 32), 4: (10, 38, 20, 62)}, shape=(40, 64))),
+        # frame 4: one A+B+C blob: colony 1 continues (largest mask), absorbs 2 and 3
+        (4, box_image({5: (10, 2, 20, 62)}, shape=(40, 64))),
+    ]
+    res = track_colonies(frames, groups)
+    assert [r["colony_id"] for r in res.rows] == [1, 1, 2, 3, 1, 2, 1]
+    assert [r["merged_with"] for r in res.rows] == ["", "", "", "", "", "3", "2;3"]
+    assert res.counters["merge_events"] == 2
+    # A absorbed B, which had absorbed C: the A+B segment ends at 3 ancestors
+    assert ancestor_counts(res.rows) == [1, 1, 1, 1, 1, 2, 3]
+    # the survivor keeps its own ID on the merged blob
+    assert (res.labels[3][10:20, 2:62] == 1).all()
+
+
+def test_absorbed_colony_resumes_its_id_after_separating():
+    groups = one_group((40, 64))
+    frames = [
+        (1, box_image({1: (10, 2, 20, 22)}, shape=(40, 64))),  # A -> ID 1
+        (2, box_image({1: (10, 2, 20, 22), 2: (10, 30, 20, 42)},
+                      shape=(40, 64))),  # B -> ID 2
+        # frame 3: the A+B blob continues colony 1 and absorbs colony 2
+        (3, box_image({3: (10, 2, 20, 42)}, shape=(40, 64))),
+        # frame 4: separated again: each piece matches its own colony
+        (4, box_image({1: (10, 2, 20, 22), 2: (10, 30, 20, 42)},
+                      shape=(40, 64))),
+    ]
+    res = track_colonies(frames, groups)
+    assert [r["colony_id"] for r in res.rows] == [1, 1, 2, 1, 1, 2]
+    assert res.rows[3]["merged_with"] == "2"  # frame 3: colony 2 absorbed
+    assert res.counters["merge_events"] == 1
+    # no third colony was started: colony 2 resumed its own ID
+    assert res.counters["colonies"] == 2
+    assert (res.labels[3][10:20, 30:42] == 2).all()
+
+
+def test_ancestor_counts_identity_direct_transitive_independent():
+    # rows deliberately out of order: the helper walks each colony by frame
+    rows = [
+        {"frame": 4, "colony_id": 1, "merged_with": "2"},
+        {"frame": 1, "colony_id": 1, "merged_with": ""},
+        {"frame": 3, "colony_id": 2, "merged_with": "3"},
+        {"frame": 2, "colony_id": 2, "merged_with": ""},
+        {"frame": 2, "colony_id": 3, "merged_with": ""},
+        {"frame": 1, "colony_id": 9, "merged_with": ""},
+        {"frame": 2, "colony_id": 9, "merged_with": ""},
+    ]
+    assert ancestor_counts(rows) == [3, 1, 2, 1, 1, 1, 1]
+    assert parse_merged("2;3") == {2, 3}
+    assert parse_merged("") == set()
+    assert parse_merged(None) == set()

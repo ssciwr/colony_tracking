@@ -300,13 +300,30 @@ def track_colonies(
                     next_id += 1
                     active.append(o)
                     matched[id(s)] = o
+            # merges: colonies covered by this segment but continued by no
+            # segment — the survivor keeps its ID, the covered ones are
+            # absorbed (their stale masks stay tracked; see the docstring)
             for s in segs:
                 o = matched[id(s)]
+                absorbed = sorted({
+                    c["id"] for c in active
+                    if c is not o and c["id"] not in taken
+                    and float((s.mask & c["mask"]).sum()) / c["area"]
+                    >= ABSORB_COVERAGE
+                })
+                if absorbed:
+                    counters["merge_events"] += 1
+                    log.info(
+                        "%sframe %d: segment of %d px in group %d continues "
+                        "colony %d; absorbing %s",
+                        where, number, s.area, g, o["id"],
+                        ", ".join(str(i) for i in absorbed),
+                    )
                 rows.append({
                     "frame": number,
                     "colony_id": o["id"],
                     "group_id": g,
-                    "merged_with": "",
+                    "merged_with": ";".join(str(i) for i in absorbed),
                     "pre_existing": 0,
                     "area_px": s.area,
                     "centroid_y": round(s.cy, 1),
@@ -321,3 +338,72 @@ def track_colonies(
         "pre_existing_colonies"
     ]
     return TrackingResult(labels_out, rows, counters)
+
+
+def parse_merged(value: str | None) -> set[int]:
+    """Parse a ``merged_with`` value (';'-separated colony IDs) into a set."""
+    return {int(v) for v in str(value or "").split(";") if v}
+
+
+def ancestor_counts(rows: Sequence[Mapping[str, object]]) -> list[int]:
+    """Transitive, self-inclusive ancestor count per row.
+
+    For every colony the count starts at 1 (the colony itself) and grows by
+    the full constituent set of every colony newly listed in its
+    ``merged_with`` histories, resolved transitively: a segment continuing
+    colony A, whose row lists colony B — which had absorbed colony C
+    earlier — ends at 3 ancestors; an unmerged colony stays at 1. This is
+    the quantity the prototype called ``n_merged``, written as
+    ``ancestors``.
+
+    Returns one count per input row, in input order. Rows of one colony are
+    walked chronologically (sorted by ``frame`` when every row of the
+    colony carries one, otherwise in the order given). The tracker follows
+    time, so the histories cannot cycle; the resolution guards anyway.
+    """
+    per_colony: dict[int, list[tuple[int, Mapping[str, object]]]] = {}
+    for pos, r in enumerate(rows):
+        per_colony.setdefault(int(r["colony_id"]), []).append((pos, r))
+
+    # Colonies each colony ID ever absorbed: the union over its rows — the
+    # tracker keeps listing absorbed colonies whose last-known masks stay
+    # covered, so an absorbed merge product contributes its own history.
+    absorbed: dict[int, set[int]] = {}
+    for cid, items in per_colony.items():
+        s: set[int] = set()
+        for _, r in items:
+            s |= parse_merged(r.get("merged_with"))
+        absorbed[cid] = s
+
+    # All original colonies combined in each colony's segment, transitively:
+    # an absorbed merge product contributes its own constituents (A absorbs
+    # B, B had absorbed C -> A's segment comprises A, B and C). Memoised.
+    constituents: dict[int, set[int]] = {}
+
+    def constituents_of(cid: int, visiting: tuple[int, ...] = ()) -> set[int]:
+        if cid in constituents:
+            return constituents[cid]
+        if cid in visiting:
+            return set()
+        comp = {cid}
+        for y in absorbed.get(cid, ()):
+            comp |= constituents_of(y, visiting + (cid,))
+        constituents[cid] = comp
+        return comp
+
+    for cid in per_colony:
+        constituents_of(cid)
+
+    counts: list[int] = [1] * len(rows)
+    for cid, items in per_colony.items():
+        if all(r.get("frame") is not None for _, r in items):
+            items = sorted(items, key=lambda p: int(p[1]["frame"]))
+        seen: set[int] = set()  # raw IDs listed in merged_with so far
+        counted: set[int] = set()  # constituents of everything absorbed so far
+        for pos, r in items:
+            ids = parse_merged(r.get("merged_with"))
+            for y in ids - seen:
+                counted |= constituents_of(y)
+            seen |= ids
+            counts[pos] = 1 + len(counted - {cid})
+    return counts

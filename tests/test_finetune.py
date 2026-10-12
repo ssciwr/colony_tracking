@@ -14,6 +14,8 @@ missing-prerequisite errors only.
 
 import dataclasses
 import logging
+import subprocess
+import sys
 from dataclasses import fields
 from pathlib import Path
 
@@ -28,7 +30,9 @@ from colony_tracking.finetune import (
     PrepareOptions,
     PrepareSummary,
     TrainOptions,
+    run_evaluate,
     run_prepare,
+    run_train,
 )
 from conftest import DiskSpec, LabeledPlate, build_labeled_plate, frame_name
 
@@ -366,7 +370,7 @@ def test_per_well_layout(tmp_path):
     )
     assert summary.error is None
     assert summary.val_wells == ["-A001"]  # same greedy split as the flat run
-    name = plate.plate.wells["-A003"][0]
+    name = plate.plate.wells["-A003"][0]  # -A003 is in the train split
     h5_path = tmp_path / "h5" / "train" / (name[:-4] + ".h5")
     raw_src = tifffile.imread(plate.raw_root / "-A003" / name)
     label_src = tifffile.imread(plate.label_root / "-A003" / name)
@@ -391,3 +395,102 @@ def test_run_prepare_summary_counters(labeled, tmp_path):
     assert summary.n_missing_raw == 0
     assert len(list((out / "train").glob("*.h5"))) == 8
     assert len(list((out / "val").glob("*.h5"))) == 3
+
+
+# --- lazy model imports -------------------------------------------------------
+
+
+def test_importing_finetune_does_not_import_torch():
+    # A fresh interpreter exercises the real import path; the assertion is
+    # on that process's sys.modules.
+    code = (
+        "import sys; import colony_tracking.finetune; "
+        "bad = [m for m in ('torch', 'micro_sam', 'torch_em') "
+        "if m in sys.modules]; assert not bad, bad"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# --- train / evaluate: logged prerequisite errors (no model, no GPU) ----------
+
+
+def _write_split_h5(split_dir: Path, name: str = "x.h5") -> Path:
+    split_dir.mkdir(parents=True, exist_ok=True)
+    path = split_dir / name
+    with h5py.File(path, "w") as h5:
+        h5.create_dataset("raw", data=np.zeros((8, 8), np.uint8))
+        h5.create_dataset("label", data=np.zeros((8, 8), np.int32))
+    return path
+
+
+def test_run_train_missing_split_logs_error(tmp_path, caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_train(
+            TrainOptions(data_dir=tmp_path / "nope", out_dir=tmp_path / "run")
+        )
+    assert summary.error is not None
+    assert "nope" in caplog.text
+    assert "torch" not in sys.modules  # validation precedes the lazy import
+
+
+def test_run_train_missing_val_split_logs_error(tmp_path, caplog):
+    _write_split_h5(tmp_path / "data" / "train")
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_train(
+            TrainOptions(data_dir=tmp_path / "data", out_dir=tmp_path / "run")
+        )
+    assert summary.error is not None
+    assert "val" in caplog.text
+    assert "torch" not in sys.modules
+
+
+def test_run_evaluate_missing_split_logs_error(tmp_path, caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_evaluate(EvaluateOptions(data_dir=tmp_path / "nope"))
+    assert summary.error is not None
+    assert "nope" in caplog.text
+    assert "torch" not in sys.modules
+
+
+def test_run_evaluate_missing_checkpoint_logs_error(tmp_path, caplog):
+    _write_split_h5(tmp_path / "data" / "val")
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_evaluate(
+            EvaluateOptions(
+                data_dir=tmp_path / "data",
+                checkpoint=tmp_path / "missing.pt",
+            )
+        )
+    assert summary.error is not None
+    assert "missing.pt" in caplog.text
+    assert "torch" not in sys.modules
+
+
+# --- public API surface ---------------------------------------------------------
+
+
+def test_package_root_reexports_finetune_api():
+    import colony_tracking
+
+    names = (
+        "PrepareOptions",
+        "TrainOptions",
+        "EvaluateOptions",
+        "PrepareSummary",
+        "TrainSummary",
+        "EvaluateSummary",
+        "run_prepare",
+        "run_train",
+        "run_evaluate",
+    )
+    for name in names:
+        assert name in colony_tracking.__all__
+        assert getattr(colony_tracking, name) is getattr(
+            colony_tracking.finetune, name
+        )
+    # The conversion stays private.
+    assert "_convert" not in colony_tracking.__all__
+    assert not hasattr(colony_tracking, "_convert")

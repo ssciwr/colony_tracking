@@ -328,7 +328,8 @@ class PrepareOptions(Options):
     max_val_wells: int = field(
         default=3,
         metadata={
-            "help": "Upper bound on the number of wells moved into the validation split."
+            "help": "Upper bound on the number of wells moved into the "
+            "validation split."
         },
     )
     min_instances: int = field(

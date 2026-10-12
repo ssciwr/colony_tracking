@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 09
 
 # 10: Marked integration test, full README, final suite green
@@ -60,3 +60,7 @@ One-time verification protocol", "I/O contract" (output conventions).
   test without importing torch/micro-sam at collect time.
 - README option tables match the dataclasses (visually + via a quick script
   in the test if you want to be strict).
+
+## Comments
+
+- 2026-10-12: Resolved by branch t10-final (merge commit 0517e8a7c71be1b912495367e083fc9939a2bd05); 220 passed; integration test env+GPU gated with documented tolerance (369/354 ref5, 326/9-forks ref1, ±5%); README with CLI-derived option tables pinned by tests/test_readme.py; uv lock --check OK; strict __all__ test added. Note: the prototype tree on disk is a later re-ID-ed state (310/324 ref5); the test asserts the documented full-run numbers per the ticket.

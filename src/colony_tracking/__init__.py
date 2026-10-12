@@ -1,7 +1,7 @@
 """colony_tracking — stable package for the colony-size measurement pipeline.
 
-The public API (option dataclasses, ``run_*`` functions, ``PipelineConfig``,
-and the summary types) is re-exported from here as its ticket lands;
+The public API — the option dataclasses, the ``run_*`` functions,
+``PipelineConfig``, and the summary types — is re-exported from here;
 ``__all__`` is the single source of truth for that namespace.
 """
 
@@ -50,8 +50,8 @@ from .segmentation import (  # noqa: E402
 )
 
 __all__: list[str] = [
-    # Public API re-exports land here as their tickets do:
-    # option dataclasses, run_* functions, PipelineConfig, summary types.
+    # The public API: option dataclasses, run_* functions, PipelineConfig,
+    # summary types.
     "AnalysisOptions",
     "AnalysisSummary",
     "RootSummary",
@@ -74,6 +74,4 @@ __all__: list[str] = [
     "PipelineConfig",
     "PipelineSummary",
     "run_pipeline",
-    # The remaining stages re-export from here as their tickets land:
-    # CLI (09).
 ]

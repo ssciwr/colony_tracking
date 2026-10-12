@@ -16,6 +16,22 @@ def test_all_is_a_list():
     assert isinstance(colony_tracking.__all__, list)
 
 
+def test_all_is_exactly_the_public_api():
+    """``__all__`` exports exactly the public API: the option dataclasses,
+    the ``run_*`` functions, ``PipelineConfig``, and the summary types."""
+    assert sorted(colony_tracking.__all__) == sorted([
+        "AnalysisOptions", "AnalysisSummary", "RootSummary", "run_analysis",
+        "DifferenceOptions", "DifferenceSummary", "run_difference",
+        "SegmentationOptions", "SegmentationSummary", "run_segmentation",
+        "PrepareOptions", "TrainOptions", "EvaluateOptions",
+        "PrepareSummary", "TrainSummary", "EvaluateSummary",
+        "run_prepare", "run_train", "run_evaluate",
+        "PipelineConfig", "PipelineSummary", "run_pipeline",
+    ])
+    for name in colony_tracking.__all__:
+        assert hasattr(colony_tracking, name)
+
+
 def test_all_modules_import():
     from colony_tracking import (
         analysis,

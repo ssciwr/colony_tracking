@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 07, 08
 
 # 09: `cli` — the `colony-tracking` entry point
@@ -77,3 +77,13 @@ the model):
   option tables (smoke-tested).
 - No prints anywhere in the package (the CLI routes everything through
   logging).
+
+## Comments
+
+- 2026-10-12: Resolved by branch t09-cli (merge commit 845e0547ad2d); 209
+  passed; flags+help generated from dataclass fields (_add_flags; help from
+  field metadata; seg_dirs→--seg-dir; dash-leading values handled via
+  _DashValueMatcher); exit codes: _UsageError/ConfigError→2,
+  FileNotFoundError/OSError/ValueError + summary failures→1, success→0;
+  pipeline --config required, run-level overrides merged into the TOML doc
+  before from_dict.

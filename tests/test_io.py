@@ -300,3 +300,126 @@ def test_done_marker_absent(tmp_path):
     assert not io.is_done(well)
     with pytest.raises(FileNotFoundError):
         io.read_done(well)
+
+
+# --- colonies.csv (canonical columns, legacy mapping) ------------------------
+
+
+def test_colonies_columns_match_spec():
+    assert io.COLONIES_COLUMNS == (
+        "well", "frame", "t_seconds", "image", "colony_id", "group_id",
+        "merged_with", "pre_existing", "area_px", "centroid_y", "centroid_x",
+    )
+
+
+def test_colonies_writer_writes_canonical_columns(tmp_path):
+    path = tmp_path / "colonies.csv"
+    rows = [
+        {
+            "well": "-A001", "frame": "7", "t_seconds": "21600043",
+            "image": RAW_NAME, "colony_id": "1", "group_id": "1",
+            "merged_with": "", "pre_existing": "0", "area_px": "5706",
+            "centroid_y": "89.1", "centroid_x": "179.6",
+        }
+    ]
+    io.write_colonies(path, rows)
+    lines = path.read_text().splitlines()
+    assert lines[0] == ",".join(io.COLONIES_COLUMNS)
+    assert io.read_colonies(path) == rows
+
+
+def test_colonies_reader_maps_legacy_column_names(tmp_path):
+    # A prototype-written colonies.csv: `lo` instead of `frame`, `n_merged`
+    # instead of `ancestors`. Values must come through unchanged.
+    path = tmp_path / "colonies.csv"
+    path.write_text(
+        "well,lo,t_seconds,image,colony_id,group_id,n_merged,merged_with,"
+        "pre_existing,area_px,centroid_y,centroid_x\n"
+        "-A001,007,21600043,IMG,1,1,2,3;4,0,5706,89.1,179.6\n"
+        "-A001,008,57599662,IMG,1,1,2,3;4,0,6000,89.2,179.5\n"
+    )
+    rows = io.read_colonies(path)
+    assert rows[0]["frame"] == "007"
+    assert rows[0]["ancestors"] == "2"
+    assert rows[0]["merged_with"] == "3;4"
+    assert "lo" not in rows[0] and "n_merged" not in rows[0]
+    assert rows[1]["t_seconds"] == "57599662"
+
+
+def test_reader_maps_analysis_legacy_column_names(tmp_path):
+    # The prototype's analysis outputs: trajectories.csv (lo, n_merged) and
+    # growth_rates.csv (first_lo, last_lo, max_n_merged, rim_excluded_lo).
+    traj = tmp_path / "trajectories.csv"
+    traj.write_text(
+        "well,lo,t_hours,colony_id,group_id,merged_with,n_merged,pre_existing,"
+        "area_px,age_h,rim_frac,rim_excluded,bad,bad_reason\n"
+        "-A001,7,6.0,1,1,,1,0,5706,,1.0,1,0,\n"
+    )
+    rows = io.read_csv_rows(traj)
+    assert rows[0]["frame"] == "7"
+    assert rows[0]["ancestors"] == "1"
+    assert rows[0]["t_hours"] == "6.0"
+    assert "lo" not in rows[0] and "n_merged" not in rows[0]
+
+    rates = tmp_path / "growth_rates.csv"
+    rates.write_text(
+        "well,colony_id,group_id,first_lo,last_lo,n_frames,n_frames_valid,"
+        "area_first,area_last,max_n_merged,rim_excluded_lo,growth_rate_per_h,"
+        "growth_doublings_per_day,abs_growth_px_per_h,bad,bad_reason,pre_existing\n"
+        "-A002,1,1,11,19,9,9,3202,123328,1,7,0.46984,16.268,15015.8,0,,0\n"
+    )
+    rows = io.read_csv_rows(rates)
+    assert rows[0]["first_frame"] == "11"
+    assert rows[0]["last_frame"] == "19"
+    assert rows[0]["max_ancestors"] == "1"
+    assert rows[0]["rim_excluded_frame"] == "7"
+    assert rows[0]["well"] == "-A002"
+
+
+# --- well_geometry.csv (shared cache in the analysis out root) ---------------
+
+
+def test_geometry_roundtrip(tmp_path):
+    path = tmp_path / "well_geometry.csv"
+    geometry = {"-A002": (1029.8, 1079.1, 926.6), "-A001": (1036.44, 1064.76, 941.61)}
+    io.write_geometry(path, geometry)
+    lines = path.read_text().splitlines()
+    assert lines[0] == "well,cy,cx,R"
+    # cy, cx, R all at one decimal; wells sorted.
+    assert lines[1] == "-A001,1036.4,1064.8,941.6"
+    assert lines[2] == "-A002,1029.8,1079.1,926.6"
+
+    back = io.read_geometry(path)
+    assert back["-A001"] == (pytest.approx(1036.4), pytest.approx(1064.8), pytest.approx(941.6))
+    assert back["-A002"][2] == pytest.approx(926.6)
+
+
+def test_geometry_read_missing_file(tmp_path):
+    assert io.read_geometry(tmp_path / "well_geometry.csv") == {}
+
+
+def test_geometry_update_read_modify_write(tmp_path):
+    path = tmp_path / "well_geometry.csv"
+    io.update_geometry(path, "-A001", 1036.4, 1064.7, 941.6)
+    io.update_geometry(path, "-B004", 900.0, 900.0, 950.0)
+    back = io.read_geometry(path)
+    assert set(back) == {"-A001", "-B004"}
+    # Updating an existing well replaces it in place.
+    io.update_geometry(path, "-A001", 1.0, 2.0, 3.0)
+    back = io.read_geometry(path)
+    assert back["-A001"] == (1.0, 2.0, 3.0)
+    assert back["-B004"] == (900.0, 900.0, 950.0)
+
+
+# --- label images -------------------------------------------------------------
+
+
+def test_label_image_roundtrip(tmp_path):
+    labels = np.zeros((6, 6), np.uint32)
+    labels[1, 1] = 3
+    labels[2, 2] = 7
+    path = tmp_path / "LO001__labels.tif"
+    io.write_label_image(path, labels)
+    back = io.read_label_image(path)
+    assert back.dtype == np.uint32
+    assert (back == labels).all()

@@ -17,12 +17,14 @@ location.
 
 from __future__ import annotations
 
+import csv
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import tifffile
 
 from . import log
 
@@ -269,3 +271,115 @@ def read_done(well_dir: Path | str) -> dict[str, int | str]:
             except ValueError:
                 values[key] = value
     return values
+
+
+#: The canonical colonies.csv columns (spec: I/O contract).
+COLONIES_COLUMNS = (
+    "well", "frame", "t_seconds", "image", "colony_id", "group_id",
+    "merged_with", "pre_existing", "area_px", "centroid_y", "centroid_x",
+)
+
+#: The prototype's legacy column names, mapped to their canonical names.
+#: New writes always use the canonical names; readers accept both.
+LEGACY_COLUMNS = {
+    "lo": "frame",
+    "n_merged": "ancestors",
+    "max_n_merged": "max_ancestors",
+    "first_lo": "first_frame",
+    "last_lo": "last_frame",
+    "rim_excluded_lo": "rim_excluded_frame",
+}
+
+
+def write_csv_rows(
+    path: Path | str, rows: Sequence[Mapping[str, object]], fields: Sequence[str]
+) -> Path:
+    """Write rows (mappings) under the given header as a CSV file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(list(fields))
+        for row in rows:
+            values = [row.get(k) for k in fields]
+            writer.writerow(["" if v is None else v for v in values])
+    return path
+
+
+def read_csv_rows(path: Path | str) -> list[dict[str, str]]:
+    """Read a CSV, mapping the prototype's legacy column names to canonical.
+
+    Values are returned as strings; callers coerce them.
+    """
+    with open(path, newline="") as f:
+        return [
+            {LEGACY_COLUMNS.get(key, key): value for key, value in row.items()
+             if key is not None}
+            for row in csv.DictReader(f)
+        ]
+
+
+def write_colonies(path: Path | str, rows: Sequence[Mapping[str, object]]) -> Path:
+    """Write one well's colonies.csv (canonical columns)."""
+    return write_csv_rows(path, rows, COLONIES_COLUMNS)
+
+
+def read_colonies(path: Path | str) -> list[dict[str, str]]:
+    """Read one well's colonies.csv (or a prototype-written one) canonically."""
+    return read_csv_rows(path)
+
+
+#: The shared well-geometry cache columns (spec: I/O contract).
+GEOMETRY_COLUMNS = ("well", "cy", "cx", "R")
+
+
+def read_geometry(path: Path | str) -> dict[str, tuple[float, float, float]]:
+    """Read the shared ``well_geometry.csv`` cache (empty dict when absent)."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    with open(path, newline="") as f:
+        return {
+            row["well"]: (float(row["cy"]), float(row["cx"]), float(row["R"]))
+            for row in csv.DictReader(f)
+        }
+
+
+def write_geometry(
+    path: Path | str, geometry: Mapping[str, tuple[float, float, float]]
+) -> Path:
+    """Write the shared ``well_geometry.csv`` cache (cy, cx, R at one decimal)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(GEOMETRY_COLUMNS)
+        for well in sorted(geometry):
+            cy, cx, radius = geometry[well]
+            writer.writerow([well, f"{cy:.1f}", f"{cx:.1f}", f"{radius:.1f}"])
+    return path
+
+
+def update_geometry(
+    path: Path | str, well: str, cy: float, cx: float, radius: float
+) -> None:
+    """Read-modify-write one well's fitted circle in the geometry cache."""
+    geometry = read_geometry(path)
+    geometry[well] = (float(cy), float(cx), float(radius))
+    write_geometry(path, geometry)
+
+
+def write_label_image(path: Path | str, labels: np.ndarray) -> Path:
+    """Write a colony label image (uint32; 0 = background) as a TIFF."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(
+        path, np.ascontiguousarray(labels).astype(np.uint32, copy=False),
+        compression="zlib",
+    )
+    return path
+
+
+def read_label_image(path: Path | str) -> np.ndarray:
+    """Read a colony label image as a uint32 array."""
+    return np.asarray(tifffile.imread(path), dtype=np.uint32)

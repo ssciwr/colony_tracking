@@ -33,7 +33,8 @@ def _to_plain(value: Any) -> Any:
     """Convert a field value to a plain (TOML-friendly) value."""
     if isinstance(value, Path):
         return str(value)
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
+        # Tuples come out as lists (TOML has no tuples).
         return [_to_plain(v) for v in value]
     return value
 
@@ -46,9 +47,13 @@ def _from_plain(value: Any, type_hint: Any) -> Any:
         if len(args) == len(non_none) + 1 and len(non_none) == 1:
             # ``X | None``: coerce against X.
             return _from_plain(value, non_none[0])
-        if getattr(type_hint, "__origin__", None) is list and isinstance(value, list):
+        origin = getattr(type_hint, "__origin__", None)
+        if origin is list and isinstance(value, list):
             item_hint = args[0]
             return [_from_plain(v, item_hint) for v in value]
+        if origin is tuple and isinstance(value, (list, tuple)):
+            item_hint = args[0]
+            return tuple(_from_plain(v, item_hint) for v in value)
     if type_hint is Path and isinstance(value, str):
         return Path(value)
     return value
@@ -292,4 +297,151 @@ class AnalysisOptions(Options):
     no_group_alpha: bool = field(
         default=False,
         metadata={"help": "Do not fade group opacity with member count."},
+    )
+
+
+@dataclass(kw_only=True)
+class PrepareOptions(Options):
+    """Options for ``train prepare`` (finetune data conversion)."""
+
+    raw_dir: Path = field(
+        metadata={"help": "Directory of raw plate frames (flat or per-well layout)."}
+    )
+    label_dir: Path = field(
+        metadata={
+            "help": "Directory of ground-truth label images (same layout, file "
+            "names matching the raw frames); the label set defines the image set."
+        }
+    )
+    out_dir: Path = field(
+        metadata={
+            "help": "Directory to write the well-split h5 set (train/ and val/) into."
+        }
+    )
+    val_fraction: float = field(
+        default=0.2,
+        metadata={
+            "help": "Approximate fraction of instances to hold out for validation "
+            "(rounded to whole wells)."
+        },
+    )
+    max_val_wells: int = field(
+        default=3,
+        metadata={
+            "help": "Upper bound on the number of wells moved into the "
+            "validation split."
+        },
+    )
+    min_instances: int = field(
+        default=1,
+        metadata={
+            "help": "Drop labels with fewer than this many instances (an all-zero "
+            "label would abort the micro-sam sampler)."
+        },
+    )
+    n_workers: int = field(
+        default=8, metadata={"help": "Threads used for scanning/inspection."}
+    )
+    val_wells: list[str] | None = field(
+        default=None,
+        metadata={
+            "help": "Explicit wells (e.g. -C006) for validation; overrides "
+            "val_fraction."
+        },
+    )
+
+
+@dataclass(kw_only=True)
+class TrainOptions(Options):
+    """Options for ``train train`` (micro-sam decoder training)."""
+
+    data_dir: Path = field(
+        metadata={
+            "help": "Directory with the train/ and val/ h5 subfolders "
+            "(the train prepare output)."
+        }
+    )
+    out_dir: Path = field(
+        metadata={
+            "help": "Directory for the checkpoints and TensorBoard logs."
+        }
+    )
+    model_type: str = field(
+        default="vit_t",
+        metadata={
+            "help": "SAM variant ('vit_t' is MobileSAM and the lightest option; "
+            "the laptop GPU OOMs on vit_b)."
+        },
+    )
+    configuration: str = field(
+        default="Minimal",
+        metadata={
+            "help": "micro-sam hardware preset (Minimal, gtx1080, gtx3080, ...)."
+        },
+    )
+    samples_per_image: int = field(
+        default=3,
+        metadata={
+            "help": "Crops drawn per training image per epoch (micro-sam defaults "
+            "to 16, which makes one epoch take ~90 min on a laptop GPU)."
+        },
+    )
+    val_samples_per_image: int = field(
+        default=2, metadata={"help": "Crops drawn per validation image per epoch."}
+    )
+    n_objects_per_batch: int = field(
+        default=2,
+        metadata={
+            "help": "Objects sampled per training step (the Minimal preset asks "
+            "for 4, which leaves little VRAM headroom)."
+        },
+    )
+    patch_shape: tuple[int, int] = field(
+        default=(512, 512),
+        metadata={"help": "Crop (tile) size in px, (height, width)."},
+    )
+    n_epochs: int = field(default=100, metadata={"help": "Number of training epochs."})
+    early_stopping: int = field(
+        default=15,
+        metadata={
+            "help": "Stop after this many epochs without validation improvement "
+            "(0 disables it)."
+        },
+    )
+    lr: float = field(default=1e-5, metadata={"help": "Learning rate."})
+    seed: int = field(default=42, metadata={"help": "Random seed."})
+
+
+@dataclass(kw_only=True)
+class EvaluateOptions(Options):
+    """Options for ``train evaluate`` (held-out IoU benchmark)."""
+
+    data_dir: Path = field(
+        metadata={
+            "help": "Directory with the train/ and val/ h5 subfolders "
+            "(the train prepare output)."
+        }
+    )
+    split: str = field(
+        default="val", metadata={"help": "Split to evaluate (val / train)."}
+    )
+    checkpoint: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Finetuned checkpoint; omit to evaluate the pretrained base model."
+        },
+    )
+    model_type: str = field(
+        default="vit_t",
+        metadata={"help": "SAM variant the checkpoint was trained with."},
+    )
+    patch_shape: tuple[int, int] = field(
+        default=(512, 512),
+        metadata={
+            "help": "Tile size in px, (height, width); instances larger than a "
+            "tile are flagged clipped."
+        },
+    )
+    output: Path | None = field(
+        default=None, metadata={"help": "Optional path for a JSON report."}
     )

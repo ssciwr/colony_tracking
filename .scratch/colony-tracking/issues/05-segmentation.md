@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02, 04
 
 # 05: `segmentation` stage — growth-mask gating, drift gate, re-ID
@@ -111,3 +111,7 @@ No model, no GPU, no network:
   `SegmentationSummary` re-exported from the package root.
 - Module docstring carries the algorithm detail (growth-mask gating, drift
   gate, re-ID) per the spec.
+
+## Comments
+
+- 2026-10-12: Resolved by branch t05-segmentation (merge commit 64a79ded312fa5af8a3bee3cd8abfaf1f9231ce5); 103 passed; API: run_segmentation(SegmentationOptions) -> SegmentationSummary(wells, processed, skipped, failed, failed_wells, gate_skipped_frames); up-front checks before model load; micro-sam imported lazily in the model path only. Deviations: final frame segmented once (reused), rejected wells leave no directory, missing requested wells raise ValueError, colonies.csv writes 1-based frame number.

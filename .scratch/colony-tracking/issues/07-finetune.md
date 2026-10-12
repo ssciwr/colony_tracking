@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 # 07: `finetune` track — prepare / train / evaluate
@@ -82,3 +82,7 @@ prerequisites (h5 split / checkpoint) are missing.
   `run_prepare`, `run_train`, `run_evaluate` + summaries re-exported from the
   package root; `_convert` NOT exported.
 - No duplicated io logic; no hardcoded data paths.
+
+## Comments
+
+- 2026-10-12: Resolved by branch t07-finetune (merge commit 317702c3e6bc5df64257dc2f921d84727ed1ec42); 133 passed; public API: PrepareOptions/TrainOptions/EvaluateOptions + run_prepare/run_train/run_evaluate + their summaries (failure convention: error field + logged error instead of raising); private _convert well-split h5 conversion reuses io.stretch_uint8; lazy micro-sam/torch imports verified via subprocess sys.modules check; conftest gained build_labeled_plate.

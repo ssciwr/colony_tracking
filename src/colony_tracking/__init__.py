@@ -12,17 +12,60 @@ import logging
 __version__ = "0.1.0"
 
 #: The single package logger. All runtime output goes through it — never print.
+#: Defined before the re-exports below: the submodules they import do
+#: ``from . import log`` and would otherwise see a partially initialized
+#: package.
 log = logging.getLogger("colony_tracking")
 
-from ._options import AnalysisOptions
-from .analysis import AnalysisSummary, RootSummary, run_analysis
+from ._options import (  # noqa: E402
+    AnalysisOptions,
+    DifferenceOptions,
+    SegmentationOptions,
+)
+from .analysis import (  # noqa: E402
+    AnalysisSummary,
+    RootSummary,
+    run_analysis,
+)
+from .difference import DifferenceSummary, run_difference  # noqa: E402
+from .finetune import (  # noqa: E402
+    EvaluateOptions,
+    EvaluateSummary,
+    PrepareOptions,
+    PrepareSummary,
+    TrainOptions,
+    TrainSummary,
+    run_evaluate,
+    run_prepare,
+    run_train,
+)
+from .segmentation import (  # noqa: E402
+    SegmentationSummary,
+    run_segmentation,
+)
 
 __all__: list[str] = [
+    # Public API re-exports land here as their tickets do:
+    # option dataclasses, run_* functions, PipelineConfig, summary types.
     "AnalysisOptions",
     "AnalysisSummary",
     "RootSummary",
     "run_analysis",
-    # The remaining public API re-exports (option dataclasses, run_*
-    # functions, PipelineConfig, summary types) land here as their tickets
-    # do.
+    "DifferenceOptions",
+    "DifferenceSummary",
+    "run_difference",
+    "SegmentationOptions",
+    "SegmentationSummary",
+    "run_segmentation",
+    "PrepareOptions",
+    "TrainOptions",
+    "EvaluateOptions",
+    "PrepareSummary",
+    "TrainSummary",
+    "EvaluateSummary",
+    "run_prepare",
+    "run_train",
+    "run_evaluate",
+    # The remaining stages re-export from here as their tickets land:
+    # pipeline.
 ]

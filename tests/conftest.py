@@ -14,6 +14,9 @@ needs, so construction stays lazy):
   truth (positions, radii/areas per frame, ring parameters, T values).
 - ``build_label_series`` writes synthetic integer label TIFFs (no model
   involved) for tracking/segmentation tests, with canonical frame names.
+- ``build_labeled_plate`` builds a small plate (default 512x512) with the
+  raw tree plus a ground-truth label tree of planted-disk labels mirroring
+  the raw layout, for the finetune conversion tests.
 - ``disk_mask`` returns the exact boolean pixel mask the builder painted
   for one disk at one frame (clipped to the well interior), so tests have
   the planted ground-truth colony area.
@@ -278,8 +281,8 @@ def build_mini_plate(
                     mask &= interior
                 img -= d.delta * mask
             if noise_sigma > 0:
-                img += rng.normal(0.0, noise_sigma, size=(size, size),
-                                  dtype=np.float32)
+                img += rng.normal(0.0, noise_sigma, size=(size, size)).astype(
+                    np.float32)
             name = frame_name(w, t, t0_ms + (t - 1) * t_step_ms)
             tifffile.imwrite(well_dir / name,
                              np.clip(img, 0, 65535).astype(np.uint16),
@@ -321,6 +324,94 @@ class LabelSeries:
     root: Path
     names: list[str]  # the input frame names (canonical vocabulary)
     label_paths: list[Path]  # the written <frame-stem>__labels.tif files
+
+
+@dataclass
+class LabeledPlate:
+    """A synthetic plate with raw frames plus planted-disk ground-truth labels.
+
+    The raw tree (``raw_root``) is a ``build_mini_plate`` tree (noise on,
+    no ring). The label tree (``label_root``) mirrors the raw layout: for
+    every well in ``disks``, one label TIFF per frame carrying the raw
+    frame's file name (uint32; 0 = background; 1..N = the well's disks in
+    planting order, so ``int(label.max())`` is the instance count). Wells
+    not in ``disks`` have raw frames but no label files — the finetune
+    conversion pairs by file stem, so they stay out of the image set.
+    """
+
+    plate: MiniPlate  # the raw tree's ground truth
+    raw_root: Path
+    label_root: Path
+    layout: str  # "flat" or "per_well"
+    label_paths: dict[str, list[Path]]  # well -> label files, in frame order
+    instances: dict[str, list[int]]  # well -> instance count per frame
+
+
+def build_labeled_plate(
+    out_dir: Path | str,
+    *,
+    wells: Sequence[str],
+    n_frames: int,
+    disks: Mapping[str, Sequence[DiskSpec]],
+    size: int = 512,
+    layout: str = "flat",
+    noise_sigma: float = NOISE_SIGMA,
+    seed: int = 0,
+) -> LabeledPlate:
+    """Build a small synthetic plate with ground-truth labels under ``out_dir``.
+
+    Raw frames go to ``out_dir/raw``, the label tree to ``out_dir/labels``.
+    Each well in ``disks`` gets a label file per frame: the disk masks the
+    builder painted for the raw frames (``disk_mask``), painted with values
+    1..N in planting order. A well absent from ``disks`` is unlabeled (raw
+    frames only). ``size`` defaults to 512 so the fixture stays small; the
+    disk specs are then laid out for that size by the caller.
+    """
+    raw_root = Path(out_dir) / "raw"
+    label_root = Path(out_dir) / "labels"
+    plate = build_mini_plate(
+        raw_root,
+        layout=layout,
+        wells=wells,
+        n_frames=n_frames,
+        size=size,
+        noise_sigma=noise_sigma,
+        seed=seed,
+        rings={w: None for w in wells},
+        disks=disks,
+    )
+    label_paths: dict[str, list[Path]] = {}
+    instances: dict[str, list[int]] = {}
+    for w in wells:
+        if w not in disks:
+            continue
+        specs = list(disks[w])
+        well_dir = label_root if layout == "flat" else label_root / w
+        well_dir.mkdir(parents=True, exist_ok=True)
+        paths: list[Path] = []
+        counts: list[int] = []
+        for t in range(1, n_frames + 1):
+            label = np.zeros((size, size), dtype=np.uint32)
+            n_inst = 0
+            for i, d in enumerate(specs):
+                mask = disk_mask(plate, w, d.name, t)
+                if mask is not None:
+                    n_inst += 1
+                    label[mask] = i + 1
+            path = well_dir / plate.wells[w][t - 1]
+            tifffile.imwrite(path, label, compression="zlib")
+            paths.append(path)
+            counts.append(n_inst)
+        label_paths[w] = paths
+        instances[w] = counts
+    return LabeledPlate(
+        plate=plate,
+        raw_root=raw_root,
+        label_root=label_root,
+        layout=layout,
+        label_paths=label_paths,
+        instances=instances,
+    )
 
 
 def build_label_series(

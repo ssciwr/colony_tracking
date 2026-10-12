@@ -525,3 +525,162 @@ def test_rerun_skips_complete_wells(tmp_path, monkeypatch):
     # identical stage options on re-entry — the derived names do not drift
     assert calls[0][1] == calls[2][1]  # segmentation
     assert calls[1][1] == calls[3][1]  # analysis
+
+
+# --- invalid configs: usage errors (the CLI maps them to exit 2) -----------------
+
+
+def _read_error(tmp_path, text: str) -> ConfigError:
+    """Parse a config text, returning the raised ConfigError."""
+    with pytest.raises(ConfigError) as excinfo:
+        read_config(_write_config(tmp_path, text))
+    return excinfo.value
+
+
+def test_unknown_section_is_a_usage_error(tmp_path, caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        error = _read_error(
+            tmp_path,
+            """\
+            [pipeline]
+            raw_dir = "/data/plate"
+            out_root = "/data/run"
+
+            [differense]
+            min_size = 300
+            """,
+        )
+    assert "differense" in str(error)
+    assert any(
+        r.levelno == logging.ERROR and "unknown section" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_unknown_key_in_a_stage_section_is_a_usage_error(tmp_path, caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        error = _read_error(
+            tmp_path,
+            """\
+            [pipeline]
+            raw_dir = "/data/plate"
+            out_root = "/data/run"
+
+            [difference]
+            display_percentile = 99.0
+            percentille = 99.0
+            """,
+        )
+    assert "percentille" in str(error)
+    assert any("unknown key" in r.getMessage() for r in caplog.records)
+
+
+def test_unknown_key_in_the_pipeline_section_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+        refrence = 5
+        """,
+    )
+    assert "refrence" in str(error)
+
+
+def test_owned_key_in_a_stage_section_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+
+        [segmentation]
+        input = "raw"
+        """,
+    )
+    assert "input" in str(error) and "owned by the pipeline" in str(error)
+
+
+def test_missing_required_pipeline_keys_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        out_root = "/data/run"
+        """,
+    )
+    assert "raw_dir" in str(error) and "missing required" in str(error)
+
+
+def test_missing_pipeline_section_is_a_usage_error(tmp_path):
+    error = _read_error(tmp_path, '[difference]\nsubsample = 4\n')
+    assert "missing required" in str(error)
+
+
+def test_mistyped_reference_value_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+        reference = "middle"
+        """,
+    )
+    assert "reference" in str(error)
+
+
+def test_zero_reference_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+        reference = 0
+        """,
+    )
+    assert "reference" in str(error)
+
+
+def test_mistyped_stage_value_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+
+        [segmentation]
+        min_size = "big"
+        """,
+    )
+    assert "min_size" in str(error)
+
+
+def test_mistyped_wells_value_is_a_usage_error(tmp_path):
+    error = _read_error(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+        wells = "-A001"
+        """,
+    )
+    assert "wells" in str(error)
+
+
+def test_malformed_toml_is_a_usage_error(tmp_path, caplog):
+    path = tmp_path / "broken.toml"
+    path.write_text("[pipeline\nraw_dir = =", encoding="utf-8")
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        with pytest.raises(ConfigError) as excinfo:
+            read_config(path)
+    assert "not valid TOML" in str(excinfo.value)
+    assert any(
+        r.levelno == logging.ERROR and "not valid TOML" in r.getMessage()
+        for r in caplog.records
+    )

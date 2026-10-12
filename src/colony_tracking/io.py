@@ -334,7 +334,11 @@ GEOMETRY_COLUMNS = ("well", "cy", "cx", "R")
 
 
 def read_geometry(path: Path | str) -> dict[str, tuple[float, float, float]]:
-    """Read the shared ``well_geometry.csv`` cache (empty dict when absent)."""
+    """Read the shared ``well_geometry.csv`` cache (empty dict when absent).
+
+    The well circle travels as a ``(cy, cx, R)`` tuple by design — it
+    mirrors the ``well_geometry.csv`` cache format.
+    """
     path = Path(path)
     if not path.exists():
         return {}

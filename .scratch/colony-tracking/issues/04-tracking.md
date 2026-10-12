@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 # 04: `tracking` module — pure colony-identity logic
@@ -87,3 +87,7 @@ fixture plate needed):
 - Module docstring carries the identity rules (continue/merge/fork/absorb,
   pre-existing semantics, ancestor definition) per the spec.
 - No model imports, no hardcoded paths.
+
+## Comments
+
+- 2026-10-12: Resolved by branch t04-tracking (merge commit 1e4681c509c48f135a3b354866b802171fac2859); 73 passed; API: track_colonies(frames, groups, exclude_before, merge_touching, ...) -> TrackingResult, premerge_touching, ancestor_counts, extract_segments; deviations: fork rule per SPEC prose (same ID continues; prototype used a new ID), per-colony fork-territory check, merged_with re-listed per frame (faithful to prototype), discarded_instances pass-through arg.

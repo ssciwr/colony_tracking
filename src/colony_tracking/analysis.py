@@ -530,3 +530,56 @@ def probe_pre_existing(well, rows, seg_root, options):
     if flagged:
         log.info("[%s] pre-existing on the LO%03d base image: colony ids %s",
                  well, ref_frame, ",".join(str(c) for c in sorted(flagged)))
+
+
+# ---------------------------------------------------------------- rates ------
+
+
+def growth_rates(traj):
+    """Per-colony growth statistics over the valid (not rim-excluded) frames.
+
+    - specific rate: least-squares slope of ln(area) vs hours over the valid
+      frames with positive area (>= 2 frames, dt > 0), reported as h^-1 and
+      doublings/day;
+    - absolute growth: (last - first) valid area per hour, px/h;
+    - ``rim_excluded_frame``: first frame with rim_excluded=1, empty if never.
+    Colonies with a single valid frame get NaN rates (they still carry their
+    areas in trajectories.csv). Bad segments and pre-existing segments keep
+    their rows, flagged ``bad``/``bad_reason`` and ``pre_existing``; the
+    aggregates and plots skip both.
+    """
+    per_colony = {}
+    for r in traj:
+        per_colony.setdefault((r["well"], r["colony_id"]), []).append(r)
+    out = []
+    for (well, cid), crows in sorted(per_colony.items()):
+        crows.sort(key=lambda r: r["frame"])
+        valid = [r for r in crows if not r["rim_excluded"]]
+        ex_frame = next((r["frame"] for r in crows if r["rim_excluded"]), None)
+        row = {
+            "well": well, "colony_id": cid,
+            "group_id": crows[0]["group_id"],
+            "first_frame": valid[0]["frame"] if valid else crows[0]["frame"],
+            "last_frame": valid[-1]["frame"] if valid else crows[-1]["frame"],
+            "n_frames": len(crows), "n_frames_valid": len(valid),
+            "area_first": valid[0]["area_px"] if valid else None,
+            "area_last": valid[-1]["area_px"] if valid else None,
+            "max_ancestors": max(r["ancestors"] for r in crows),
+            "rim_excluded_frame": ex_frame,
+            "bad": crows[0]["bad"], "bad_reason": crows[0]["bad_reason"],
+            "pre_existing": crows[0]["pre_existing"],
+        }
+        rate = abs_rate = None
+        if len(valid) >= 2:
+            t = np.array([r["t_hours"] for r in valid])
+            a = np.array([r["area_px"] for r in valid], dtype=float)
+            if t[-1] > t[0] and (a > 0).all():
+                k, _ = np.polyfit(t, np.log(a), 1)
+                rate = float(k)                     # h^-1
+                abs_rate = float((a[-1] - a[0]) / (t[-1] - t[0]))
+        row["growth_rate_per_h"] = None if rate is None else round(rate, 5)
+        row["growth_doublings_per_day"] = (None if rate is None
+                                           else round(rate * 24 / np.log(2), 3))
+        row["abs_growth_px_per_h"] = None if abs_rate is None else round(abs_rate, 1)
+        out.append(row)
+    return out

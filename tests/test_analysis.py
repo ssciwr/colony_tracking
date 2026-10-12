@@ -370,3 +370,100 @@ def test_probe_missing_label_image_warns_and_noops(tmp_path, caplog):
         well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg))
     assert rows[0]["pre_existing"] == "0"
     assert any("pre-existing probe skipped" in m for m in caplog.messages)
+
+
+# --- growth rates --------------------------------------------------------------
+
+
+def test_growth_rates_exponential_fit(tmp_path):
+    """The specific rate is the least-squares slope of ln(area) vs hours over
+    the valid frames (h^-1); doublings/day = rate * 24 / ln 2; absolute
+    growth = (last - first) valid area over elapsed hours."""
+    well = "-A001"
+    areas = [int(100 * 1.35 ** (f - 1)) for f in range(1, 9)]
+    # frames 3..10 (a colony at the series start would be bad/from_start)
+    rows = [_row(well, f, (f - 1) * 3_600_000, 1, a)
+            for f, a in zip(range(3, 11), areas)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    (rate,) = analysis.growth_rates(traj)
+    # expected: the fit over the exact integer areas the function sees
+    k, _ = np.polyfit(np.arange(len(areas), dtype=float), np.log(areas), 1)
+    assert abs(k - np.log(1.35)) < 1e-4  # sanity: close to the planted rate
+    assert rate["growth_rate_per_h"] == round(float(k), 5)
+    assert rate["growth_doublings_per_day"] == round(float(k) * 24 / np.log(2), 3)
+    assert rate["abs_growth_px_per_h"] == round(
+        (areas[-1] - areas[0]) / (len(areas) - 1), 1)
+    assert rate["well"] == well and rate["colony_id"] == 1
+    assert rate["group_id"] == 1
+    assert rate["first_frame"] == 3 and rate["last_frame"] == 10
+    assert rate["n_frames"] == 8 and rate["n_frames_valid"] == 8
+    assert rate["area_first"] == areas[0] and rate["area_last"] == areas[-1]
+    assert rate["max_ancestors"] == 1
+    assert rate["rim_excluded_frame"] is None
+    assert rate["bad"] == 0 and rate["bad_reason"] == ""
+    assert rate["pre_existing"] == 0
+
+
+def test_growth_rates_single_valid_frame_gets_nan(tmp_path):
+    """A colony with a single valid frame has no rate (None -> empty CSV
+    field) but keeps its areas and frame bounds."""
+    rows = [_row("-A001", 5, 4 * 3_600_000, 1, 500)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    (rate,) = analysis.growth_rates(traj)
+    assert rate["growth_rate_per_h"] is None
+    assert rate["growth_doublings_per_day"] is None
+    assert rate["abs_growth_px_per_h"] is None
+    assert rate["area_first"] == 500 and rate["area_last"] == 500
+    assert rate["first_frame"] == 5 and rate["last_frame"] == 5
+    assert rate["n_frames"] == 1 and rate["n_frames_valid"] == 1
+
+
+def test_growth_rates_uses_valid_frames_only(tmp_path):
+    """Rim-excluded frames leave the fit and the area bounds; the first
+    rim-excluded frame is reported in rim_excluded_frame."""
+    well = "-A001"
+    rows = [_row(well, f, (f - 1) * 3_600_000, 1, int(100 * 1.35 ** (f - 1)))
+            for f in range(1, 9)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    for r in traj:  # simulate exclusion from frame 7
+        if r["frame"] >= 7:
+            r["rim_excluded"] = 1
+    (rate,) = analysis.growth_rates(traj)
+    assert rate["rim_excluded_frame"] == 7
+    assert rate["first_frame"] == 1 and rate["last_frame"] == 6
+    assert rate["n_frames"] == 8 and rate["n_frames_valid"] == 6
+    areas = [int(100 * 1.35 ** (f - 1)) for f in range(1, 7)]
+    k, _ = np.polyfit(np.arange(len(areas), dtype=float), np.log(areas), 1)
+    assert rate["growth_rate_per_h"] == round(float(k), 5)
+    assert rate["area_first"] == areas[0] and rate["area_last"] == areas[-1]
+    assert rate["abs_growth_px_per_h"] == round(
+        (areas[-1] - areas[0]) / (len(areas) - 1), 1)
+
+
+def test_growth_rates_carries_flags_and_max_ancestors(tmp_path):
+    """bad/bad_reason and pre_existing come from the colony's first row;
+    max_ancestors is the largest ancestor count over the lifetime; output
+    is ordered by (well, colony_id)."""
+    well = "-A001"
+    rows = [
+        # colony 1: stationary debris -> bad (no_growth)
+        _row(well, 5, 4 * 3_600_000, 1, 500),
+        _row(well, 6, 5 * 3_600_000, 1, 500),
+        _row(well, 7, 6 * 3_600_000, 1, 500),
+        # colony 2: healthy, absorbs colony 1 at frame 7
+        _row(well, 5, 4 * 3_600_000, 2, 100),
+        _row(well, 7, 6 * 3_600_000, 2, 400, merged="1"),
+        _row(well, 9, 8 * 3_600_000, 2, 900),
+    ]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    rates = analysis.growth_rates(traj)
+    assert [r["colony_id"] for r in rates] == [1, 2]
+    r1, r2 = rates
+    assert r1["bad"] == 1 and r1["bad_reason"] == "no_growth"
+    assert r2["bad"] == 0 and r2["bad_reason"] == ""
+    assert r2["max_ancestors"] == 2
+    assert r2["group_id"] == 2

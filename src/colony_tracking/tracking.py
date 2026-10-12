@@ -311,6 +311,8 @@ def track_colonies(
         g: [[] for _ in frames] for g in range(1, n_groups + 1)
     }
     for t, (number, k) in enumerate(frames):
+        if exclude_before is not None and number < exclude_before:
+            continue  # blanked: no segments, the output frame stays empty
         for s in extract_segments(k):
             hits = np.bincount(groups[s.mask].ravel(), minlength=n_groups + 1)
             if not hits[1:].any():  # only possible inside the dilated margin
@@ -326,6 +328,8 @@ def track_colonies(
         active: list[dict[str, object]] = []  # colonies: id, mask, area, first
 
         for t, (number, _) in enumerate(frames):
+            if exclude_before is not None and number < exclude_before:
+                continue  # blanked: nothing is tracked, the frame stays empty
             segs = sorted(per_group[g][t], key=lambda s: -s.area)
             if merge_touching:
                 segs = premerge_touching(segs, desc=desc, frame=number, group=g)
@@ -404,7 +408,8 @@ def track_colonies(
                     "colony_id": o["id"],
                     "group_id": g,
                     "merged_with": ";".join(str(i) for i in absorbed),
-                    "pre_existing": 0,
+                    "pre_existing": int(exclude_before is not None
+                                        and o["first"] <= exclude_before),
                     "area_px": s.area,
                     "centroid_y": round(s.cy, 1),
                     "centroid_x": round(s.cx, 1),

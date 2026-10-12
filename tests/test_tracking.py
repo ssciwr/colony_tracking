@@ -245,3 +245,45 @@ def test_premerge_touching_merges_chains_but_not_beyond_dilation():
     assert len(premerge_touching(extract_segments(img))) == 2
     # the input segments are not mutated (the caller may still hold them)
     assert segs[0].area == 100
+
+
+# --- the pre-existing filter (exclude_before) --------------------------------
+
+
+def test_exclude_before_blanks_early_frames_and_flags_pre_existing():
+    groups = one_group()
+    frames = [
+        # frame 3: a colony is present but the frame lies below the cutoff
+        (3, box_image({1: (5, 5, 15, 15)})),
+        # frame 5 (= N): colony 1 is first detected here -> pre-existing
+        (5, box_image({1: (5, 5, 15, 15), 2: (20, 20, 30, 30)})),
+        # frame 7: colony 3 appears -> new growth
+        (7, box_image({1: (5, 5, 15, 15), 2: (20, 20, 30, 30),
+                       3: (30, 2, 38, 10)})),
+    ]
+    res = track_colonies(frames, groups, exclude_before=5)
+    assert len(res.labels) == 3  # outputs stay 1:1 with the input frames
+    assert not res.labels[0].any()  # frame 3 (< N): empty label image
+    assert (res.labels[1][20:30, 20:30] == 2).all()  # frame 5 tracked normally
+    assert [r["frame"] for r in res.rows] == [5, 5, 7, 7, 7]  # no frame-3 rows
+    assert [r["colony_id"] for r in res.rows] == [1, 2, 1, 2, 3]
+    assert [r["pre_existing"] for r in res.rows] == [1, 1, 1, 1, 0]
+    assert res.counters["pre_existing_colonies"] == 2
+    assert res.counters["colonies"] == 1  # distinct IDs minus pre-existing
+
+
+def test_exclude_before_needs_no_matching_frame():
+    groups = one_group()
+    frames = [
+        (3, box_image({1: (5, 5, 15, 15)})),
+        (7, box_image({1: (5, 5, 15, 15), 2: (20, 20, 30, 30)})),
+    ]
+    # N = 5 is not among the well's frame numbers: compared directly, no
+    # warning, no disabling
+    res = track_colonies(frames, groups, exclude_before=5)
+    assert [r["frame"] for r in res.rows] == [7, 7]
+    # first detection (7) is after N: flagged as new growth, rows kept
+    assert [r["pre_existing"] for r in res.rows] == [0, 0]
+    assert res.counters["pre_existing_colonies"] == 0
+    assert res.counters["colonies"] == 2
+    assert not res.labels[0].any()

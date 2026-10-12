@@ -467,3 +467,365 @@ def test_growth_rates_carries_flags_and_max_ancestors(tmp_path):
     assert r2["bad"] == 0 and r2["bad_reason"] == ""
     assert r2["max_ancestors"] == 2
     assert r2["group_id"] == 2
+
+
+# --- end-to-end (run_analysis) -------------------------------------------------
+
+import csv  # noqa: E402  (legacy-tree tests write prototype-style CSVs)
+
+E2E_WELLS = ("-A001", "-A002", "-A003")
+E2E_DISKS = {
+    "-A001": [
+        DiskSpec("pair_a", cy=650.0, cx=750.0, r0=30.0, growth=1.3,
+                 first_frame=2),
+        DiskSpec("pair_b", cy=650.0, cx=950.0, r0=30.0, growth=1.3,
+                 first_frame=2),
+        DiskSpec("static", cy=1450.0, cx=1450.0, r0=50.0, growth=1.0,
+                 first_frame=2),
+        DiskSpec("from_start", cy=600.0, cx=1500.0, r0=30.0, growth=1.25,
+                 first_frame=1),
+        DiskSpec("rim", cy=1024.0, cx=1824.0, r0=40.0, growth=1.35,
+                 first_frame=3),
+    ],
+    "-A002": [
+        DiskSpec("growing", cy=1024.0, cx=600.0, r0=40.0, growth=1.35,
+                 first_frame=3),
+    ],
+    "-A003": [
+        DiskSpec("pre", cy=1024.0, cx=1200.0, r0=40.0, growth=1.35,
+                 first_frame=3),
+        DiskSpec("single", cy=1400.0, cx=600.0, r0=30.0, growth=1.0,
+                 first_frame=8, last_frame=8),
+    ],
+}
+
+
+def _build_e2e(tmp_path, seg_name="seg_growth"):
+    """The 3-well e2e fixture: mini plate + synthetic segmentation tree.
+
+    -A001: two disks that grow until they touch (merged into one colony with
+    ``merged_with`` at the first overlap frame), a static disk (no_growth),
+    one present from frame 1 (from_start), one growing into the rim
+    (monotone rim exclusion). -A002: one clean exponential disk. -A003: a
+    pre-existing-flagged disk and a single-frame colony. Colony IDs are the
+    disk order per well (1..n). Label images exist 1:1 for every frame,
+    including empty ones (the segment stage writes them).
+    """
+    plate = build_mini_plate(
+        tmp_path / "raw", layout="flat", wells=E2E_WELLS, n_frames=8,
+        rings={w: RingSpec() for w in E2E_WELLS}, disks=E2E_DISKS,
+        noise_sigma=0.0)
+    seg_root = tmp_path / "seg" / seg_name
+    ids = {
+        "-A001": {"pair_a": 1, "pair_b": 2, "static": 3, "from_start": 4,
+                  "rim": 5},
+        "-A002": {"growing": 1},
+        "-A003": {"pre": 1, "single": 2},
+    }
+    for well in E2E_WELLS:
+        well_dir = seg_root / well
+        well_dir.mkdir(parents=True)
+        rows = []
+        for f in range(1, plate.n_frames + 1):
+            present = {}
+            for d in plate.disks[well]:
+                m = disk_mask(plate, well, d.name, f)
+                if m is not None:
+                    present[d.name] = m
+            if "pair_a" in present and "pair_b" in present \
+                    and (present["pair_a"] & present["pair_b"]).any():
+                # first overlap: the two become one colony (pair_a keeps the
+                # id) listing the absorbed one, from this frame on
+                present["pair_a"] = present["pair_a"] | present["pair_b"]
+                merged_with = {1: "2"}
+                del present["pair_b"]
+            else:
+                merged_with = {}
+            lab = np.zeros((plate.size, plate.size), np.uint32)
+            for name, m in present.items():
+                cid = ids[well][name]
+                lab[m] = cid
+                ys, xs = np.nonzero(m)
+                rows.append({
+                    "well": well, "frame": f,
+                    "t_seconds": plate.t_values[f - 1],
+                    "image": plate.wells[well][f - 1],
+                    "colony_id": cid, "group_id": cid,
+                    "merged_with": merged_with.get(cid, ""),
+                    "pre_existing": int((well, cid) == ("-A003", 1)),
+                    "area_px": int(m.sum()),
+                    "centroid_y": float(ys.mean()),
+                    "centroid_x": float(xs.mean()),
+                })
+            build_label_series(well_dir, [lab], well=well,
+                               names=[plate.wells[well][f - 1]])
+        io.write_colonies(well_dir / "colonies.csv", rows)
+    return plate, seg_root
+
+
+TRAJ_HEADER = ["well", "frame", "t_hours", "colony_id", "group_id",
+               "merged_with", "ancestors", "pre_existing", "area_px", "age_h",
+               "rim_frac", "rim_excluded", "bad", "bad_reason"]
+RATE_HEADER = ["well", "colony_id", "group_id", "first_frame", "last_frame",
+               "n_frames", "n_frames_valid", "area_first", "area_last",
+               "max_ancestors", "rim_excluded_frame", "growth_rate_per_h",
+               "growth_doublings_per_day", "abs_growth_px_per_h",
+               "bad", "bad_reason", "pre_existing"]
+
+
+def test_run_analysis_end_to_end(tmp_path):
+    """One full analyze run over the e2e tree: outputs, flags, exclusions,
+    rates and pooled files all come out as the planted ground truth says."""
+    _build_e2e(tmp_path)
+    summary = analysis.run_analysis(
+        _options(tmp_path, seg_dirs=[tmp_path / "seg" / "seg_growth"]))
+
+    # -- the summary -------------------------------------------------------
+    (root,) = summary.roots.values()
+    assert root.name == "seg_growth"
+    assert root.wells == 3
+    assert root.colonies == 8          # 5 in -A001 (pair counts once), 1, 2
+    assert root.rows == 46             # 33 + 6 + 7
+    assert root.rim_excluded == 3      # the rim colony, frames 6-8
+    assert root.bad_segments == 2      # static (no_growth), from_start
+    assert root.excluded_wells == ["-A001"]
+    assert root.pre_existing == 1      # the -A003 pre-flagged colony
+    assert summary.failures == []
+
+    # -- the geometry cache --------------------------------------------------
+    for well in E2E_WELLS:
+        cy, cx, R = summary.geometry[well]
+        assert abs(cy - 1024.0) < 5 and abs(cx - 1024.0) < 5
+        assert abs(R - 920.0) < 5
+    assert set(io.read_geometry(tmp_path / "out" / "well_geometry.csv")) \
+        == set(E2E_WELLS)
+
+    # -- the output files ------------------------------------------------------
+    out = tmp_path / "out" / "seg_growth"
+    for name in ("trajectories.csv", "growth_rates.csv", "bad_segments.csv",
+                 "areas_by_ancestors.csv", "rates_by_ancestors.csv",
+                 "growth_curves_by_ancestors.png",
+                 "mean_area_by_ancestors.png",
+                 "growth_rates_by_ancestors.png"):
+        assert (out / name).exists() and (out / name).stat().st_size > 0, name
+    for well in E2E_WELLS:
+        assert (out / "qa" / f"{well}_rim.png").exists()
+
+    # -- trajectories ------------------------------------------------------------
+    traj = io.read_csv_rows(out / "trajectories.csv")
+    assert list(traj[0]) == TRAJ_HEADER
+    assert len(traj) == 46
+    by = {(r["well"], int(r["colony_id"]), int(r["frame"])): r for r in traj}
+    for f in range(3, 9):  # the rim colony: monotone exclusion from frame 6
+        assert by[("-A001", 5, f)]["rim_excluded"] == ("0" if f < 6 else "1")
+        assert by[("-A001", 5, f)]["rim_frac"] != ""
+    assert by[("-A001", 1, 6)]["ancestors"] == "1"
+    assert by[("-A001", 1, 7)]["ancestors"] == "2"  # the pair merges at f7
+    assert by[("-A001", 1, 7)]["merged_with"] == "2"
+    assert by[("-A001", 3, 2)]["bad_reason"] == "no_growth"
+    assert by[("-A001", 4, 1)]["bad_reason"] == "from_start"
+    assert by[("-A003", 1, 3)]["pre_existing"] == "1"
+    assert by[("-A003", 2, 8)]["area_px"] != ""
+    assert (by[("-A003", 2, 8)]["age_h"]) == "0.0"  # first valid frame
+
+    # -- growth rates ------------------------------------------------------------
+    rates = io.read_csv_rows(out / "growth_rates.csv")
+    assert list(rates[0]) == RATE_HEADER
+    assert len(rates) == 8
+    rate_by = {(r["well"], int(r["colony_id"])): r for r in rates}
+    # the planted disk grows 1.35x in radius per hour, so its AREA grows
+    # 1.35^2: the specific rate is 2 ln(1.35) h^-1
+    lam = 2 * float(np.log(1.35))
+    grown = rate_by[("-A002", 1)]
+    assert abs(float(grown["growth_rate_per_h"]) - lam) / lam < 0.03
+    assert abs(float(grown["growth_doublings_per_day"]) - lam * 24 / np.log(2)
+               ) / (lam * 24 / np.log(2)) < 0.03
+    assert grown["max_ancestors"] == "1"
+    assert grown["first_frame"] == "3" and grown["last_frame"] == "8"
+    assert rate_by[("-A001", 1)]["max_ancestors"] == "2"
+    assert rate_by[("-A001", 5)]["rim_excluded_frame"] == "6"
+    assert rate_by[("-A001", 5)]["last_frame"] == "5"  # valid frames only
+    assert rate_by[("-A001", 3)]["bad"] == "1"
+    assert rate_by[("-A003", 1)]["pre_existing"] == "1"
+    single = rate_by[("-A003", 2)]  # one valid frame -> NaN rates
+    assert single["growth_rate_per_h"] == ""
+    assert single["growth_doublings_per_day"] == ""
+    assert single["abs_growth_px_per_h"] == ""
+    assert single["area_first"] == single["area_last"] != ""
+
+    # -- bad segments ------------------------------------------------------------
+    bads = io.read_csv_rows(out / "bad_segments.csv")
+    assert len(bads) == 2
+    bad_by = {(r["well"], int(r["colony_id"])): r for r in bads}
+    assert bad_by[("-A001", 3)]["bad_reason"] == "no_growth"
+    assert bad_by[("-A001", 4)]["bad_reason"] == "from_start"
+    assert all(r["n_bad_in_well"] == "2" and r["well_excluded"] == "1"
+               for r in bads)
+
+    # -- pooled files -------------------------------------------------------------
+    areas = io.read_csv_rows(out / "areas_by_ancestors.csv")
+    assert list(areas[0]) == ["frame", "t_hours", "ancestors", "n_colonies",
+                              "n_wells", "mean_area_px", "median_area_px"]
+    # -A001 is excluded and pre-existing colonies are dropped, so the pool is
+    # -A002's grower (f3-f8) plus -A003's single-frame colony (f8).
+    got = {(int(r["frame"]), int(r["ancestors"])): int(r["n_colonies"])
+           for r in areas}
+    assert got == {(3, 1): 1, (4, 1): 1, (5, 1): 1,
+                   (6, 1): 1, (7, 1): 1, (8, 1): 2}
+    assert len(areas) == len(got)  # one row per (frame, ancestors)
+
+    rates_agg = io.read_csv_rows(out / "rates_by_ancestors.csv")
+    assert list(rates_agg[0]) == ["max_ancestors", "n_colonies",
+                                  "mean_doublings_per_day",
+                                  "median_doublings_per_day",
+                                  "mean_abs_growth_px_per_h",
+                                  "median_abs_growth_px_per_h"]
+    # only -A002's grower has a rate (pre-existing dropped, single-frame none)
+    assert len(rates_agg) == 1
+    assert int(rates_agg[0]["max_ancestors"]) == 1
+    assert int(rates_agg[0]["n_colonies"]) == 1
+    assert abs(float(rates_agg[0]["mean_doublings_per_day"])
+               - lam * 24 / np.log(2)) < 0.5
+
+
+def test_run_analysis_keep_bad_wells(tmp_path):
+    """keep_bad_wells keeps the bad well's clean colonies in the pool (the
+    bad rows themselves still leave)."""
+    _build_e2e(tmp_path)
+    summary = analysis.run_analysis(_options(
+        tmp_path, seg_dirs=[tmp_path / "seg" / "seg_growth"],
+        keep_bad_wells=True))
+    (root,) = summary.roots.values()
+    assert root.excluded_wells == []
+    areas = io.read_csv_rows(
+        tmp_path / "out" / "seg_growth" / "areas_by_ancestors.csv")
+    got = {(int(r["frame"]), int(r["ancestors"])): int(r["n_colonies"])
+           for r in areas}
+    # -A001: pair (f2+), rim (f3-5 only, excluded from f6), the pair merges
+    # at f7 (ancestors 2); -A002 grower f3-8; -A003 single at f8. The two bad
+    # -A001 colonies (static, from_start) are still out.
+    assert got == {
+        (2, 1): 2,  # pair_a, pair_b
+        (3, 1): 4,  # + rim, + -A002's grower
+        (4, 1): 4,
+        (5, 1): 4,
+        (6, 1): 3,  # the rim colony is excluded
+        (7, 1): 1,  # -A002's grower
+        (7, 2): 1,  # the merged pair
+        (8, 1): 2,  # grower + -A003's single
+        (8, 2): 1,  # the merged pair
+    }
+    assert len(areas) == len(got)  # one row per (frame, ancestors)
+    assert all(int(r["n_wells"]) <= 2 for r in areas)
+
+
+def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
+    """plots_only re-renders from the existing trajectories CSV: no raw-plate
+    reading (no circle fit), no seg-tree reading, no geometry cache write."""
+    seg_root = tmp_path / "seg" / "seg_growth_diff_LO005"  # must not exist
+    out = tmp_path / "out" / "seg_growth_diff_LO005"
+    out.mkdir(parents=True)
+    rows = []
+    for i, (f, area) in enumerate(((3, 100), (4, 200), (5, 400))):
+        rows.append({
+            "well": "-A001", "frame": f, "t_hours": float(i),
+            "colony_id": 1, "group_id": 1, "merged_with": "",
+            "ancestors": 1, "pre_existing": 0, "area_px": area,
+            "age_h": float(i), "rim_frac": 0.0, "rim_excluded": 0,
+            "bad": 0, "bad_reason": "",
+        })
+    io.write_csv_rows(out / "trajectories.csv", rows,
+                      analysis.TRAJ_FIELDS)
+    empty_raw = tmp_path / "empty_raw"
+    empty_raw.mkdir()
+    options = _options(tmp_path, seg_dirs=[seg_root], raw_dir=empty_raw,
+                       plots_only=True)
+    summary = analysis.run_analysis(options)
+
+    for name in ("growth_rates.csv", "bad_segments.csv",
+                 "areas_by_ancestors.csv", "rates_by_ancestors.csv",
+                 "growth_curves_by_ancestors.png",
+                 "mean_area_by_ancestors.png",
+                 "growth_rates_by_ancestors.png"):
+        assert (out / name).exists() and (out / name).stat().st_size > 0, name
+    assert not any("no plausible well circle" in m for m in caplog.messages)
+    assert not (tmp_path / "out" / "well_geometry.csv").exists()
+    assert not any("colonies.csv" in m for m in caplog.messages)
+    (root,) = summary.roots.values()
+    assert root.rows == 3 and root.colonies == 1
+    rates = io.read_csv_rows(out / "growth_rates.csv")
+    assert len(rates) == 1
+    assert rates[0]["growth_rate_per_h"] == f"{np.log(2):.5f}"
+    assert abs(float(rates[0]["growth_doublings_per_day"]) - 24.0) < 0.01
+
+
+def test_run_analysis_reads_legacy_tree(tmp_path):
+    """A prototype-written tree (lo/n_merged-style CSVs) is read canonically
+    with unchanged values, both for the full run and for plots_only."""
+    plate = build_mini_plate(
+        tmp_path / "raw", layout="flat", wells=("-A001",), n_frames=4,
+        rings={"-A001": RingSpec()}, disks={"-A001": []}, noise_sigma=0.0)
+    seg_root = tmp_path / "seg" / "seg_legacy"
+    well_dir = seg_root / "-A001"
+    well_dir.mkdir(parents=True)
+    legacy_cols = ["well", "lo", "t_seconds", "image", "colony_id", "group_id",
+                   "merged_with", "pre_existing", "area_px", "centroid_y",
+                   "centroid_x"]
+    rows = []
+    for f in range(2, 5):  # the colony starts at frame 2 (not from_start)
+        rows.append({"well": "-A001", "lo": f,
+                     "t_seconds": (f - 1) * 3_600_000,
+                     "image": plate.wells["-A001"][f - 1], "colony_id": 1,
+                     "group_id": 1, "merged_with": "", "pre_existing": 0,
+                     "area_px": 100 * 2 ** (f - 2), "centroid_y": 500.0,
+                     "centroid_x": 500.0})
+    with open(well_dir / "colonies.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=legacy_cols)
+        w.writeheader()
+        w.writerows(rows)
+    lab = np.zeros((plate.size, plate.size), np.uint32)
+    build_label_series(well_dir, [lab] * 4, well="-A001",
+                       names=plate.wells["-A001"])
+
+    analysis.run_analysis(_options(tmp_path, seg_dirs=[seg_root]))
+    out = tmp_path / "out" / "seg_legacy"
+    traj = io.read_csv_rows(out / "trajectories.csv")
+    assert list(traj[0]) == TRAJ_HEADER
+    assert [r["frame"] for r in traj] == ["2", "3", "4"]
+    assert [r["area_px"] for r in traj] == ["100", "200", "400"]
+    assert all(r["ancestors"] == "1" and r["bad"] == "0" for r in traj)
+    rates = io.read_csv_rows(out / "growth_rates.csv")
+    assert list(rates[0]) == RATE_HEADER
+    assert rates[0]["first_frame"] == "2" and rates[0]["last_frame"] == "4"
+    assert abs(float(rates[0]["growth_rate_per_h"]) - np.log(2)) < 1e-5
+
+    # legacy trajectories columns (lo, n_merged) are mapped in plots_only too
+    out2 = tmp_path / "out2" / "seg_legacy"
+    out2.mkdir(parents=True)
+    legacy_traj_cols = ["well", "lo", "t_hours", "colony_id", "group_id",
+                        "merged_with", "n_merged", "pre_existing", "area_px",
+                        "age_h", "rim_frac", "rim_excluded", "bad",
+                        "bad_reason"]
+    legacy_rows = []
+    for i, (f, area) in enumerate(((2, 100), (3, 200), (4, 400))):
+        legacy_rows.append({
+            "well": "-A001", "lo": f, "t_hours": float(i + 1),
+            "colony_id": 1, "group_id": 1, "merged_with": "",
+            "n_merged": 1, "pre_existing": 0, "area_px": area,
+            "age_h": float(i), "rim_frac": 0.0, "rim_excluded": 0,
+            "bad": 0, "bad_reason": "",
+        })
+    with open(out2 / "trajectories.csv", "w", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=legacy_traj_cols)
+        w.writeheader()
+        w.writerows(legacy_rows)
+    empty_raw = tmp_path / "empty_raw2"
+    empty_raw.mkdir()
+    analysis.run_analysis(_options(
+        tmp_path, seg_dirs=[seg_root], out_root=tmp_path / "out2",
+        raw_dir=empty_raw, plots_only=True))
+    rates = io.read_csv_rows(out2 / "growth_rates.csv")
+    assert list(rates[0]) == RATE_HEADER
+    assert rates[0]["first_frame"] == "2" and rates[0]["last_frame"] == "4"
+    assert rates[0]["max_ancestors"] == "1"
+    assert abs(float(rates[0]["growth_rate_per_h"]) - np.log(2)) < 1e-5

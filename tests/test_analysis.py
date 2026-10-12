@@ -17,8 +17,9 @@ from conftest import (
     build_label_series,
     build_mini_plate,
     disk_mask,
+    frame_name,
 )
-from colony_tracking import analysis
+from colony_tracking import analysis, io
 from colony_tracking._options import AnalysisOptions
 
 
@@ -275,3 +276,97 @@ def test_split_bad_keep_bad_wells(tmp_path):
     assert per_well_bad == {"-A001": {1, 2}, "-A002": {2}}
     got = {(r["well"], r["colony_id"]) for r in usable}
     assert got == {("-A001", 3), ("-A002", 1)}
+
+
+# --- pre-existing probe --------------------------------------------------------
+
+
+def _crow(well, frame, colony_id, cy, cx, pre="0"):
+    """A colonies.csv row with string values (as read_colonies returns)."""
+    t_ms = (frame - 1) * 3_600_000
+    return {
+        "well": well, "frame": str(frame), "t_seconds": str(t_ms),
+        "image": frame_name(well, frame, t_ms),
+        "colony_id": str(colony_id), "group_id": str(colony_id),
+        "merged_with": "", "pre_existing": pre, "area_px": "1000",
+        "centroid_y": str(cy), "centroid_x": str(cx),
+    }
+
+
+def _probe_setup(tmp_path, root_name="seg_growth_diff_LO005"):
+    """A raw root with one colony (centroid 1200,1200, r 20) on the reference
+    frame 5, plus an empty diff root directory. Returns (seg_root, raw_seg,
+    well)."""
+    well = "-A001"
+    seg_root = tmp_path / "seg" / root_name
+    seg_root.mkdir(parents=True)
+    raw_seg = tmp_path / "rawseg"
+    well_dir = raw_seg / well
+    well_dir.mkdir(parents=True)
+    yy, xx = np.mgrid[0:2048, 0:2048]
+    lab = np.zeros((2048, 2048), np.uint32)
+    lab[np.hypot(yy - 1200.0, xx - 1200.0) <= 20.0] = 1
+    name = frame_name(well, 5, 4 * 3_600_000)
+    tifffile.imwrite(well_dir / f"{name[:-4]}__labels.tif", lab)
+    io.write_colonies(well_dir / "colonies.csv", [{
+        "well": well, "frame": 5, "t_seconds": 4 * 3_600_000,
+        "image": name, "colony_id": 1, "group_id": 1, "merged_with": "",
+        "pre_existing": 0, "area_px": int(np.pi * 20 ** 2),
+        "centroid_y": 1200.0, "centroid_x": 1200.0,
+    }])
+    return seg_root, raw_seg, well
+
+
+def test_probe_flags_pre_existing_on_base_frame(tmp_path):
+    """Colonies whose first-detection centroid lands on base-frame colony
+    territory — a label within the 12 px window, or inside a raw colony's
+    area-equivalent disk + 15 px slack — are flagged pre_existing on every
+    one of their rows; others are untouched, and an existing flag is never
+    cleared."""
+    seg_root, raw_seg, well = _probe_setup(tmp_path)
+    rows = [
+        # colony 1: right on the raw colony's centroid -> window hit
+        _crow(well, 6, 1, 1200.0, 1200.0),
+        _crow(well, 7, 1, 1210.0, 1205.0),
+        _crow(well, 8, 1, 1220.0, 1210.0),
+        # colony 2: just outside the 12 px window but inside disk + 15 px
+        _crow(well, 6, 2, 1200.0, 1234.0),
+        # colony 3: far from any base-frame colony -> untouched
+        _crow(well, 6, 3, 400.0, 400.0),
+        # colony 4: far away, but already flagged by the pipeline -> stays 1
+        _crow(well, 6, 4, 400.0, 400.0, pre="1"),
+    ]
+    analysis.probe_pre_existing(
+        well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg))
+    by = {(int(r["frame"]), int(r["colony_id"])): r["pre_existing"] for r in rows}
+    # the probe writes the int 1 (faithful to the prototype); untouched rows
+    # keep the CSV's string values
+    assert by[(6, 1)] == 1
+    assert by[(7, 1)] == 1
+    assert by[(8, 1)] == 1
+    assert by[(6, 2)] == 1
+    assert by[(6, 3)] == "0"
+    assert by[(6, 4)] == "1"
+
+
+def test_probe_noop_for_raw_root(tmp_path):
+    """Roots without a diff_LO<nnn> suffix are raw roots: the probe is a
+    no-op even with a raw_seg_dir present."""
+    seg_root, raw_seg, well = _probe_setup(tmp_path, root_name="seg_growth")
+    rows = [_crow(well, 6, 1, 1200.0, 1200.0)]
+    analysis.probe_pre_existing(
+        well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg))
+    assert rows[0]["pre_existing"] == "0"
+
+
+def test_probe_missing_label_image_warns_and_noops(tmp_path, caplog):
+    """Without the reference frame's label image in the raw root the probe
+    skips with a warning and flags nothing."""
+    seg_root, raw_seg, well = _probe_setup(tmp_path)
+    for p in (raw_seg / well).glob("*--LO005--*__labels.tif"):
+        p.unlink()
+    rows = [_crow(well, 6, 1, 1200.0, 1200.0)]
+    analysis.probe_pre_existing(
+        well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg))
+    assert rows[0]["pre_existing"] == "0"
+    assert any("pre-existing probe skipped" in m for m in caplog.messages)

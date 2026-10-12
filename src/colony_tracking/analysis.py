@@ -101,6 +101,7 @@ new writes always use the canonical names.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import numpy as np
@@ -473,3 +474,59 @@ def split_bad(traj, options):
                 and not options.keep_bad_wells}
     traj_f = [r for r in traj if r["well"] not in excluded and not r["bad"]]
     return traj_f, per_well_bad, excluded
+
+
+# ---------------------------------------------------- pre-existing probe ------
+
+
+def probe_pre_existing(well, rows, seg_root, options):
+    """Flag colonies that already existed on the root's base image.
+
+    For difference-based roots (name ``...diff_LO<nnn>``): the base image is
+    the raw frame at the reference frame. The difference pipeline cannot see
+    it (the reference frame is differenced against itself and comes out
+    blank), so colonies that already existed there only surface later — first
+    detected one or more frames after the reference, often already large.
+    This probes the raw root's label image at the reference frame at each
+    colony's first-detection centroid: a colony landing on colony territory
+    that existed at the base frame (a label at the centroid or within 12 px,
+    or inside a raw colony's area-equivalent disk + 15 px slack) is flagged
+    ``pre_existing=1`` on all its rows (OR-ed with the pipeline's own flag).
+    No-op for raw roots and when the raw root has no matching label image.
+    """
+    m = re.search(r"diff_LO(\d+)$", Path(seg_root).name)
+    if m is None or options.raw_seg_dir is None:
+        return
+    ref_frame = int(m.group(1))
+    well_dir = Path(options.raw_seg_dir) / well
+    paths = sorted(well_dir.glob(f"*--LO{ref_frame:03d}--*__labels.tif"))
+    if not paths:
+        log.warning("[%s] no raw LO%03d label image under %s; pre-existing "
+                    "probe skipped", well, ref_frame, options.raw_seg_dir)
+        return
+    lab = io.read_label_image(paths[0])
+    csv_path = well_dir / "colonies.csv"
+    raw_rows = io.read_colonies(csv_path) if csv_path.exists() else []
+    discs = [(float(r["centroid_y"]), float(r["centroid_x"]),
+              (int(r["area_px"]) / np.pi) ** 0.5)
+             for r in raw_rows if int(r["frame"]) == ref_frame]
+    per_colony = {}
+    for r in rows:
+        per_colony.setdefault(int(r["colony_id"]), []).append(r)
+    flagged = []
+    for cid, crows in per_colony.items():
+        first = min(crows, key=lambda r: int(r["frame"]))
+        cy, cx = float(first["centroid_y"]), float(first["centroid_x"])
+        y, x = int(round(cy)), int(round(cx))
+        win = lab[max(0, y - 12):y + 13, max(0, x - 12):x + 13]
+        hit = bool(win.size) and int(win.max()) > 0
+        if not hit:
+            hit = any((dcy - cy) ** 2 + (dcx - cx) ** 2 <= (drad + 15) ** 2
+                      for dcy, dcx, drad in discs)
+        if hit:
+            for r in crows:
+                r["pre_existing"] = 1
+            flagged.append(cid)
+    if flagged:
+        log.info("[%s] pre-existing on the LO%03d base image: colony ids %s",
+                 well, ref_frame, ",".join(str(c) for c in sorted(flagged)))

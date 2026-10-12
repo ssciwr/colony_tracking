@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03, 05, 06
 
 # 08: `pipeline` module — config, derived names, orchestration
@@ -79,3 +79,7 @@ stages can additionally be exercised for real where no model is needed).
 - Public API: `PipelineConfig`, `run_pipeline`, `PipelineSummary` re-exported
   from the package root.
 - No hardcoded data paths; no model imports in this module.
+
+## Comments
+
+- 2026-10-12: Resolved by branch t08-pipeline (merge commit 56c6e6f74e660ce47d7b00ffdeb8d99764b6d156); 183 passed; API: read_config/write_config + PipelineConfig (sections [pipeline]/[difference]/[segmentation]/[analysis]; ConfigError=ValueError subclass for all config problems) + run_pipeline(config) -> PipelineSummary(status, failed_stage, three embedded summaries; stage failure aborts the chain, never raises). Owned keys rejected in stage sections: difference.raw_dir/reference, segmentation.input/diff_dir, analysis.raw_dir (forced from run-level/chain wiring).

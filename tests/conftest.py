@@ -281,8 +281,8 @@ def build_mini_plate(
                     mask &= interior
                 img -= d.delta * mask
             if noise_sigma > 0:
-                img += rng.normal(0.0, noise_sigma, size=(size, size),
-                                  dtype=np.float32)
+                img += rng.normal(0.0, noise_sigma, size=(size, size)).astype(
+                    np.float32)
             name = frame_name(w, t, t0_ms + (t - 1) * t_step_ms)
             tifffile.imwrite(well_dir / name,
                              np.clip(img, 0, 65535).astype(np.uint16),

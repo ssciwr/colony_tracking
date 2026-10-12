@@ -13,16 +13,24 @@ missing-prerequisite errors only.
 """
 
 import dataclasses
+import logging
 from dataclasses import fields
 from pathlib import Path
 
+import h5py
+import numpy as np
 import pytest
+import tifffile
 
+from colony_tracking import io
 from colony_tracking.finetune import (
     EvaluateOptions,
     PrepareOptions,
+    PrepareSummary,
     TrainOptions,
+    run_prepare,
 )
+from conftest import DiskSpec, LabeledPlate, build_labeled_plate, frame_name
 
 
 # --- field contracts (names, order, required-ness) -------------------------
@@ -171,3 +179,215 @@ def test_finetune_options_roundtrip():
         val_wells=["-A001", "-A002"],
     )
     assert PrepareOptions.from_dict(opts.to_dict()) == opts
+
+
+# --- the small labeled plate ------------------------------------------------
+#
+# 5 wells x 3 frames of 512x512, planted disks:
+#   -A001: two disks (the second from frame 2)     -> 5 instances
+#   -A002: two disks, both from frame 2 (frame 1   -> 4 instances
+#          has an all-zero label)
+#   -A003 / -A004: one disk each                    -> 3 instances
+#   -A005: raw frames only, no label files
+
+
+WELLS = ("-A001", "-A002", "-A003", "-A004", "-A005")
+
+
+def _disks() -> dict[str, list[DiskSpec]]:
+    return {
+        "-A001": [
+            DiskSpec("a1", cy=150.0, cx=130.0, r0=18.0),
+            DiskSpec("a2", cy=330.0, cx=370.0, r0=12.0, first_frame=2),
+        ],
+        "-A002": [
+            DiskSpec("b1", cy=150.0, cx=130.0, r0=18.0, first_frame=2),
+            DiskSpec("b2", cy=330.0, cx=370.0, r0=12.0, first_frame=2),
+        ],
+        "-A003": [DiskSpec("c1", cy=256.0, cx=256.0, r0=20.0)],
+        "-A004": [DiskSpec("d1", cy=256.0, cx=256.0, r0=16.0)],
+    }
+
+
+@pytest.fixture
+def labeled(tmp_path: Path) -> LabeledPlate:
+    return build_labeled_plate(tmp_path, wells=WELLS, n_frames=3, disks=_disks())
+
+
+def _prepare(labeled: LabeledPlate, tmp_path: Path, **overrides) -> PrepareSummary:
+    return run_prepare(
+        PrepareOptions(
+            raw_dir=labeled.raw_root,
+            label_dir=labeled.label_root,
+            out_dir=tmp_path / "h5",
+            **overrides,
+        )
+    )
+
+
+def _wells_of(out: Path, tag: str) -> set[str]:
+    return {io.parse_well(p.name) for p in (out / tag).glob("*.h5")}
+
+
+# --- the well-based split ----------------------------------------------------
+
+
+def test_split_is_by_well_and_never_crosses(labeled, tmp_path):
+    out = tmp_path / "h5"
+    _prepare(labeled, tmp_path)
+    train_wells = _wells_of(out, "train")
+    val_wells = _wells_of(out, "val")
+    assert train_wells & val_wells == set()
+    assert train_wells | val_wells == {"-A001", "-A002", "-A003", "-A004"}
+
+
+def test_default_split_takes_richest_well_until_val_fraction(labeled, tmp_path):
+    # 15 kept instances, val_fraction 0.2 -> target 3.0; the instance-richest
+    # well -A001 (5) alone reaches it.
+    summary = _prepare(labeled, tmp_path)
+    assert summary.val_wells == ["-A001"]
+    assert summary.train_wells == ["-A002", "-A003", "-A004"]
+    assert summary.n_val == 3 and summary.n_train == 8
+
+
+def test_greedy_split_across_multiple_wells(labeled, tmp_path):
+    # val_fraction 0.5 -> target 7.5: -A001 (5) then -A002 (4) = 9.
+    summary = _prepare(labeled, tmp_path, val_fraction=0.5)
+    assert summary.val_wells == ["-A001", "-A002"]
+    assert summary.train_wells == ["-A003", "-A004"]
+    assert summary.n_val == 5 and summary.n_train == 6
+
+
+def test_max_val_wells_caps_the_split(labeled, tmp_path):
+    summary = _prepare(labeled, tmp_path, val_fraction=0.5, max_val_wells=1)
+    assert summary.val_wells == ["-A001"]
+    assert summary.train_wells == ["-A002", "-A003", "-A004"]
+
+
+def test_explicit_val_well_list_is_honoured(labeled, tmp_path):
+    summary = _prepare(labeled, tmp_path, val_wells=["-A003"])
+    assert summary.val_wells == ["-A003"]
+    assert summary.train_wells == ["-A001", "-A002", "-A004"]
+
+
+def test_explicit_val_well_without_labels_fails(labeled, tmp_path, caplog):
+    # -A005 has raw frames but no label files.
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = _prepare(labeled, tmp_path, val_wells=["-A005"])
+    assert summary.error is not None
+    assert "-A005" in caplog.text
+    assert not (tmp_path / "h5").exists() or not list((tmp_path / "h5").glob("*"))
+
+
+def test_explicit_val_wells_listing_an_unknown_well_fails(labeled, tmp_path, caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = _prepare(labeled, tmp_path, val_wells=["-A003", "-A009"])
+    assert summary.error is not None
+    assert "-A009" in caplog.text
+
+
+def test_explicit_val_wells_that_empty_the_train_split_fail(labeled, tmp_path, caplog):
+    # With min_instances=2 only -A001 and -A002 survive; taking both for val
+    # leaves nothing for training.
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = _prepare(
+            labeled, tmp_path, min_instances=2, val_wells=["-A001", "-A002"]
+        )
+    assert summary.error is not None
+    assert "empty" in caplog.text.lower()
+
+
+# --- low-instance label drops -------------------------------------------------
+
+
+def test_labels_below_min_instances_are_dropped(labeled, tmp_path):
+    # min_instances=2 drops: -A001 frame 1 (1 instance), -A002 frame 1 (0),
+    # and every label of -A003 and -A004 (1 instance each) -> 8 dropped.
+    summary = _prepare(labeled, tmp_path, min_instances=2)
+    assert summary.n_dropped == 8
+    assert summary.n_pairs == 4  # -A001 and -A002, frames 2 and 3
+    assert summary.n_instances == 8
+    assert summary.val_wells == ["-A001"]
+    assert summary.train_wells == ["-A002"]
+
+
+def test_well_whose_labels_are_all_dropped_is_logged(labeled, tmp_path, caplog):
+    with caplog.at_level(logging.WARNING, logger="colony_tracking"):
+        summary = _prepare(labeled, tmp_path, min_instances=2)
+    assert summary.error is None  # it must not crash the run
+    assert "-A003" in caplog.text
+    assert "-A004" in caplog.text
+
+
+def test_labels_without_raw_are_skipped_and_counted(labeled, tmp_path):
+    # An orphan label for a well the raw tree does not have.
+    tifffile.imwrite(
+        labeled.label_root / frame_name("-A006", 1, 0),
+        np.zeros((512, 512), dtype=np.uint32),
+    )
+    summary = _prepare(labeled, tmp_path)
+    assert summary.n_missing_raw == 1
+    assert summary.n_pairs == 11  # the orphan changes nothing else
+
+
+# --- the h5 files -------------------------------------------------------------
+
+
+def test_h5_contents_match_source(labeled, tmp_path):
+    out = tmp_path / "h5"
+    _prepare(labeled, tmp_path, val_wells=["-A003"])
+    name = labeled.plate.wells["-A003"][0]  # frame 1
+    h5_path = out / "val" / (name[:-4] + ".h5")
+    assert h5_path.exists()
+    raw_src = tifffile.imread(labeled.raw_root / name)
+    label_src = tifffile.imread(labeled.label_root / name)
+    with h5py.File(h5_path) as h5:
+        assert h5["raw"].dtype == np.uint8
+        assert h5["label"].dtype == np.int32
+        assert h5["raw"].shape == raw_src.shape == (512, 512)
+        assert h5["label"].shape == label_src.shape
+        # The raw values are the shared io 1/99 stretch of the source frame.
+        assert np.array_equal(h5["raw"][:], io.stretch_uint8(raw_src))
+        assert np.array_equal(h5["label"][:], label_src.astype(np.int32))
+        assert h5["raw"].compression == "gzip"
+        assert h5["raw"].compression_opts == 4
+        assert h5["label"].compression == "gzip"
+        assert h5["label"].compression_opts == 4
+
+
+def test_per_well_layout(tmp_path):
+    plate = build_labeled_plate(
+        tmp_path / "pw", wells=WELLS, n_frames=3, disks=_disks(), layout="per_well"
+    )
+    summary = run_prepare(
+        PrepareOptions(
+            raw_dir=plate.raw_root, label_dir=plate.label_root, out_dir=tmp_path / "h5"
+        )
+    )
+    assert summary.error is None
+    assert summary.val_wells == ["-A001"]  # same greedy split as the flat run
+    name = plate.plate.wells["-A003"][0]
+    h5_path = tmp_path / "h5" / "train" / (name[:-4] + ".h5")
+    raw_src = tifffile.imread(plate.raw_root / "-A003" / name)
+    label_src = tifffile.imread(plate.label_root / "-A003" / name)
+    with h5py.File(h5_path) as h5:
+        assert np.array_equal(h5["raw"][:], io.stretch_uint8(raw_src))
+        assert np.array_equal(h5["label"][:], label_src.astype(np.int32))
+
+
+# --- summary counters ----------------------------------------------------------
+
+
+def test_run_prepare_summary_counters(labeled, tmp_path):
+    out = tmp_path / "h5"
+    summary = _prepare(labeled, tmp_path)
+    assert summary.error is None
+    # 15 frames carry labels; -A002's all-zero frame 1 is dropped.
+    assert summary.n_pairs == 11
+    assert summary.n_train == 8
+    assert summary.n_val == 3
+    assert summary.n_instances == 15
+    assert summary.n_dropped == 1
+    assert summary.n_missing_raw == 0
+    assert len(list((out / "train").glob("*.h5"))) == 8
+    assert len(list((out / "val").glob("*.h5"))) == 3

@@ -39,6 +39,11 @@ from .finetune import (  # noqa: E402
     run_prepare,
     run_train,
 )
+from .pipeline import (  # noqa: E402
+    PipelineConfig,
+    PipelineSummary,
+    run_pipeline,
+)
 from .segmentation import (  # noqa: E402
     SegmentationSummary,
     run_segmentation,
@@ -66,6 +71,9 @@ __all__: list[str] = [
     "run_prepare",
     "run_train",
     "run_evaluate",
+    "PipelineConfig",
+    "PipelineSummary",
+    "run_pipeline",
     # The remaining stages re-export from here as their tickets land:
-    # pipeline.
+    # CLI (09).
 ]

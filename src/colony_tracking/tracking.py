@@ -184,6 +184,58 @@ def extract_segments(labels: np.ndarray) -> list[Segment]:
     return segments
 
 
+def premerge_touching(
+    segments: Sequence[Segment],
+    *,
+    desc: str = "",
+    frame: int | None = None,
+    group: int | None = None,
+) -> list[Segment]:
+    """Merge the segments of one frame/group that touch each other.
+
+    Colonies only grow, so two segments in the same reference group that
+    touch (within ``TOUCH_DILATE`` px, tolerating boundary wobble) are one
+    physical blob that the decoder split at their contact interface —
+    especially in difference images, where the interface lights up because
+    both colonies change there. The smaller segment is folded into the
+    larger one (union mask); the tracker then sees one segment and records
+    the merge through its normal absorb logic. The pass repeats until
+    stable, so chains A-B-C merge into one segment even when B only bridges
+    A and C. Returns the merged segment list; the input segments are left
+    untouched and the survivors keep their own centroid (the prototype's
+    behaviour — the merged row reports the largest piece's centre).
+    """
+    where = f"[{desc}] " if desc else ""
+    at = ""
+    if frame is not None:
+        at = f"frame {frame}"
+        if group is not None:
+            at += f" group {group}"
+        at += ": "
+    segs = sorted(segments, key=lambda s: -s.area)
+    while True:
+        kept: list[Segment] = []
+        merged_any = False
+        for s in segs:
+            for k in kept:
+                if (_dilate(k.mask, TOUCH_DILATE) & s.mask).any():
+                    k.mask |= s.mask
+                    k.area += s.area
+                    merged_any = True
+                    log.info(
+                        "%s%smerged touching %d px segment into %d px segment",
+                        where, at, s.area, k.area,
+                    )
+                    break
+            else:
+                # a copy: folding later segments must not touch the caller's
+                kept.append(Segment(mask=s.mask.copy(), area=s.area,
+                                    cy=s.cy, cx=s.cx))
+        if not merged_any:
+            return kept
+        segs = sorted(kept, key=lambda s: -s.area)
+
+
 @dataclass
 class TrackingResult:
     """The tracking output for one well.
@@ -275,6 +327,8 @@ def track_colonies(
 
         for t, (number, _) in enumerate(frames):
             segs = sorted(per_group[g][t], key=lambda s: -s.area)
+            if merge_touching:
+                segs = premerge_touching(segs, desc=desc, frame=number, group=g)
             matched: dict[int, dict[str, object]] = {}  # id(segment) -> colony
             taken: set[int] = set()  # colonies already continued this frame
             # The colonies' territory as of this frame's start: an already

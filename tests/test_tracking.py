@@ -12,7 +12,9 @@ import numpy as np
 
 from colony_tracking.tracking import (
     ancestor_counts,
+    extract_segments,
     parse_merged,
+    premerge_touching,
     track_colonies,
 )
 
@@ -210,3 +212,36 @@ def test_fork_continues_the_same_id_and_is_counted():
     assert (res.labels[1][28:35, 28:35] == 1).all()  # fragment labelled colony 1
     # the continued main body owns the colony's extent for the next frame
     assert res.rows[1]["merged_with"] == ""
+
+
+# --- pre-merge of touching segments ------------------------------------------
+
+
+def test_touching_segments_premerge_by_default_and_not_when_disabled():
+    groups = one_group()
+    f1 = box_image({1: (10, 10, 20, 20)})
+    f2 = box_image({1: (10, 10, 20, 20), 2: (10, 22, 20, 30)})  # 2 px apart: touching
+    res = track_colonies([(1, f1), (2, f2)], groups)
+    # pre-merged into the larger segment, which continues colony 1
+    assert [r["colony_id"] for r in res.rows] == [1, 1]
+    assert res.rows[1]["area_px"] == 180
+    assert res.counters["forked_segments"] == 0
+    # without the pre-merge the second segment matches nothing and starts
+    # a new colony
+    res = track_colonies([(1, f1), (2, f2)], groups, merge_touching=False)
+    assert [r["colony_id"] for r in res.rows] == [1, 1, 2]
+
+
+def test_premerge_touching_merges_chains_but_not_beyond_dilation():
+    img = box_image({1: (10, 2, 20, 12), 2: (10, 14, 20, 24), 3: (10, 26, 20, 36)},
+                    shape=(30, 40))
+    segs = extract_segments(img)
+    assert len(segs) == 3
+    merged = premerge_touching(segs)
+    # chain A-B-C: the pass repeats until stable, so B bridges A and C
+    assert len(merged) == 1 and merged[0].area == 300
+    # a 4 px gap is beyond TOUCH_DILATE: no merge
+    img = box_image({1: (10, 2, 20, 12), 2: (10, 16, 20, 26)}, shape=(30, 40))
+    assert len(premerge_touching(extract_segments(img))) == 2
+    # the input segments are not mutated (the caller may still hold them)
+    assert segs[0].area == 100

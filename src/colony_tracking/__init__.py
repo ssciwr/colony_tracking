@@ -14,8 +14,12 @@ __version__ = "0.1.0"
 #: The single package logger. All runtime output goes through it — never print.
 log = logging.getLogger("colony_tracking")
 
-from ._options import DifferenceOptions  # noqa: E402
+from ._options import DifferenceOptions, SegmentationOptions  # noqa: E402
 from .difference import DifferenceSummary, run_difference  # noqa: E402
+from .segmentation import (  # noqa: E402
+    SegmentationSummary,
+    run_segmentation,
+)
 
 __all__: list[str] = [
     # Public API re-exports land here as their tickets do:
@@ -23,4 +27,7 @@ __all__: list[str] = [
     "DifferenceOptions",
     "DifferenceSummary",
     "run_difference",
+    "SegmentationOptions",
+    "SegmentationSummary",
+    "run_segmentation",
 ]

@@ -895,6 +895,18 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
     lab = io.read_label_image(labels[0]) if labels \
         else np.zeros(im.shape, np.uint32)
     if lab.any():
+
+        def tint(rgb, m, edge, color):
+            """One shared composite: a 45% translucent fill plus a solid
+            edge, both in ``color``."""
+            sel = np.zeros_like(m, dtype=np.float32)
+            sel[m] = 0.45
+            rgb = (rgb * (1 - sel[..., None])
+                   + np.array(color, np.float32) * sel[..., None]
+                   ).astype(np.uint8)
+            rgb[edge] = color
+            return rgb
+
         for r in lrows:
             cid = r["colony_id"]
             m = lab == cid
@@ -902,26 +914,11 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
                 continue
             edge = m & ~ndi.binary_erosion(m)
             if r["bad"]:
-                sel = np.zeros_like(m, dtype=np.float32)
-                sel[m] = 0.45
-                rgb = (rgb * (1 - sel[..., None])
-                       + np.array([190, 60, 220], np.float32) * sel[..., None]
-                       ).astype(np.uint8)
-                rgb[edge] = (190, 60, 220)
+                rgb = tint(rgb, m, edge, (190, 60, 220))
             elif r["pre_existing"]:
-                sel = np.zeros_like(m, dtype=np.float32)
-                sel[m] = 0.45
-                rgb = (rgb * (1 - sel[..., None])
-                       + np.array([255, 160, 0], np.float32) * sel[..., None]
-                       ).astype(np.uint8)
-                rgb[edge] = (255, 160, 0)
+                rgb = tint(rgb, m, edge, (255, 160, 0))
             elif r["rim_excluded"]:
-                sel = np.zeros_like(m, dtype=np.float32)
-                sel[m] = 0.45
-                rgb = (rgb * (1 - sel[..., None])
-                       + np.array([255, 40, 40], np.float32) * sel[..., None]
-                       ).astype(np.uint8)
-                rgb[edge] = (255, 40, 40)
+                rgb = tint(rgb, m, edge, (255, 40, 40))
             else:
                 rgb[edge] = (40, 220, 40)
     yy, xx = np.mgrid[0:im.shape[0], 0:im.shape[1]]

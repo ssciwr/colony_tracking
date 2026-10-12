@@ -17,6 +17,8 @@ __version__ = "0.1.0"
 #: package.
 log = logging.getLogger("colony_tracking")
 
+from ._options import DifferenceOptions, SegmentationOptions  # noqa: E402
+from .difference import DifferenceSummary, run_difference  # noqa: E402
 from .finetune import (  # noqa: E402
     EvaluateOptions,
     EvaluateSummary,
@@ -28,9 +30,20 @@ from .finetune import (  # noqa: E402
     run_prepare,
     run_train,
 )
+from .segmentation import (  # noqa: E402
+    SegmentationSummary,
+    run_segmentation,
+)
 
 __all__: list[str] = [
-    # Finetune track (ticket 07):
+    # Public API re-exports land here as their tickets do:
+    # option dataclasses, run_* functions, PipelineConfig, summary types.
+    "DifferenceOptions",
+    "DifferenceSummary",
+    "run_difference",
+    "SegmentationOptions",
+    "SegmentationSummary",
+    "run_segmentation",
     "PrepareOptions",
     "TrainOptions",
     "EvaluateOptions",
@@ -41,5 +54,5 @@ __all__: list[str] = [
     "run_train",
     "run_evaluate",
     # The remaining stages re-export from here as their tickets land:
-    # difference, segmentation, analysis, pipeline.
+    # analysis, pipeline.
 ]

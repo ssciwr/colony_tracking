@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02
 
 # 03: `difference` stage
@@ -73,3 +73,7 @@ frames you need).
   re-exported from the package root (`__init__.py`, update `__all__`).
 - Module docstring carries the algorithm detail (polarity flip, 128 contract,
   limit estimation).
+
+## Comments
+
+- 2026-10-12: Resolved by branch t03-difference (merge commit 3337d319aef4525c538aa12f6a67f5514e637f4c); 86 passed; API: run_difference(DifferenceOptions) -> DifferenceSummary(wells/processed/skipped/failed), WellResult(well,status,n_frames,limit,error). Note: difference output file naming is <frame-stem>_diff_uint8.tif with a SINGLE underscore (ticket wording) vs the prototype's double-underscore __diff_uint8 — internally consistent in the new package; downstream discovers diff frames via io.discover_wells (LO-field parsing), not by suffix.

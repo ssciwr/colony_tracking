@@ -99,3 +99,128 @@ def test_circle_fit_rejects_broken_ring(tmp_path):
         tifffile.imwrite(path, np.clip(img, 0, 65535).astype(np.uint16))
     paths = [tmp_path / "raw" / name for name in plate.wells["-A001"][:3]]
     assert analysis.fit_well_circle(paths) is None
+
+
+# --- time, ancestors, rim exclusion, bad flags ---------------------------------
+
+
+def _row(well, frame, t_seconds, colony_id, area, group_id=None, merged=""):
+    """A synthetic colonies.csv row (canonical columns)."""
+    return {
+        "well": well, "frame": frame, "t_seconds": t_seconds,
+        "colony_id": colony_id, "group_id": group_id if group_id is not None else colony_id,
+        "merged_with": merged, "pre_existing": 0, "area_px": area,
+    }
+
+
+def test_transitive_ancestors(tmp_path):
+    """A+B<-C: colony 2 absorbs colony 3, colony 1 then absorbs colony 2,
+    so colony 1's segment combines three original colonies."""
+    rows = [
+        _row("-A001", 5, 0, 1, 100),
+        _row("-A001", 5, 0, 2, 100),
+        _row("-A001", 5, 0, 3, 100),
+        _row("-A001", 7, 2 * 3_600_000, 1, 300, merged="2"),
+        _row("-A001", 7, 2 * 3_600_000, 2, 200, merged="3"),
+    ]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    by = {(r["frame"], r["colony_id"]): r for r in traj}
+    assert by[(5, 1)]["ancestors"] == 1
+    assert by[(5, 2)]["ancestors"] == 1
+    assert by[(5, 3)]["ancestors"] == 1
+    assert by[(7, 2)]["ancestors"] == 2  # 2 absorbs 3
+    assert by[(7, 1)]["ancestors"] == 3  # 1 absorbs 2, which had absorbed 3
+    # canonical output fields
+    assert set(by[(7, 1)]) == {
+        "well", "frame", "t_hours", "colony_id", "group_id", "merged_with",
+        "ancestors", "pre_existing", "area_px", "age_h", "rim_frac",
+        "rim_excluded", "bad", "bad_reason",
+    }
+    # none of these colonies is bad
+    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in traj)
+
+
+def test_rim_exclusion_monotone_from_right_frame(tmp_path):
+    """A colony growing into the rim is excluded from the first frame in
+    which more than rim_overlap_max of its pixels lie in the rim zone, and
+    never un-excluded (monotone over the lifetime)."""
+    well = "-A001"
+    plate = build_mini_plate(
+        tmp_path / "raw",
+        layout="flat",
+        wells=(well,),
+        n_frames=8,
+        rings={well: RingSpec()},
+        disks={well: [DiskSpec("rim", cy=1024.0, cx=1824.0, r0=40.0,
+                               growth=1.35, first_frame=3)]},
+        noise_sigma=0.0,
+    )
+    seg_root = tmp_path / "seg"
+    labels, rows = [], []
+    for f in range(1, plate.n_frames + 1):
+        mask = disk_mask(plate, well, "rim", f)
+        lab = np.zeros((plate.size, plate.size), np.uint32)
+        if mask is not None:
+            lab[mask] = 1
+        labels.append(lab)
+        if mask is not None:
+            ys, xs = np.nonzero(mask)
+            rows.append({
+                "well": well, "frame": f, "t_seconds": plate.t_values[f - 1],
+                "image": plate.wells[well][f - 1], "colony_id": 1, "group_id": 1,
+                "merged_with": "", "pre_existing": 0, "area_px": int(mask.sum()),
+                "centroid_y": float(ys.mean()), "centroid_x": float(xs.mean()),
+            })
+    build_label_series(seg_root / well, labels, well=well)
+
+    # Ground truth from the planted ring: first frame with > 0.1 of the
+    # colony's pixels within 60 px of the well wall.
+    cy, cx, R = plate.ring[well]
+    yy, xx = np.mgrid[0:plate.size, 0:plate.size].astype(np.float32)
+    zone = np.hypot(yy - cy, xx - cx) > R - 60
+    first_excluded = None
+    for f in range(1, plate.n_frames + 1):
+        mask = disk_mask(plate, well, "rim", f)
+        if mask is not None and (mask & zone).sum() / mask.sum() > 0.1:
+            first_excluded = f
+            break
+    assert first_excluded is not None  # the disk does reach the rim
+
+    rim_fracs = analysis.rim_stats(rows, seg_root, (cy, cx, R), 60)
+    traj = analysis.build_trajectories(
+        rows, rim_fracs, _options(tmp_path), series_start_frame=1)
+    excluded = {r["frame"]: r["rim_excluded"] for r in traj}
+    for f in range(3, plate.n_frames + 1):
+        expected = 0 if f < first_excluded else 1
+        assert excluded[f] == expected, f"frame {f}: expected {expected}"
+    # the rim fractions themselves are carried (rounded) in the trajectories
+    assert all(r["rim_frac"] is not None for r in traj)
+
+
+def test_bad_flags(tmp_path):
+    """from_start (first valid frame at the series start) and no_growth
+    (every 2-frame window grows < 1.3) are flagged; a clean grower is not."""
+    well = "-A001"
+    rows = []
+    # colony 1: present from frame 1 (series start), growing 1.25/frame
+    for f in range(1, 6):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.25 ** (f - 1))))
+    # colony 2: appears at frame 2, constant area (stationary debris)
+    for f in range(2, 7):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 2, 500))
+    # colony 3: appears at frame 3, healthy growth 1.35/frame
+    for f in range(3, 9):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 3,
+                         int(100 * 1.35 ** (f - 3))))
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    by_cid = {}
+    for r in traj:
+        by_cid.setdefault(r["colony_id"], []).append(r)
+    assert {r["bad_reason"] for r in by_cid[1]} == {"from_start"}
+    assert all(r["bad"] == 1 for r in by_cid[1])
+    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
+    assert all(r["bad"] == 1 for r in by_cid[2])
+    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[3])

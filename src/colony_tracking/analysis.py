@@ -101,6 +101,8 @@ new writes always use the canonical names.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import tifffile
 from scipy import ndimage as ndi
@@ -241,3 +243,203 @@ def fit_well_circle(paths: list) -> tuple[float, float, float] | None:
     med_r = np.median([f[2] for f in fits])
     fits = [f for f in fits if abs(f[2] - med_r) <= 40]
     return tuple(float(np.mean([f[i] for f in fits])) for i in range(3))
+
+
+# ---------------------------------------------------------------- time ------
+
+
+def t_hours_of(values) -> np.ndarray:
+    """Frame times in hours from the raw ``T`` field (the colonies CSV
+    ``t_seconds`` column).
+
+    Values above 1e6 are read as milliseconds (the dataset's format,
+    T0028808197 = 8.0 h), smaller ones as seconds.
+    """
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return values / 3600.0
+    return values / 3.6e6 if values.max() > 1e6 else values / 3600.0
+
+
+# ----------------------------------------------------------------- rim ------
+
+
+def rim_stats(rows, seg_dir, geo, rim_width: int) -> dict:
+    """Per (frame, colony_id) fraction of colony pixels inside the rim zone.
+
+    For every frame that has rows, the frame's label image is loaded once
+    and binned against a boolean rim-zone image (distance from the fitted
+    well centre > R - rim_width). Returns ``{(frame, colony_id): rim_frac}``;
+    frames whose label image is missing are warned about once and left out.
+    """
+    if geo is None:
+        return {}
+    cy, cx, R = geo
+    out = {}
+    warned = set()
+    by_frame = {}
+    for r in rows:
+        by_frame.setdefault(int(r["frame"]), []).append(r)
+    zone = None
+    for frame, frows in sorted(by_frame.items()):
+        # strips ".tif"; works for raw and __diff_uint8 input frames
+        stem = frows[0]["image"][:-4]
+        path = Path(seg_dir) / frows[0]["well"] / f"{stem}__labels.tif"
+        if not path.exists():
+            if frame not in warned:
+                warned.add(frame)
+                log.warning("[%s] LO%03d: missing label image %s; rim fractions "
+                            "empty", frows[0]["well"], frame, path.name)
+            continue
+        lab = io.read_label_image(path)
+        if zone is None:
+            h, w = lab.shape
+            yy, xx = np.mgrid[0:h, 0:w]
+            d = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2).astype(np.float32)
+            zone = d > (R - rim_width)
+        mx = int(lab.max())
+        if mx == 0:
+            continue
+        n_all = np.bincount(lab.ravel(), minlength=mx + 1)
+        n_zone = np.bincount(lab[zone].ravel(), minlength=mx + 1)
+        for r in frows:
+            cid = int(r["colony_id"])
+            if cid <= mx and n_all[cid]:
+                out[(frame, cid)] = float(n_zone[cid]) / float(n_all[cid])
+    return out
+
+
+# ---------------------------------------------------------- trajectories ----
+
+
+def parse_merged(s: str) -> set:
+    """The colony IDs listed in a ``merged_with`` field (empty when none)."""
+    return {int(v) for v in s.split(";") if v}
+
+
+def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
+    """Per-frame colony records: ancestors, rim exclusion, bad flags.
+
+    One output row per input row, in (well, frame, colony_id) order. For
+    every colony, frames are walked chronologically:
+
+    - ``ancestors`` is the number of distinct original colonies combined in
+      the segment so far, the colony itself included (1 = unmerged). It
+      grows by the full constituent set of every colony newly listed in
+      ``merged_with`` (cumulative union): the pipeline keeps listing
+      absorbed colonies whose last-known masks stay covered, so an absorbed
+      merge product contributes its own history — A merging with B, which
+      had merged with C earlier, ends at 3;
+    - ``rim_excluded`` turns 1 at the first frame whose ``rim_frac`` exceeds
+      ``rim_overlap_max`` and stays 1 (colonies only grow into the rim);
+      rows with no rim fraction (no geometry / missing labels) never
+      exclude;
+    - ``age_h`` is hours since the colony's first valid (not excluded)
+      frame — undefined if the colony was excluded from birth;
+    - ``bad`` flags segments to exclude from the analysis: present from the
+      beginning of the well's series (first valid frame within
+      ``start_frames`` of ``series_start_frame``), or not growing (every
+      exact 2-frame window among the valid frames grows by less than
+      ``1 + min_growth_2step``; needs >= 3 valid frames). ``bad_reason``
+      holds the triggered criteria.
+    - ``pre_existing`` is the pipeline's flag, possibly OR-ed with the
+      base-image probe result for difference roots (see
+      :func:`probe_pre_existing`). Colonies flagged pre_existing are
+      dropped from the aggregates and plots over their whole lifetime, not
+      from the CSVs.
+    """
+    t_hours = {int(r["frame"]): t for r, t in
+               zip(rows, t_hours_of([r["t_seconds"] for r in rows]))}
+    order = sorted(rows, key=lambda r: (int(r["frame"]), int(r["colony_id"])))
+    per_colony = {}
+    for r in order:
+        per_colony.setdefault(int(r["colony_id"]), []).append(r)
+
+    # Colonies each colony ID ever absorbed (union over its frames; the
+    # pipeline's `merged_with` lists the colonies whose last-known masks a
+    # segment covers - including colonies an absorbed colony had taken over
+    # earlier, whose stale masks stay covered).
+    absorbed = {}
+    for cid, crows in per_colony.items():
+        s = set()
+        for r in crows:
+            s |= parse_merged(r["merged_with"])
+        absorbed[cid] = s
+
+    # All original colonies combined in each colony's segment, transitively:
+    # an absorbed merge product contributes its own constituents (A absorbs
+    # B, B had absorbed C -> A's segment comprises A, B and C). Memoised; the
+    # tracker follows time, so cycles cannot arise (guarded anyway).
+    constituents = {}
+
+    def constituents_of(cid, visiting=()):
+        if cid in constituents:
+            return constituents[cid]
+        if cid in visiting:
+            return set()
+        comp = {cid}
+        for y in absorbed.get(cid, ()):
+            comp |= constituents_of(y, visiting + (cid,))
+        constituents[cid] = comp
+        return comp
+
+    for cid in per_colony:
+        constituents_of(cid)
+
+    baseline = {}
+    for cid, crows in per_colony.items():
+        seen = set()  # raw IDs listed in merged_with so far
+        counted = set()  # constituents of everything absorbed so far
+        base = None
+        excluded = False  # once in the rim, always in the rim (colonies only grow)
+        valid = []  # (frame, area) of frames with usable measurements
+        for r in crows:
+            frame = int(r["frame"])
+            ids = parse_merged(r["merged_with"])
+            for y in ids - seen:
+                counted |= constituents_of(y)
+            seen |= ids
+            frac = rim_fracs.get((frame, cid))
+            if frac is not None and frac > options.rim_overlap_max:
+                excluded = True
+            r["rim_excluded"] = int(excluded)
+            r["rim_frac"] = frac
+            r["ancestors"] = 1 + len(counted - {cid})
+            if not r["rim_excluded"]:
+                valid.append((frame, int(r["area_px"])))
+                if base is None:
+                    base = (frame, t_hours[frame], int(r["area_px"]))
+        baseline[cid] = base
+
+        reasons = []
+        if base and series_start_frame is not None \
+                and base[0] < series_start_frame + options.start_frames:
+            reasons.append("from_start")
+        if len(valid) >= 3:
+            windows = [a2 / a1 for i, (l1, a1) in enumerate(valid)
+                       for l2, a2 in valid[i + 1:] if l2 - l1 == 2]
+            if windows and max(windows) < 1.0 + options.min_growth_2step:
+                reasons.append("no_growth")
+        for r in crows:
+            r["bad"] = int(bool(reasons))
+            r["bad_reason"] = ";".join(reasons)
+
+    out = []
+    for r in order:
+        cid = int(r["colony_id"])
+        base = baseline[cid]
+        th = t_hours[int(r["frame"])]
+        out.append({
+            "well": r["well"], "frame": int(r["frame"]),
+            "t_hours": round(th, 3),
+            "colony_id": cid, "group_id": int(r["group_id"]),
+            "merged_with": r["merged_with"], "ancestors": r["ancestors"],
+            "pre_existing": int(r["pre_existing"]),
+            "area_px": int(r["area_px"]),
+            "age_h": round(th - base[1], 3) if base else None,
+            "rim_frac": round(r["rim_frac"], 4) if r["rim_frac"] is not None
+            else None,
+            "rim_excluded": r["rim_excluded"],
+            "bad": r["bad"], "bad_reason": r["bad_reason"],
+        })
+    return out

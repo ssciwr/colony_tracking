@@ -18,13 +18,17 @@ from textwrap import dedent
 import pytest
 
 from colony_tracking import pipeline
+from colony_tracking.analysis import AnalysisSummary
+from colony_tracking.difference import DifferenceSummary
 from colony_tracking.pipeline import (
     ConfigError,
     PipelineConfig,
+    PipelineSummary,
     read_config,
     run_pipeline,
     write_config,
 )
+from colony_tracking.segmentation import SegmentationSummary
 from conftest import build_mini_plate
 
 
@@ -33,6 +37,66 @@ def _write_config(tmp_path, text: str) -> Path:
     path = tmp_path / "config.toml"
     path.write_text(dedent(text), encoding="utf-8")
     return path
+
+
+# --- orchestration fakes --------------------------------------------------------
+
+#: The canned stage summaries the fakes return (all healthy unless told
+#: otherwise): the pipeline must react to the real summary fields.
+
+
+def _diff_summary(failed: int = 0) -> DifferenceSummary:
+    return DifferenceSummary(wells={}, processed=2, skipped=0, failed=failed)
+
+
+def _seg_summary(failed: int = 0) -> SegmentationSummary:
+    return SegmentationSummary(
+        wells=2, processed=2 - failed, skipped=0, failed=failed
+    )
+
+
+def _ana_summary(failures: list[str] | None = None) -> AnalysisSummary:
+    return AnalysisSummary(failures=list(failures or []))
+
+
+def _install_fakes(
+    monkeypatch,
+    *,
+    diff_summary: DifferenceSummary | None = None,
+    seg_summary: SegmentationSummary | None = None,
+    ana_summary: AnalysisSummary | None = None,
+    diff_error: Exception | None = None,
+    seg_error: Exception | None = None,
+    ana_error: Exception | None = None,
+) -> list[tuple[str, object]]:
+    """Replace the three stage functions with recording fakes.
+
+    Returns the list of (stage name, options) calls in call order.
+    """
+    calls: list[tuple[str, object]] = []
+
+    def fake_difference(options):
+        calls.append(("difference", options))
+        if diff_error is not None:
+            raise diff_error
+        return diff_summary if diff_summary is not None else _diff_summary()
+
+    def fake_segmentation(options):
+        calls.append(("segmentation", options))
+        if seg_error is not None:
+            raise seg_error
+        return seg_summary if seg_summary is not None else _seg_summary()
+
+    def fake_analysis(options):
+        calls.append(("analysis", options))
+        if ana_error is not None:
+            raise ana_error
+        return ana_summary if ana_summary is not None else _ana_summary()
+
+    monkeypatch.setattr(pipeline, "run_difference", fake_difference)
+    monkeypatch.setattr(pipeline, "run_segmentation", fake_segmentation)
+    monkeypatch.setattr(pipeline, "run_analysis", fake_analysis)
+    return calls
 
 
 # --- config parse: defaults for omitted keys ---------------------------------
@@ -292,3 +356,121 @@ def test_written_toml_omits_owned_keys(tmp_path):
     assert "input" not in doc["segmentation"]
     assert "diff_dir" not in doc["segmentation"]
     assert "raw_dir" not in doc["analysis"]
+
+
+# --- orchestration: the standard chain (recording fakes, no model) --------------
+
+
+def _minimal_config(tmp_path) -> PipelineConfig:
+    path = _write_config(
+        tmp_path,
+        """\
+        [pipeline]
+        raw_dir = "/data/plate"
+        out_root = "/data/run"
+        reference = 5
+        wells = ["-A001"]
+        """,
+    )
+    return read_config(path)
+
+
+def test_stages_run_in_order_with_wired_options(tmp_path, monkeypatch):
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(monkeypatch)
+    summary = run_pipeline(config)
+    assert [name for name, _ in calls] == [
+        "difference",
+        "segmentation",
+        "analysis",
+    ]
+    (diff_opts,) = [opts for name, opts in calls if name == "difference"]
+    assert diff_opts.raw_dir == Path("/data/plate")
+    assert diff_opts.out_dir == Path("/data/run/difference_LO005")
+    assert diff_opts.reference == 5
+    assert diff_opts.wells == ["-A001"]
+    (seg_opts,) = [opts for name, opts in calls if name == "segmentation"]
+    # the segment stage consumes the difference tree just produced
+    assert seg_opts.input == "diff"
+    assert seg_opts.diff_dir == Path("/data/run/difference_LO005")
+    assert seg_opts.out_dir == Path("/data/run/seg_growth_diff_LO005")
+    assert seg_opts.exclude_before == 5
+    (ana_opts,) = [opts for name, opts in calls if name == "analysis"]
+    # the analyze stage consumes the segment root plus the run-level raw dir
+    assert ana_opts.seg_dirs == [Path("/data/run/seg_growth_diff_LO005")]
+    assert ana_opts.raw_dir == Path("/data/plate")
+    assert ana_opts.out_root == Path("/data/run/analysis")
+    assert ana_opts.wells == ["-A001"]
+    # no raw-input segmentation root is ever invented
+    assert ana_opts.raw_seg_dir is None
+    assert summary.status == "ok"
+    assert summary.failed_stage is None
+    assert summary.difference is not None and summary.difference.processed == 2
+    assert summary.segmentation is not None and summary.segmentation.failed == 0
+    assert summary.analysis is not None and summary.analysis.failures == []
+
+
+def test_stage_exception_aborts_the_chain(tmp_path, monkeypatch, caplog):
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(
+        monkeypatch, diff_error=FileNotFoundError("no such raw tree")
+    )
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    # later stages are not called
+    assert [name for name, _ in calls] == ["difference"]
+    assert summary.status == "failed"
+    assert summary.failed_stage == "difference"
+    assert summary.difference is None
+    assert summary.segmentation is None
+    assert summary.analysis is None
+    errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+    assert any("difference stage failed" in r.getMessage() for r in errors)
+
+
+def test_stage_summary_with_failed_wells_aborts_the_chain(
+    tmp_path, monkeypatch, caplog
+):
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(monkeypatch, diff_summary=_diff_summary(failed=1))
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    assert [name for name, _ in calls] == ["difference"]
+    assert summary.status == "failed"
+    assert summary.failed_stage == "difference"
+    # the failed stage's summary is still reported
+    assert summary.difference is not None and summary.difference.failed == 1
+    assert any(
+        "difference stage failed for 1 well(s)" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+def test_segment_failure_skips_analysis(tmp_path, monkeypatch, caplog):
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(monkeypatch, seg_summary=_seg_summary(failed=2))
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    assert [name for name, _ in calls] == ["difference", "segmentation"]
+    assert summary.status == "failed"
+    assert summary.failed_stage == "segmentation"
+    assert summary.segmentation is not None and summary.segmentation.failed == 2
+    assert summary.analysis is None
+
+
+def test_analysis_failures_fail_the_summary(tmp_path, monkeypatch, caplog):
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(
+        monkeypatch, ana_summary=_ana_summary(failures=["seg_growth_diff_LO005"])
+    )
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    assert [name for name, _ in calls] == [
+        "difference",
+        "segmentation",
+        "analysis",
+    ]
+    assert summary.status == "failed"
+    assert summary.failed_stage == "analysis"
+    assert summary.analysis is not None
+    assert summary.analysis.failures == ["seg_growth_diff_LO005"]

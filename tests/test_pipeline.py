@@ -684,3 +684,45 @@ def test_malformed_toml_is_a_usage_error(tmp_path, caplog):
         r.levelno == logging.ERROR and "not valid TOML" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_missing_raw_tree_fails_the_pipeline_without_raising(
+    tmp_path, monkeypatch, caplog
+):
+    """A real stage exception (no raw tree) is captured, not raised."""
+    config = PipelineConfig(raw_dir=tmp_path / "absent", out_root=tmp_path / "run")
+    calls: list[tuple[str, object]] = []
+
+    def fake_segmentation(options):
+        calls.append(("segmentation", options))
+        return _seg_summary()
+
+    def fake_analysis(options):
+        calls.append(("analysis", options))
+        return _ana_summary()
+
+    monkeypatch.setattr(pipeline, "run_segmentation", fake_segmentation)
+    monkeypatch.setattr(pipeline, "run_analysis", fake_analysis)
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    assert calls == []
+    assert summary.status == "failed"
+    assert summary.failed_stage == "difference"
+    assert summary.difference is None
+    assert any(
+        r.levelno == logging.ERROR and "difference stage failed" in r.getMessage()
+        for r in caplog.records
+    )
+
+
+# --- the public API --------------------------------------------------------------
+
+
+def test_public_api_reexports():
+    import colony_tracking
+
+    assert colony_tracking.PipelineConfig is pipeline.PipelineConfig
+    assert colony_tracking.run_pipeline is pipeline.run_pipeline
+    assert colony_tracking.PipelineSummary is pipeline.PipelineSummary
+    for name in ("PipelineConfig", "run_pipeline", "PipelineSummary"):
+        assert name in colony_tracking.__all__

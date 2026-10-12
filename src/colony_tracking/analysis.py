@@ -1128,6 +1128,25 @@ class AnalysisSummary:
     failures: list[str] = field(default_factory=list)
 
 
+def _root_summary(name, traj, options, wells=None):
+    """The shared RootSummary tail of the two analysis paths.
+
+    Runs :func:`split_bad` over the trajectory rows and collects the
+    pre-existing (well, colony_id) set. ``wells`` is the caller's well
+    count; when omitted (the re-plot path) it is derived from the rows.
+    """
+    if wells is None:
+        wells = len({r["well"] for r in traj})
+    _, per_well_bad, excluded = split_bad(traj, options)
+    pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
+    return RootSummary(
+        name=name, wells=wells,
+        colonies=len({(r["well"], r["colony_id"]) for r in traj}),
+        rows=len(traj), rim_excluded=sum(r["rim_excluded"] for r in traj),
+        bad_segments=sum(len(ids) for ids in per_well_bad.values()),
+        excluded_wells=sorted(excluded), pre_existing=len(pre))
+
+
 def _replot(name, out_dir, options):
     """The plots_only path: re-derive everything from the existing
     trajectories CSV — no image IO, no seg-tree reading, no geometry cache.
@@ -1146,14 +1165,7 @@ def _replot(name, out_dir, options):
         traj.append(r)
     log.info("%s: re-plotting from %s", name, path)
     write_outputs(traj, options, out_dir)
-    _, per_well_bad, excluded = split_bad(traj, options)
-    pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
-    return RootSummary(
-        name=name, wells=len({r["well"] for r in traj}),
-        colonies=len({(r["well"], r["colony_id"]) for r in traj}),
-        rows=len(traj), rim_excluded=sum(r["rim_excluded"] for r in traj),
-        bad_segments=sum(len(ids) for ids in per_well_bad.values()),
-        excluded_wells=sorted(excluded), pre_existing=len(pre))
+    return _root_summary(name, traj, options)
 
 
 def _process_seg_dir(seg_root, name, out_dir, options, geometry):
@@ -1191,18 +1203,11 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry):
         return None
 
     write_outputs(traj, options, out_dir)
-    _, per_well_bad, excluded = split_bad(traj, options)
-    pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
-    n_col = len({(r["well"], r["colony_id"]) for r in traj})
-    n_ex = sum(r["rim_excluded"] for r in traj)
+    summary = _root_summary(name, traj, options, wells=len(wells))
     log.info("%s done: %d wells, %d colonies, %d rows (%d rim-excluded), "
-             "%.1fs", name, len(wells), n_col, len(traj), n_ex,
-             time.time() - t0)
-    return RootSummary(
-        name=name, wells=len(wells), colonies=n_col, rows=len(traj),
-        rim_excluded=n_ex,
-        bad_segments=sum(len(ids) for ids in per_well_bad.values()),
-        excluded_wells=sorted(excluded), pre_existing=len(pre))
+             "%.1fs", name, summary.wells, summary.colonies, summary.rows,
+             summary.rim_excluded, time.time() - t0)
+    return summary
 
 
 def run_analysis(options: AnalysisOptions) -> AnalysisSummary:

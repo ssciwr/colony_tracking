@@ -474,3 +474,54 @@ def test_analysis_failures_fail_the_summary(tmp_path, monkeypatch, caplog):
     assert summary.failed_stage == "analysis"
     assert summary.analysis is not None
     assert summary.analysis.failures == ["seg_growth_diff_LO005"]
+
+
+# --- interrupted-run re-entry (real difference stage, fake later stages) --------
+
+
+def _two_well_plate(tmp_path) -> PipelineConfig:
+    """A tiny noise-free two-well plate plus a pipeline config for it."""
+    plate = build_mini_plate(
+        tmp_path / "raw",
+        layout="flat",
+        wells=("-A001", "-A002"),
+        n_frames=2,
+        size=256,
+        noise_sigma=0,
+        rings={w: None for w in ("-A001", "-A002")},
+        disks={},
+    )
+    return PipelineConfig(raw_dir=plate.root, out_root=tmp_path / "run")
+
+
+def test_rerun_skips_complete_wells(tmp_path, monkeypatch):
+    config = _two_well_plate(tmp_path)
+    calls: list[tuple[str, object]] = []
+
+    def fake_segmentation(options):
+        calls.append(("segmentation", options))
+        return _seg_summary()
+
+    def fake_analysis(options):
+        calls.append(("analysis", options))
+        return _ana_summary()
+
+    monkeypatch.setattr(pipeline, "run_segmentation", fake_segmentation)
+    monkeypatch.setattr(pipeline, "run_analysis", fake_analysis)
+
+    first = run_pipeline(config)
+    assert first.status == "ok"
+    assert first.difference is not None
+    assert (first.difference.processed, first.difference.skipped) == (2, 0)
+
+    # A second run re-enters: the difference stage's own resume logic skips
+    # the complete wells (done markers), and the chain still runs — the
+    # pipeline keeps no bookkeeping of its own and calls every stage again.
+    second = run_pipeline(config)
+    assert second.status == "ok"
+    assert second.difference is not None
+    assert (second.difference.processed, second.difference.skipped) == (0, 2)
+    assert [name for name, _ in calls] == ["segmentation", "analysis"] * 2
+    # identical stage options on re-entry — the derived names do not drift
+    assert calls[0][1] == calls[2][1]  # segmentation
+    assert calls[1][1] == calls[3][1]  # analysis

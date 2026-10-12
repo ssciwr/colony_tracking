@@ -24,6 +24,21 @@ RAW_NAME = (
 )
 
 
+def _frame_name(well: str, lo: int, t_ms: int) -> str:
+    """Build a canonical raw-plate frame name for discovery tests."""
+    return (
+        f"{well}--PO01--LO{lo:03d}--CO1--SL001--PX32500--PW0050--IN0020"
+        f"--TM366--X014222--Y011210--Z220046--T{t_ms:010d}--WE00001.tif"
+    )
+
+
+def _write_frame(directory, name: str, shape=(4, 4)) -> None:
+    tifffile.imwrite(directory / name, np.zeros(shape, np.uint16))
+
+
+HOUR = 3_600_000  # ms; the real plate's frames are hourly
+
+
 # --- file-name parsing -----------------------------------------------------
 
 
@@ -55,3 +70,62 @@ def test_parse_time():
     assert io.parse_time("ref__labels.tif") is None
     # The TM field must not be mistaken for the T field.
     assert io.parse_time("-A001--TM366--X0.tif") is None
+
+
+# --- input-tree discovery ---------------------------------------------------
+
+
+def test_discover_flat_layout(tmp_path):
+    # Written out of order on purpose: discovery must sort by frame number.
+    for lo, t in [(2, 2 * HOUR), (1, 0), (3, 3 * HOUR)]:
+        _write_frame(tmp_path, _frame_name("-A001", lo, t))
+    for lo, t in [(1, 0), (2, 2 * HOUR)]:
+        _write_frame(tmp_path, _frame_name("-B004", lo, t))
+    # Non-frame files are ignored.
+    (tmp_path / "notes.txt").write_text("nope")
+    _write_frame(tmp_path, "._" + _frame_name("-C001", 1, 0))  # resource fork
+    _write_frame(tmp_path, "ref__labels.tif")  # no well, no LO field
+
+    wells = io.discover_wells(tmp_path)
+    assert set(wells) == {"-A001", "-B004"}
+    assert [f.frame for f in wells["-A001"]] == [1, 2, 3]
+    assert [f.t for f in wells["-A001"]] == [0, 2 * HOUR, 3 * HOUR]
+    assert wells["-A001"][0].name == _frame_name("-A001", 1, 0)
+    assert wells["-A001"][0].path == tmp_path / _frame_name("-A001", 1, 0)
+    assert wells["-A001"][0].well == "-A001"
+
+
+def test_discover_per_well_layout(tmp_path):
+    a = tmp_path / "-A001"
+    b = tmp_path / "-B004"
+    a.mkdir()
+    b.mkdir()
+    for lo, t in [(3, 3 * HOUR), (1, 0), (2, 2 * HOUR)]:
+        _write_frame(a, _frame_name("-A001", lo, t))
+    _write_frame(a, "ref__labels.tif")  # no LO field: not a frame
+    _write_frame(b, _frame_name("-B004", 1, 0))
+    # A stray top-level frame is ignored in the per-well layout.
+    _write_frame(tmp_path, _frame_name("-C001", 1, 0))
+
+    wells = io.discover_wells(tmp_path)
+    assert set(wells) == {"-A001", "-B004"}
+    assert [f.frame for f in wells["-A001"]] == [1, 2, 3]
+    assert wells["-A001"][2].path == a / _frame_name("-A001", 3, 3 * HOUR)
+
+
+def test_discover_wells_filter_and_ordering(tmp_path):
+    for lo, t in [(1, 0), (2, 2 * HOUR)]:
+        _write_frame(tmp_path, _frame_name("-A001", lo, t))
+    _write_frame(tmp_path, _frame_name("-B004", 1, 0))
+
+    assert set(io.discover_wells(tmp_path, wells=["-B004"])) == {"-B004"}
+
+    # Frames with the same LO order by the T field.
+    _write_frame(tmp_path, _frame_name("-A001", 2, HOUR + 1))
+    ordered = io.discover_wells(tmp_path)["-A001"]
+    assert [f.t for f in ordered if f.frame == 2] == [HOUR + 1, 2 * HOUR]
+
+
+def test_discover_missing_root(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        io.discover_wells(tmp_path / "no-such-dir")

@@ -71,7 +71,7 @@ import tomllib
 import traceback
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
 import tomli_w
 
@@ -497,6 +497,46 @@ class PipelineSummary:
     analysis: AnalysisSummary | None = None
 
 
+def _failed_wells(summary) -> str | None:
+    """Failure detail for the well-counting stages (None when the stage ok)."""
+    return f"for {summary.failed} well(s)" if summary.failed else None
+
+
+def _run_stage(
+    stage: Stage,
+    label: str,
+    target: Any,
+    run: Callable[[], Any],
+    done: dict[str, Any],
+    fail_detail: Callable[[Any], str | None],
+) -> tuple[Any, PipelineSummary | None]:
+    """Run one pipeline stage with the shared try/abort discipline.
+
+    Logs the start line, runs the stage, and on a failure — an exception,
+    or ``fail_detail(summary)`` returning a non-None description — logs the
+    error and builds the failed :class:`PipelineSummary` that aborts the
+    chain. The stage's own summary is embedded in the abort summary only
+    when it completed but reported a failure; ``done`` holds the summaries
+    of the stages already completed.
+
+    Returns ``(summary, abort)``: the stage's summary (None when it raised)
+    and the abort summary (None when the stage succeeded).
+    """
+    log.info("pipeline: %s → %s", label, target)
+    try:
+        summary = run()
+    except Exception:
+        log.error("pipeline: %s stage failed\n%s", label, traceback.format_exc())
+        return None, PipelineSummary(status="failed", failed_stage=stage, **done)
+    detail = fail_detail(summary)
+    if detail is not None:
+        log.error("pipeline: %s stage failed %s — aborting", label, detail)
+        return summary, PipelineSummary(
+            status="failed", failed_stage=stage, **done, **{stage: summary},
+        )
+    return summary, None
+
+
 def run_pipeline(config: PipelineConfig) -> PipelineSummary:
     """Run the standard chain (see the module docstring).
 
@@ -511,58 +551,27 @@ def run_pipeline(config: PipelineConfig) -> PipelineSummary:
         "pipeline: reference %s, raw %s → out %s",
         config.reference, config.raw_dir, config.out_root,
     )
-    log.info("pipeline: [1/3] difference → %s", diff_opts.out_dir)
-    try:
-        diff_summary = run_difference(diff_opts)
-    except Exception:
-        log.error("pipeline: difference stage failed\n%s", traceback.format_exc())
-        return PipelineSummary(status="failed", failed_stage="difference")
-    if diff_summary.failed:
-        log.error(
-            "pipeline: difference stage failed for %d well(s) — aborting",
-            diff_summary.failed,
-        )
-        return PipelineSummary(
-            status="failed", failed_stage="difference", difference=diff_summary
-        )
-
-    log.info("pipeline: [2/3] segment (input=diff) → %s", seg_opts.out_dir)
-    try:
-        seg_summary = run_segmentation(seg_opts)
-    except Exception:
-        log.error("pipeline: segment stage failed\n%s", traceback.format_exc())
-        return PipelineSummary(
-            status="failed", failed_stage="segmentation", difference=diff_summary
-        )
-    if seg_summary.failed:
-        log.error(
-            "pipeline: segment stage failed for %d well(s) — aborting",
-            seg_summary.failed,
-        )
-        return PipelineSummary(
-            status="failed", failed_stage="segmentation",
-            difference=diff_summary, segmentation=seg_summary,
-        )
-
-    log.info("pipeline: [3/3] analyze → %s", ana_opts.out_root)
-    try:
-        ana_summary = run_analysis(ana_opts)
-    except Exception:
-        log.error("pipeline: analyze stage failed\n%s", traceback.format_exc())
-        return PipelineSummary(
-            status="failed", failed_stage="analysis",
-            difference=diff_summary, segmentation=seg_summary,
-        )
-    if ana_summary.failures:
-        log.error(
-            "pipeline: analyze stage failed for root(s) %s — aborting",
-            ana_summary.failures,
-        )
-        return PipelineSummary(
-            status="failed", failed_stage="analysis",
-            difference=diff_summary, segmentation=seg_summary,
-            analysis=ana_summary,
-        )
+    diff_summary, abort = _run_stage(
+        "difference", "[1/3] difference", diff_opts.out_dir,
+        lambda: run_difference(diff_opts), {}, _failed_wells,
+    )
+    if abort:
+        return abort
+    seg_summary, abort = _run_stage(
+        "segmentation", "[2/3] segment (input=diff)", seg_opts.out_dir,
+        lambda: run_segmentation(seg_opts), {"difference": diff_summary},
+        _failed_wells,
+    )
+    if abort:
+        return abort
+    ana_summary, abort = _run_stage(
+        "analysis", "[3/3] analyze", ana_opts.out_root,
+        lambda: run_analysis(ana_opts),
+        {"difference": diff_summary, "segmentation": seg_summary},
+        lambda s: f"for root(s) {s.failures}" if s.failures else None,
+    )
+    if abort:
+        return abort
 
     log.info("pipeline: done — all three stages ok")
     return PipelineSummary(

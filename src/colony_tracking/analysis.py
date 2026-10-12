@@ -287,7 +287,7 @@ def rim_stats(rows, seg_dir, geo, rim_width: int) -> dict:
         by_frame.setdefault(int(r["frame"]), []).append(r)
     zone = None
     for frame, frows in sorted(by_frame.items()):
-        # strips ".tif"; works for raw and __diff_uint8 input frames
+        # strips ".tif"; works for raw and _diff_uint8 input frames
         stem = frows[0]["image"][:-4]
         path = Path(seg_dir) / frows[0]["well"] / f"{stem}__labels.tif"
         if not path.exists():

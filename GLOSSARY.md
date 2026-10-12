@@ -10,7 +10,8 @@ Sections: Data / Colonies / Exclusions-and-flags / Analysis.
 **plate** — A 96-well culture plate; the unit of one experiment, one raw
 input tree, and one pipeline run.
 
-**well** — One of the 96 wells of a plate, named like `-A01`. In a flat
+**well** — One of the 96 wells of a plate, named like `-A001` (the
+`-<A-H>\d{3}` binding). In a flat
 input tree the well is parsed from the leading `-<A-H>\d{3}` of the file
 name; in a per-well input tree it is the subdirectory name. All stage
 outputs are per-well nested subdirectories.

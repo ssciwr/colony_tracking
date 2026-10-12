@@ -237,7 +237,7 @@ Tree names keep the `LO<nnn>` suffix convention. A pipeline run with
 reference frame 5 writes `difference_LO005/`, `seg_growth_diff_LO005/`,
 and `analysis/` under its out root.
 
-**A difference tree** holds, per well, the uint8 `__diff_uint8.tif` frames
+**A difference tree** holds, per well, the uint8 `_diff_uint8.tif` frames
 plus `scale.txt` — key/value lines with `reference` (the reference frame's
 file name) and `display_limit_int16` (the float display limit). Readers
 tolerate missing or extra lines. Frames acquired before the reference

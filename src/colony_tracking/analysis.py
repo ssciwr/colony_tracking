@@ -350,21 +350,25 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
     """
     t_hours = {int(r["frame"]): t for r, t in
                zip(rows, t_hours_of([r["t_seconds"] for r in rows]))}
-    order = sorted(rows, key=lambda r: (int(r["frame"]), int(r["colony_id"])))
+    # (well, colony_id) keys: the prototype flow feeds one well at a time,
+    # but the grouping must not bleed across wells either way.
+    order = sorted(rows, key=lambda r: (str(r["well"]), int(r["frame"]),
+                                        int(r["colony_id"])))
     per_colony = {}
     for r in order:
-        per_colony.setdefault(int(r["colony_id"]), []).append(r)
+        per_colony.setdefault((r["well"], int(r["colony_id"])), []).append(r)
 
-    # Colonies each colony ID ever absorbed (union over its frames; the
+    # Colonies each colony ever absorbed (union over its frames; the
     # pipeline's `merged_with` lists the colonies whose last-known masks a
     # segment covers - including colonies an absorbed colony had taken over
-    # earlier, whose stale masks stay covered).
+    # earlier, whose stale masks stay covered). Colony IDs are per-well, so
+    # every merge-graph key below is (well, colony_id).
     absorbed = {}
-    for cid, crows in per_colony.items():
+    for key, crows in per_colony.items():
         s = set()
         for r in crows:
             s |= parse_merged(r["merged_with"])
-        absorbed[cid] = s
+        absorbed[key] = s
 
     # All original colonies combined in each colony's segment, transitively:
     # an absorbed merge product contributes its own constituents (A absorbs
@@ -372,22 +376,23 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
     # tracker follows time, so cycles cannot arise (guarded anyway).
     constituents = {}
 
-    def constituents_of(cid, visiting=()):
-        if cid in constituents:
-            return constituents[cid]
-        if cid in visiting:
+    def constituents_of(key, visiting=()):
+        if key in constituents:
+            return constituents[key]
+        if key in visiting:
             return set()
-        comp = {cid}
-        for y in absorbed.get(cid, ()):
-            comp |= constituents_of(y, visiting + (cid,))
-        constituents[cid] = comp
+        comp = {key[1]}
+        for y in absorbed.get(key, ()):
+            comp |= constituents_of((key[0], y), visiting + (key,))
+        constituents[key] = comp
         return comp
 
-    for cid in per_colony:
-        constituents_of(cid)
+    for key in per_colony:
+        constituents_of(key)
 
     baseline = {}
-    for cid, crows in per_colony.items():
+    for key, crows in per_colony.items():
+        well, cid = key
         seen = set()  # raw IDs listed in merged_with so far
         counted = set()  # constituents of everything absorbed so far
         base = None
@@ -397,9 +402,11 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
             frame = int(r["frame"])
             ids = parse_merged(r["merged_with"])
             for y in ids - seen:
-                counted |= constituents_of(y)
+                counted |= constituents_of((well, y))
             seen |= ids
-            frac = rim_fracs.get((frame, cid))
+            # rim_stats keys by (frame, colony_id) for its per-well input; the
+            # (well, frame, colony_id) form is accepted as well.
+            frac = rim_fracs.get((well, frame, cid), rim_fracs.get((frame, cid)))
             if frac is not None and frac > options.rim_overlap_max:
                 excluded = True
             r["rim_excluded"] = int(excluded)
@@ -409,7 +416,7 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
                 valid.append((frame, int(r["area_px"])))
                 if base is None:
                     base = (frame, t_hours[frame], int(r["area_px"]))
-        baseline[cid] = base
+        baseline[key] = base
 
         reasons = []
         if base and series_start_frame is not None \
@@ -427,7 +434,7 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
     out = []
     for r in order:
         cid = int(r["colony_id"])
-        base = baseline[cid]
+        base = baseline[(r["well"], cid)]
         th = t_hours[int(r["frame"])]
         out.append({
             "well": r["well"], "frame": int(r["frame"]),
@@ -443,3 +450,26 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
             "bad": r["bad"], "bad_reason": r["bad_reason"],
         })
     return out
+
+
+# ----------------------------------------------------------------- bad well ---
+
+
+def split_bad(traj, options):
+    """Split trajectories into usable rows and the bad-segment bookkeeping.
+
+    Bad segments (colony-level ``bad`` flag) always leave the aggregates and
+    plots. Wells holding at least ``max_bad_segments`` distinct bad segments
+    additionally drop out completely (their remaining colonies are suspect
+    too) unless ``keep_bad_wells`` is set. Returns ``(usable rows, per-well
+    bad colony ids, excluded well names)``.
+    """
+    per_well_bad = {}
+    for r in traj:
+        if r["bad"]:
+            per_well_bad.setdefault(r["well"], set()).add(r["colony_id"])
+    excluded = {w for w, ids in per_well_bad.items()
+                if len(ids) >= options.max_bad_segments
+                and not options.keep_bad_wells}
+    traj_f = [r for r in traj if r["well"] not in excluded and not r["bad"]]
+    return traj_f, per_well_bad, excluded

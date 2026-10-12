@@ -224,3 +224,54 @@ def test_bad_flags(tmp_path):
     assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
     assert all(r["bad"] == 1 for r in by_cid[2])
     assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[3])
+
+
+# --- bad-well split ------------------------------------------------------------
+
+
+def _traj_for_split(tmp_path):
+    """Two wells for the bad-well split: -A001 holds two bad colonies
+    (from_start, no_growth) plus one clean grower; -A002 holds one bad colony
+    plus one clean grower."""
+    well_a, well_b = "-A001", "-A002"
+    rows = []
+    for f in range(1, 6):  # -A001/1: present from the series start
+        rows.append(_row(well_a, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.25 ** (f - 1))))
+    for f in range(2, 7):  # -A001/2: stationary debris
+        rows.append(_row(well_a, f, (f - 1) * 3_600_000, 2, 500))
+    for f in range(3, 9):  # -A001/3: healthy grower
+        rows.append(_row(well_a, f, (f - 1) * 3_600_000, 3,
+                         int(100 * 1.35 ** (f - 3))))
+    for f in range(3, 9):  # -A002/1: healthy grower
+        rows.append(_row(well_b, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.35 ** (f - 3))))
+    for f in range(2, 7):  # -A002/2: stationary debris
+        rows.append(_row(well_b, f, (f - 1) * 3_600_000, 2, 500))
+    return analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+
+
+def test_split_bad_excludes_overloaded_wells(tmp_path):
+    """A well with at least ``max_bad_segments`` distinct bad colonies
+    (default 2) drops out of the aggregates entirely — its clean colonies
+    too (they are suspect as well); a well below the threshold keeps its
+    clean colonies, minus the bad rows."""
+    traj = _traj_for_split(tmp_path)
+    usable, per_well_bad, excluded = analysis.split_bad(traj, _options(tmp_path))
+    assert per_well_bad == {"-A001": {1, 2}, "-A002": {2}}
+    assert excluded == {"-A001"}
+    got = {(r["well"], r["colony_id"]) for r in usable}
+    assert got == {("-A002", 1)}  # -A001's clean colony 3 goes with the well
+
+
+def test_split_bad_keep_bad_wells(tmp_path):
+    """With ``keep_bad_wells`` no well is excluded; only the bad rows
+    themselves leave the aggregates."""
+    traj = _traj_for_split(tmp_path)
+    usable, per_well_bad, excluded = analysis.split_bad(
+        traj, _options(tmp_path, keep_bad_wells=True))
+    assert excluded == set()
+    assert per_well_bad == {"-A001": {1, 2}, "-A002": {2}}
+    got = {(r["well"], r["colony_id"]) for r in usable}
+    assert got == {("-A001", 3), ("-A002", 1)}

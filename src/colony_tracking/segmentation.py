@@ -497,7 +497,11 @@ def _reid_well(
     if exclude_before is not None:
         _blanking_log(well, frames, exclude_before)
     if not groups.any():
-        io.write_done(well_dir, dict.fromkeys(io.SEGMENT_DONE_KEYS, 0))
+        io.write_done(well_dir, {
+            "frames": len(frames), "groups": 0, "colonies": 0,
+            "pre_existing_colonies": 0, "merge_events": 0,
+            "forked_segments": 0, "discarded_instances": 0,
+        })
         log.info("[%s] empty reference, nothing to re-assign", well)
         return "skipped"
     kept = []

@@ -215,6 +215,38 @@ def test_run_segmentation_rejects_diff_reference_equal_to_final_frame(
     assert not (out_dir / "-A001").exists()
 
 
+def test_run_segmentation_skips_wells_without_a_scale_reference(tmp_path, caplog):
+    diff_dir = tmp_path / "difference_LO003"
+    _write_diff_tree(diff_dir, "-A001", los=(1, 2, 3))
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_segmentation(
+            SegmentationOptions(input="diff", diff_dir=diff_dir,
+                                out_dir=tmp_path / "seg")
+        )
+    assert (summary.processed, summary.skipped, summary.failed) == (0, 1, 0)
+    assert "no scale.txt with a reference line" in caplog.text
+    assert not (tmp_path / "seg" / "-A001").exists()
+
+
+def test_run_segmentation_resumes_via_the_done_marker_without_the_model(tmp_path):
+    plate = build_mini_plate(
+        tmp_path / "raw", layout="per_well", wells=("-A001",), n_frames=2,
+        size=32, rings={"-A001": None}, disks={"-A001": []}, noise_sigma=0.0,
+    )
+    out = tmp_path / "seg"
+    well_dir = out / "-A001"
+    well_dir.mkdir(parents=True)
+    io.write_done(well_dir, dict.fromkeys(io.SEGMENT_DONE_KEYS, 0))
+
+    summary = run_segmentation(
+        SegmentationOptions(input="raw", raw_dir=plate.root, out_dir=out)
+    )
+
+    assert (summary.processed, summary.skipped, summary.failed) == (0, 1, 0)
+    # nothing to do: the model was never even loaded
+    assert not any(name.startswith("micro_sam") for name in sys.modules)
+
+
 def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
     diff_dir = tmp_path / "difference_LO001"
     _write_diff_tree(diff_dir, "-A001", los=(1, 2, 3))
@@ -229,20 +261,20 @@ def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
 
 # --- re-ID end-to-end on a synthetic label tree -----------------------------------
 
-WELLS = ("-A001", "-B002")
+WELLS = ("-A001", "-B002", "-C003")
 
 
-def _seed_series(well_dir, well, names, labels):
+def _seed_series(well_dir, well, names, labels, ref=None):
     """Write a completed-looking well output tree (labels, ref, CSV, marker).
 
     The initial label values are deliberately not colony IDs (and one label
     value is shared by two disjoint objects) — re-ID must re-derive the
     segments and the identity, not copy anything.
     """
+    if ref is None:
+        ref = np.ones(labels[0].shape, np.uint32)
     build_label_series(well_dir, labels, well=well, names=names)
-    io.write_label_image(
-        well_dir / "ref__labels.tif", np.ones(labels[0].shape, np.uint32)
-    )
+    io.write_label_image(well_dir / "ref__labels.tif", ref)
     io.write_colonies(well_dir / "colonies.csv", [])
     io.write_done(well_dir, dict.fromkeys(io.SEGMENT_DONE_KEYS, 0))
 
@@ -278,6 +310,11 @@ def _labels_b():
     return [f1, f3, f4, f5]
 
 
+def _labels_c():
+    """Well C, frames 1..5: nothing was ever segmented (empty reference)."""
+    return [np.zeros((40, 60), np.uint32) for _ in range(5)]
+
+
 def test_reid_retracks_and_rewrites_outputs(tmp_path):
     plate = build_mini_plate(
         tmp_path / "raw", layout="per_well", wells=WELLS, n_frames=5, size=64,
@@ -291,6 +328,9 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     names_b = plate.wells["-B002"]
     (plate.root / "-B002" / names_b[1]).unlink()
     _seed_series(out / "-B002", "-B002", names_b[:1] + names_b[2:], _labels_b())
+    # well C: an empty reference (the growth mask found nothing)
+    names_c = plate.wells["-C003"]
+    _seed_series(out / "-C003", "-C003", names_c, _labels_c(), ref=np.zeros((40, 60), np.uint32))
 
     summary = run_segmentation(
         SegmentationOptions(
@@ -299,7 +339,7 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
         )
     )
 
-    assert (summary.processed, summary.skipped, summary.failed) == (2, 0, 0)
+    assert (summary.processed, summary.skipped, summary.failed) == (2, 1, 0)
     assert summary.gate_skipped_frames == 0
     # re-ID never touches the model
     assert not any(name.startswith("micro_sam") for name in sys.modules)
@@ -360,6 +400,13 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
         "frames": 4, "groups": 1, "colonies": 2, "pre_existing_colonies": 0,
         "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
     }
+
+    # -- well C: empty reference — nothing to re-assign, marker rewritten -----
+    assert io.read_done(out / "-C003") == {
+        "frames": 5, "groups": 0, "colonies": 0, "pre_existing_colonies": 0,
+        "merge_events": 0, "forked_segments": 0, "discarded_instances": 0,
+    }
+    assert io.read_colonies(out / "-C003" / "colonies.csv") == []
 
 
 # --- the module import stays torch/micro-sam free --------------------------------

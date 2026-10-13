@@ -211,6 +211,27 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 | `--patch-shape` | `512 512` | Tile size in px, (height, width); instances larger than a tile are flagged clipped. |
 | `--output` | `none` | Optional path for a JSON report. |
 
+## Python API
+
+```python
+import logging
+from colony_tracking import DifferenceOptions, run_difference
+
+logging.basicConfig(level=logging.INFO)   # all output goes through logging
+
+opts = DifferenceOptions(raw_dir="plate", out_dir="difference_LO005", reference=5)
+summary = run_difference(opts)
+```
+
+Every stage follows the same shape — an options dataclass whose defaults
+mirror the CLI flags, a `run_*` function, and a small summary dataclass.
+The pipeline step takes a `PipelineConfig` instead;
+`read_config(path)` and `write_config(config, path)` — module-level
+functions in `colony_tracking.pipeline` — round-trip it as TOML. The
+finetune track exposes `PrepareOptions`/`TrainOptions`/`EvaluateOptions`
+with their `run_*` functions the same way; the conversion module is
+private.
+
 ## Input trees
 
 Every stage accepts two input layouts:

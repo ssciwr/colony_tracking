@@ -148,7 +148,7 @@ def _process_well(
             cur = _load(frame.path)
             diff = cur - ref
             del cur
-        out_name = f"{Path(frame.name).stem}_diff_uint8.tif"
+        out_name = f"{frame.stem}_diff_uint8.tif"
         tifffile.imwrite(
             out_dir / out_name, io.map_to_uint8(diff, limit), compression="zlib"
         )

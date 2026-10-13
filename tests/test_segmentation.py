@@ -238,13 +238,20 @@ def test_run_segmentation_resumes_via_the_done_marker_without_the_model(tmp_path
     well_dir.mkdir(parents=True)
     io.write_done(well_dir, dict.fromkeys(io.SEGMENT_DONE_KEYS, 0))
 
+    modules_before = set(sys.modules)
     summary = run_segmentation(
         SegmentationOptions(input="raw", raw_dir=plate.root, out_dir=out)
     )
 
     assert (summary.processed, summary.skipped, summary.failed) == (0, 1, 0)
-    # nothing to do: the model was never even loaded
-    assert not any(name.startswith("micro_sam") for name in sys.modules)
+    # nothing to do: the model was never even loaded (what matters is the
+    # delta — other tests may legitimately have torch in sys.modules)
+    pulled = {
+        name
+        for name in set(sys.modules) - modules_before
+        if name.startswith("micro_sam")
+    }
+    assert not pulled
 
 
 def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
@@ -339,11 +346,25 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
         )
     )
 
+    modules_before = set(sys.modules)
+    summary = run_segmentation(
+        SegmentationOptions(
+            input="raw", raw_dir=plate.root, out_dir=out,
+            exclude_before=2, reid_only=True,
+        )
+    )
+
     assert (summary.processed, summary.skipped, summary.failed) == (2, 1, 0)
     assert summary.gate_skipped_frames == 0
-    # re-ID never touches the model
-    assert not any(name.startswith("micro_sam") for name in sys.modules)
-    assert not any(name == "torch" or name.startswith("torch.") for name in sys.modules)
+    # re-ID never touches the model (delta: other tests may legitimately
+    # have torch in sys.modules)
+    pulled = {
+        name
+        for name in set(sys.modules) - modules_before
+        if name == "torch" or name.startswith("torch.")
+        or name.startswith("micro_sam")
+    }
+    assert not pulled
 
     # -- well A: IDs continue, the merge is recorded, frame 1 is blanked -----
     a_dir = out / "-A001"
@@ -416,6 +437,14 @@ def test_importing_the_module_does_not_pull_torch_or_micro_sam(monkeypatch):
     import importlib
 
     monkeypatch.delitem(sys.modules, "colony_tracking.segmentation", raising=False)
+    modules_before = set(sys.modules)
     importlib.import_module("colony_tracking.segmentation")
-    assert not any(name.startswith("micro_sam") for name in sys.modules)
-    assert not any(name == "torch" or name.startswith("torch.") for name in sys.modules)
+    # The module's own import chain pulls no model stack (delta: other
+    # tests may legitimately have torch in sys.modules).
+    pulled = {
+        name
+        for name in set(sys.modules) - modules_before
+        if name == "torch" or name.startswith("torch.")
+        or name.startswith("micro_sam")
+    }
+    assert not pulled

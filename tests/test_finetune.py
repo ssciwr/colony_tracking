@@ -1,15 +1,18 @@
-"""Tests for the finetune track (hermetic: the data conversion only).
+"""Tests for the finetune track (hermetic throughout).
 
-Seams under test (per the ticket): the finetune option dataclasses (the
-CLI contract of the spec's "Options and CLI contract" section) and
-``run_prepare`` on a small synthetic labeled mini-plate — the well-based
-split (no well crosses the split; greedy instance-richest wells until
-``val_fraction``; the ``max_val_wells`` cap; an explicit val-well list),
-low-instance label drops, the h5 contents (dtypes, shapes, stretched
-values, gzip 4), and the summary counters. The model-dependent
-train/evaluate paths are outside the automated suite (no GPU or network —
-spec "Out of Scope"); they are covered for their logged
-missing-prerequisite errors only.
+Seams under test: the finetune option dataclasses (the CLI contract of the
+spec's "Options and CLI contract" section) and ``run_prepare`` on a small
+synthetic labeled mini-plate — the well-based split (no well crosses the
+split; greedy instance-richest wells until ``val_fraction``; the
+``max_val_wells`` cap; an explicit val-well list), low-instance label
+drops, the h5 contents (dtypes, shapes, stretched values, gzip 4), and the
+summary counters. The scoring seam ``predict_instances`` (tile choice,
+box-order swap, IoU, clipped flag, ``n_max_instances`` cap, the box-only
+prompt contract — via an injectable predictor and bounding-box helper) and
+the loader seam ``build_loader`` (a one-batch smoke test, no model) are
+tested hermetically too. Only the real model runs stay outside the suite
+(no GPU or network — spec "Out of Scope"); the train/evaluate paths are
+covered for their logged missing-prerequisite errors only.
 """
 
 import dataclasses
@@ -30,6 +33,8 @@ from colony_tracking.finetune import (
     PrepareOptions,
     PrepareSummary,
     TrainOptions,
+    build_loader,
+    predict_instances,
     run_evaluate,
     run_prepare,
     run_train,
@@ -469,6 +474,146 @@ def test_run_evaluate_missing_checkpoint_logs_error(tmp_path, caplog):
     assert "torch" not in sys.modules
 
 
+# --- the scoring seam (ported from v1; hermetic — no model stack) -------------
+#
+# ``predict_instances`` scores every ground-truth instance exactly once, in
+# the tile that best contains it. The predictor and the bounding-box helper
+# are injected, so the tile choice, the [y0, x0, y1, x1] -> [x0, y0, x1, y1]
+# swap, the IoU and the clipped flag are testable without micro-sam.
+
+
+def _stamp_disk(image: np.ndarray, cy: int, cx: int, r: int, value: int) -> None:
+    """Stamp a disk into an image, in place (v1's make_disk)."""
+    yy, xx = np.ogrid[: image.shape[0], : image.shape[1]]
+    image[(yy - cy) ** 2 + (xx - cx) ** 2 <= r * r] = value
+
+
+def _disk_labels(
+    shape: tuple[int, int],
+    disks: list[tuple[int, int, int]],
+    dtype=np.uint32,
+) -> np.ndarray:
+    """A label image: one disk per (label_id, cy, cx, r), ids in order."""
+    labels = np.zeros(shape, dtype=dtype)
+    for label_id, (cy, cx, r) in zip(range(1, len(disks) + 1), disks):
+        _stamp_disk(labels, cy, cx, r, value=label_id)
+    return labels
+
+
+def _gt_boxes(label: np.ndarray, mode: str = "p"):
+    """Stand-in for micro-sam's ``get_centers_and_bounding_boxes(mode="p")``.
+
+    Returns ``(points, boxes)`` with the boxes keyed by instance id as
+    ``[y0, x0, y1, x1]`` (the max side exclusive, +1); the points are
+    unused here.
+    """
+    boxes = {}
+    for v in np.unique(label):
+        if v == 0:
+            continue
+        ys, xs = np.where(label == v)
+        boxes[int(v)] = (ys.min(), xs.min(), ys.max() + 1, xs.max() + 1)
+    return None, boxes
+
+
+class _FakePredictor:
+    """A perfect predictor: returns the ground-truth mask of the prompted
+    instance in the tile the box refers to."""
+
+    def __init__(self, label: np.ndarray, iid: int):
+        self.label = label
+        self.iid = iid
+        self.calls: list = []
+
+    def set_image(self, image) -> None:
+        self.image = np.asarray(image)
+
+    def predict(self, point_coords=None, point_labels=None, box=None,
+                multimask_output=False):
+        self.calls.append((point_coords, point_labels, box))
+        ys, xs = np.where(self.label == self.iid)
+        ty, tx = ys.min() - int(box[0][1]), xs.min() - int(box[0][0])
+        ph = self.image.shape[0]
+        pred = self.label[ty : ty + ph, tx : tx + ph] == self.iid
+        return pred[None], None, None
+
+
+def test_predict_instances_perfect():
+    label = _disk_labels((64, 64), [(20, 20, 6)])
+    raw = np.full((64, 64), 30, np.uint8)
+    predictor = _FakePredictor(label, 1)
+    results = predict_instances(predictor, raw, label, (32, 32), boxes_fn=_gt_boxes)
+    assert len(results) == 1
+    assert results[0]["id"] == 1
+    assert results[0]["iou"] == 1.0
+    assert results[0]["clipped"] is False
+    ys, xs = np.where(label == 1)
+    y0, x0, y1, x1 = ys.min(), xs.min(), ys.max() + 1, xs.max() + 1
+    # instance centred at (20, 20) -> tile offset (4, 4)
+    assert predictor.calls[0][2].tolist() == [[x0 - 4, y0 - 4, x1 - 4, y1 - 4]]
+
+
+def test_predict_instances_clipped_and_capped():
+    # The first disk is 35 px across — larger than the 32-px tile.
+    label = _disk_labels((64, 64), [(32, 32, 17), (10, 10, 3)])
+    raw = np.full((64, 64), 30, np.uint8)
+    predictor = _FakePredictor(label, 1)
+    results = predict_instances(
+        predictor, raw, label, (32, 32), n_max_instances=1, boxes_fn=_gt_boxes
+    )
+    assert len(results) == 1
+    assert results[0]["clipped"] is True
+    assert results[0]["iou"] == 1.0  # the fake scores tile-local gt against tile-local gt
+
+
+@pytest.mark.parametrize("prompt", ["point", "box_point"])
+def test_predict_instances_rejects_non_box_prompts(prompt):
+    # v2's spec scores the decoder with box prompts only (v1's point /
+    # box_point modes are a rejected contract here): they raise up front,
+    # before the predictor or micro-sam are touched.
+    label = _disk_labels((64, 64), [(20, 20, 6)])
+    raw = np.full((64, 64), 30, np.uint8)
+    predictor = _FakePredictor(label, 1)
+    with pytest.raises(ValueError, match="prompt"):
+        predict_instances(predictor, raw, label, (32, 32), prompt, boxes_fn=_gt_boxes)
+    assert predictor.calls == []
+
+
+# --- the loader seam (ported from v1; no model, in-process torch is fine) ------
+
+def _h5_dataset(tmp_path: Path, n: int = 2) -> Path:
+    """A tiny train/val h5 split: 64x64 uint8 raw plus int32 disk labels."""
+    data = tmp_path / "data"
+    for split in ("train", "val"):
+        split_dir = data / split
+        split_dir.mkdir(parents=True)
+        for i in range(n):
+            raw = np.full((64, 64), 30, dtype=np.uint8)
+            _stamp_disk(raw, 32, 32, 12, value=200)
+            label = _disk_labels((64, 64), [(32, 32, 12)], dtype=np.int32)
+            with h5py.File(split_dir / f"img{i}.h5", "w") as h5:
+                h5.create_dataset("raw", data=raw, compression="gzip")
+                h5.create_dataset("label", data=label, compression="gzip")
+    return data
+
+
+def test_build_loader_smoke(tmp_path):
+    """The dataset/dataloader plumbing works end to end (no model loaded)."""
+    data = _h5_dataset(tmp_path)
+    options = TrainOptions(
+        data_dir=data,
+        out_dir=tmp_path / "run",
+        patch_shape=(32, 32),
+        samples_per_image=1,
+        val_samples_per_image=1,
+    )
+    paths = sorted((data / "train").glob("*.h5"))
+    loader = build_loader(paths, options, is_train=True, num_workers=0)
+    x, y = next(iter(loader))
+    assert tuple(x.shape[-2:]) == (32, 32)
+    assert x.is_floating_point()
+
+
 # --- public API surface ---------------------------------------------------------
 
 
@@ -494,3 +639,13 @@ def test_package_root_reexports_finetune_api():
     # The conversion stays private.
     assert "_convert" not in colony_tracking.__all__
     assert not hasattr(colony_tracking, "_convert")
+
+
+def test_finetune_module_exports_the_scoring_and_loader_seams():
+    import colony_tracking.finetune
+
+    # Both seams are finetune-module public; the package root's __all__
+    # stays pinned by tests/test_skeleton.py.
+    for name in ("build_loader", "predict_instances"):
+        assert name in colony_tracking.finetune.__all__
+        assert name not in colony_tracking.__all__

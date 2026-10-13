@@ -8,8 +8,9 @@ before training), and ``run_evaluate`` benchmarks a checkpoint on the
 held-out split: every ground-truth instance is prompted with its own
 bounding box and scored by per-instance IoU in the best containing tile.
 
-micro-sam/torch are imported lazily inside the run functions — importing
-this package never imports torch.
+micro-sam/torch are imported lazily — inside the run functions,
+``build_loader``, and ``predict_instances`` (whose bounding-box helper is
+injectable in tests) — importing this package never imports torch.
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ __all__ = [
     "run_prepare",
     "run_train",
     "run_evaluate",
+    "build_loader",
+    "predict_instances",
 ]
 
 
@@ -126,9 +129,8 @@ def run_train(options: TrainOptions) -> TrainSummary:
 
     # Lazy: the heavy model stack is imported only when training runs.
     import torch
-    import torch_em
 
-    from micro_sam.training import default_sam_dataset, train_sam
+    from micro_sam.training import train_sam
     from micro_sam.training.training import CONFIGURATIONS
     from micro_sam.training.util import get_device
 
@@ -144,32 +146,9 @@ def run_train(options: TrainOptions) -> TrainSummary:
             total, options.model_type, options.configuration,
         )
 
-    def build_loader(paths: list[Path], is_train: bool):
-        per_image = (
-            options.samples_per_image
-            if is_train
-            else options.val_samples_per_image
-        )
-        dataset = default_sam_dataset(
-            raw_paths=paths,
-            raw_key="raw",
-            label_paths=paths,
-            label_key="label",
-            patch_shape=tuple(options.patch_shape),
-            with_segmentation_decoder=True,
-            # The data is already 8-bit, so `require_8bit` passes it
-            # through unchanged.
-            raw_transform=None,
-            n_samples=per_image * len(paths),
-            is_train=is_train,
-        )
-        return torch_em.get_data_loader(
-            dataset, batch_size=1, shuffle=is_train, num_workers=4,
-        )
-
     log.info("loading dataset from %s ...", options.data_dir)
-    train_loader = build_loader(train_paths, is_train=True)
-    val_loader = build_loader(val_paths, is_train=False)
+    train_loader = build_loader(train_paths, options, is_train=True)
+    val_loader = build_loader(val_paths, options, is_train=False)
     log.info(
         "  train: %d images / %d samples per epoch",
         len(train_paths), len(train_loader.dataset),
@@ -240,6 +219,50 @@ def run_train(options: TrainOptions) -> TrainSummary:
     )
 
 
+def build_loader(
+    paths: list[Path],
+    options: TrainOptions,
+    is_train: bool,
+    *,
+    num_workers: int = 4,
+):
+    """Create the micro-sam dataset and dataloader for one split.
+
+    Module-level seam (v1 parity): the torch_em / micro-sam imports are
+    lazy inside, so the module stays importable without the model stack.
+    ``num_workers`` is keyword-only — production keeps the closure's 4;
+    the smoke test passes 0 to stay in-process. The batch size stays 1
+    (v2's ``TrainOptions`` carries no such field).
+    """
+    import torch_em
+
+    from micro_sam.training import default_sam_dataset
+
+    # torch_em's image loader checks ``isinstance(path, str)``: a single
+    # PosixPath falls into its multi-file branch and is iterated, which
+    # raises. Normalize at this boundary (v1 passes str paths throughout).
+    str_paths = [str(p) for p in paths]
+    per_image = (
+        options.samples_per_image if is_train else options.val_samples_per_image
+    )
+    dataset = default_sam_dataset(
+        raw_paths=str_paths,
+        raw_key="raw",
+        label_paths=str_paths,
+        label_key="label",
+        patch_shape=tuple(options.patch_shape),
+        with_segmentation_decoder=True,
+        # The data is already 8-bit, so `require_8bit` passes it through
+        # unchanged.
+        raw_transform=None,
+        n_samples=per_image * len(paths),
+        is_train=is_train,
+    )
+    return torch_em.get_data_loader(
+        dataset, batch_size=1, shuffle=is_train, num_workers=num_workers,
+    )
+
+
 @dataclass
 class EvaluateSummary:
     """What ``run_evaluate`` measured on the held-out split."""
@@ -260,39 +283,58 @@ class EvaluateSummary:
     error: str | None = None
 
 
-def _predict_instances(predictor, raw, label, patch_shape) -> list[dict]:
+def predict_instances(
+    predictor,
+    raw: np.ndarray,
+    label: np.ndarray,
+    patch_shape: tuple[int, int],
+    prompt: str = "box",
+    n_max_instances: int | None = None,
+    boxes_fn=None,
+) -> list[dict]:
     """Segment every ground-truth instance in one image; per-instance IoU.
 
     Each instance is scored exactly once, in the tile that best contains
     its bounding box — scoring a tile-local copy in every containing tile
     would count an instance several times against a clipped mask. Boxes
     are computed once on the full image so an instance keeps one identity.
+
+    ``boxes_fn(label) -> (points, boxes)`` mirrors micro-sam's
+    ``get_centers_and_bounding_boxes(label, mode="p")`` (boxes keyed by
+    instance id, ``[y0, x0, y1, x1]``); inject it in tests to avoid the
+    micro-sam import, which is lazy here and only happens when it is
+    None. ``prompt`` exists for seam parity with v1 — v2 evaluates the
+    decoder with box prompts only, so anything else is rejected up front.
+    ``n_max_instances`` caps the sorted positive instance ids (v1
+    semantics: the lowest ids score, the rest are skipped).
     """
-    from micro_sam.util import get_centers_and_bounding_boxes
+    if prompt != "box":
+        raise ValueError(
+            f"unsupported prompt {prompt!r}: v2 evaluates box prompts only"
+        )
+    if boxes_fn is None:
+        from micro_sam.util import get_centers_and_bounding_boxes
+
+        boxes_fn = get_centers_and_bounding_boxes
 
     results = []
     ids = np.unique(label)
     ids = ids[ids > 0]
-    _, boxes = get_centers_and_bounding_boxes(label, mode="p")
+    if n_max_instances is not None:
+        ids = ids[:n_max_instances]
+    _, boxes = boxes_fn(label)
     h, w = raw.shape
+    ph, pw = patch_shape
 
     for iid in ids:
         y0, x0, y1, x1 = boxes[iid]
         # Choose the tile that best contains this instance.
-        ty = int(
-            np.clip(
-                (y0 + y1) // 2 - patch_shape[0] // 2, 0, max(0, h - patch_shape[0])
-            )
-        )
-        tx = int(
-            np.clip(
-                (x0 + x1) // 2 - patch_shape[1] // 2, 0, max(0, w - patch_shape[1])
-            )
-        )
-        ty = min(ty, max(0, h - patch_shape[0]))
-        tx = min(tx, max(0, w - patch_shape[1]))
-        patch = raw[ty : ty + patch_shape[0], tx : tx + patch_shape[1]]
-        patch_gt = label[ty : ty + patch_shape[0], tx : tx + patch_shape[1]]
+        ty = int(np.clip((y0 + y1) // 2 - ph // 2, 0, max(0, h - ph)))
+        tx = int(np.clip((x0 + x1) // 2 - pw // 2, 0, max(0, w - pw)))
+        ty = min(ty, max(0, h - ph))
+        tx = min(tx, max(0, w - pw))
+        patch = raw[ty : ty + ph, tx : tx + pw]
+        patch_gt = label[ty : ty + ph, tx : tx + pw]
 
         # micro-sam returns boxes as [y0, x0, y1, x1]; SAM expects
         # [x0, y0, x1, y1] — the swap is handled here.
@@ -312,9 +354,7 @@ def _predict_instances(predictor, raw, label, patch_shape) -> list[dict]:
                 "iou": float(np.logical_and(pred, true).sum() / union)
                 if union
                 else 0.0,
-                "clipped": bool(
-                    (y1 - y0) > patch_shape[0] or (x1 - x0) > patch_shape[1]
-                ),
+                "clipped": bool((y1 - y0) > ph or (x1 - x0) > pw),
             }
         )
     return results
@@ -401,7 +441,7 @@ def run_evaluate(options: EvaluateOptions) -> EvaluateSummary:
         with h5py.File(f) as h5:
             raw = np.asarray(h5["raw"][:])
             label = np.asarray(h5["label"][:])
-        results = _predict_instances(predictor, raw, label, patch_shape)
+        results = predict_instances(predictor, raw, label, patch_shape)
         if results:
             ious = [r["iou"] for r in results]
             all_ious.extend(ious)

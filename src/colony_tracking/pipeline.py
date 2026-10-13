@@ -84,6 +84,7 @@ from ._options import (
     SegmentationOptions,
     _from_plain,
     _to_plain,
+    _union_members,
 )
 from .analysis import AnalysisSummary, run_analysis
 from .difference import DifferenceSummary, run_difference
@@ -152,62 +153,49 @@ def _derived_segment_root(out_root: Path, reference: Reference) -> Path:
 # --- config validation ----------------------------------------------------------
 
 
+#: Scalar hint → (plain-value predicate, phrase, plural phrase): one table
+#: shared by ``_human_hint`` and ``_compatible`` so the wording cannot drift.
+_SCALARS: dict = {
+    Path: (lambda v: isinstance(v, str), "a path string", "path strings"),
+    bool: (lambda v: isinstance(v, bool), "true or false", "booleans"),
+    int: (lambda v: isinstance(v, int) and not isinstance(v, bool),
+          "an integer", "integers"),
+    float: (lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+            "a number", "numbers"),
+    str: (lambda v: isinstance(v, str), "a string", "strings"),
+}
+#: phrase → plural, derived from the same table.
+_PLURAL = {phrase: plural for _, (_, phrase, plural) in _SCALARS.items()}
+
+
 def _human_hint(hint: Any) -> str:
     """A human-readable description of a type hint (for error messages)."""
-    args = get_args(hint)
-    origin = get_origin(hint)
+    origin, args = get_origin(hint), get_args(hint)
     if origin is Literal:
         return " or ".join(repr(a) for a in args)
     if origin in (list, tuple):
         item = _human_hint(args[0])
-        plural = {
-            "a string": "strings",
-            "a path string": "path strings",
-            "an integer": "integers",
-            "a number": "numbers",
-            "true or false": "booleans",
-        }.get(item, item)
-        return f"a list of {plural}"
-    if args:  # a Union (incl. ``X | None``)
-        return " or ".join(_human_hint(a) for a in args if a is not type(None))
-    if hint is Path:
-        return "a path string"
-    if hint is bool:
-        return "true or false"
-    if hint is int:
-        return "an integer"
-    if hint is float:
-        return "a number"
-    if hint is str:
-        return "a string"
+        return f"a list of {_PLURAL.get(item, item)}"
+    if (members := _union_members(hint)) is not None:  # a Union
+        return " or ".join(_human_hint(a) for a in members)
+    if hint in _SCALARS:
+        return _SCALARS[hint][1]
     return getattr(hint, "__name__", str(hint))
 
 
 def _compatible(value: Any, hint: Any) -> bool:
     """Whether a plain (TOML) value can be read as the declared field type."""
-    origin = get_origin(hint)
-    args = get_args(hint)
+    origin, args = get_origin(hint), get_args(hint)
     if origin is Literal:
         return value in args
     if origin in (list, tuple):
         return isinstance(value, list) and all(
-            _compatible(v, args[0]) for v in value
-        )
-    if args:  # a Union (incl. ``X | None``): a member must accept the value
+            _compatible(v, args[0]) for v in value)
+    if (members := _union_members(hint)) is not None:  # a Union
         return (value is None and type(None) in args) or any(
-            _compatible(value, a) for a in args if a is not type(None)
-        )
-    if hint is Path:
-        return isinstance(value, str)
-    if hint is bool:
-        return isinstance(value, bool)
-    if hint is int:
-        return isinstance(value, int) and not isinstance(value, bool)
-    if hint is float:
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if hint is str:
-        return isinstance(value, str)
-    return True  # unhinted/unknown: accept
+            _compatible(value, a) for a in members)
+    scalar = _SCALARS.get(hint)
+    return scalar[0](value) if scalar else True  # unhinted/unknown: accept
 
 
 def _check_value(where: str, name: str, value: Any, hint: Any) -> None:

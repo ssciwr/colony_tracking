@@ -66,7 +66,7 @@ Per-well uint8 difference frames from a raw plate.
 | `--display-percentile` | `99.5` | Percentile of \|diff\| that sets the per-well display limit. |
 | `--subsample` | `8` | Stride of the subsampled grid used to estimate the display limit. |
 | `--n-workers` | `6` | Thread-pool size over wells. |
-| `--dry-run` | `off` | Report wells, frames, and reference; write nothing. |
+| `--dry-run` | `unset` | Report wells, frames, and reference; write nothing. |
 
 ### segment
 
@@ -92,9 +92,9 @@ without the model.
 | `--min-overlap` | `0.5` | Minimum fraction of an instance's pixels that must lie inside the growth mask and inside a single group. |
 | `--max-fg-ratio` | `1.5` | Drift gate: skip frames whose elevated-foreground fraction exceeds this multiple of the reference frame's (0 disables the gate). |
 | `--exclude-before` | `none` | Blank frames before this frame number and flag colonies first detected at or before it as pre-existing. |
-| `--no-merge-touching` | `on` | Pre-merge touching segments of one group (disable with --no-merge-touching). |
-| `--redo` | `off` | Reprocess wells even when their done marker is present. |
-| `--reid-only` | `off` | Re-derive segments from the saved label images and re-track without the model (no GPU). |
+| `--no-merge-touching` | `unset` | Pre-merge touching segments of one group (disable with --no-merge-touching). |
+| `--redo` | `unset` | Reprocess wells even when their done marker is present. |
+| `--reid-only` | `unset` | Re-derive segments from the saved label images and re-track without the model (no GPU). |
 
 `--exclude-before` replaces the prototype's `--exclude_lo` and
 `--drop_labels_before`, which were always applied together with the same
@@ -114,16 +114,16 @@ trees.
 | `--rim-width-px` | `60` | Width of the rim band inside the well circle (px). |
 | `--rim-overlap-max` | `0.1` | A colony is rim-excluded from the first frame in which more than this fraction of its pixels lies in the rim. |
 | `--max-bad-segments` | `2` | A well with at least this many distinct bad colonies is a bad well. |
-| `--keep-bad-wells` | `off` | Include bad wells in aggregates and plots. |
-| `--keep-pre-existing` | `off` | Include pre-existing colonies in aggregates and plots. |
+| `--keep-bad-wells` | `unset` | Include bad wells in aggregates and plots. |
+| `--keep-pre-existing` | `unset` | Include pre-existing colonies in aggregates and plots. |
 | `--raw-seg-dir` | `none` | Raw-root segmentation tree probed to flag pre-existing colonies of difference roots. |
 | `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start). |
 | `--min-growth-2step` | `0.3` | A colony whose every exact 2-frame window grows by less than 1 + this factor is bad (no_growth). |
-| `--refresh-geometry` | `off` | Re-fit the well circles instead of using the cached well_geometry.csv. |
-| `--plots-only` | `off` | Re-render the plots from the existing trajectories CSV without image IO. |
-| `--no-plots` | `off` | Skip the plots. |
-| `--no-qa` | `off` | Skip the per-well QA overlays. |
-| `--no-group-alpha` | `off` | Do not fade group opacity with member count. |
+| `--refresh-geometry` | `unset` | Re-fit the well circles instead of using the cached well_geometry.csv. |
+| `--plots-only` | `unset` | Re-render the plots from the existing trajectories CSV without image IO. |
+| `--no-plots` | `unset` | Skip the plots. |
+| `--no-qa` | `unset` | Skip the per-well QA overlays. |
+| `--no-group-alpha` | `unset` | Do not fade group opacity with member count. |
 
 ### pipeline
 

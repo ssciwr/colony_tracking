@@ -446,7 +446,7 @@ class EvaluateOptions(Options):
         default=None,
         metadata={
             "help": "Evaluate only the first N h5 images of the "
-            "split (a quick smoke run)."
+            "split (a quick smoke run); 0 = uncapped."
         },
     )
     n_max_instances: int | None = field(

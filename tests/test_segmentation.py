@@ -27,6 +27,18 @@ from colony_tracking.segmentation import (
 from conftest import T_STEP_MS, build_label_series, build_mini_plate, frame_name
 
 
+def _model_stack_pulled(modules_before: set[str]) -> set[str]:
+    """The model-stack modules pulled since ``modules_before`` — the delta:
+    torch, its submodules, and micro-sam. (The delta, because other tests
+    may legitimately already have torch in sys.modules.)"""
+    return {
+        name
+        for name in set(sys.modules) - modules_before
+        if name == "torch" or name.startswith("torch.")
+        or name.startswith("micro_sam")
+    }
+
+
 # --- the drift gate -----------------------------------------------------------
 
 
@@ -244,14 +256,8 @@ def test_run_segmentation_resumes_via_the_done_marker_without_the_model(tmp_path
     )
 
     assert (summary.processed, summary.skipped, summary.failed) == (0, 1, 0)
-    # nothing to do: the model was never even loaded (what matters is the
-    # delta — other tests may legitimately have torch in sys.modules)
-    pulled = {
-        name
-        for name in set(sys.modules) - modules_before
-        if name.startswith("micro_sam")
-    }
-    assert not pulled
+    # nothing to do: the model was never even loaded (no torch either)
+    assert not _model_stack_pulled(modules_before)
 
 
 def test_run_segmentation_rejects_missing_requested_wells(tmp_path):
@@ -356,15 +362,8 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
 
     assert (summary.processed, summary.skipped, summary.failed) == (2, 1, 0)
     assert summary.gate_skipped_frames == 0
-    # re-ID never touches the model (delta: other tests may legitimately
-    # have torch in sys.modules)
-    pulled = {
-        name
-        for name in set(sys.modules) - modules_before
-        if name == "torch" or name.startswith("torch.")
-        or name.startswith("micro_sam")
-    }
-    assert not pulled
+    # re-ID never touches the model
+    assert not _model_stack_pulled(modules_before)
 
     # -- well A: IDs continue, the merge is recorded, frame 1 is blanked -----
     a_dir = out / "-A001"
@@ -439,12 +438,5 @@ def test_importing_the_module_does_not_pull_torch_or_micro_sam(monkeypatch):
     monkeypatch.delitem(sys.modules, "colony_tracking.segmentation", raising=False)
     modules_before = set(sys.modules)
     importlib.import_module("colony_tracking.segmentation")
-    # The module's own import chain pulls no model stack (delta: other
-    # tests may legitimately have torch in sys.modules).
-    pulled = {
-        name
-        for name in set(sys.modules) - modules_before
-        if name == "torch" or name.startswith("torch.")
-        or name.startswith("micro_sam")
-    }
-    assert not pulled
+    # The module's own import chain pulls no model stack.
+    assert not _model_stack_pulled(modules_before)

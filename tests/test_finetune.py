@@ -8,7 +8,8 @@ split; greedy instance-richest wells until ``val_fraction``; the
 drops, the h5 contents (dtypes, shapes, stretched values, gzip 4), and the
 summary counters. The scoring seam ``predict_instances`` (tile choice,
 box-order swap, IoU, clipped flag, ``n_max_instances`` cap, the box-only
-prompt contract — via an injectable predictor and bounding-box helper) and
+prompt contract, the boxes-fn fallback's ``mode="p"`` call — via an
+injectable predictor and bounding-box helper) and
 the loader seam ``build_loader`` (a one-batch smoke test, no model) are
 tested hermetically too. Only the real model runs stay outside the suite
 (no GPU or network — spec "Out of Scope"); the train/evaluate paths are
@@ -428,16 +429,64 @@ def test_importing_finetune_does_not_import_torch():
     assert result.returncode == 0, result.stderr
 
 
-# --- train / evaluate: logged prerequisite errors (no model, no GPU) ----------
+# --- the shared h5-split builder ------------------------------------------------
+#
+# Every test that needs h5 files on disk builds them with this one builder:
+# the missing-prerequisite checks (a tiny all-zero split — the content is
+# never read), run_evaluate's caps (real planted instances to score), and
+# the loader smoke test (a train/ and a val/ tree, compressed data).
 
 
-def _write_split_h5(split_dir: Path, name: str = "x.h5") -> Path:
+def _stamp_disk(image: np.ndarray, cy: int, cx: int, r: int, value: int) -> None:
+    """Stamp a disk into an image, in place (v1's make_disk)."""
+    yy, xx = np.ogrid[: image.shape[0], : image.shape[1]]
+    image[(yy - cy) ** 2 + (xx - cx) ** 2 <= r * r] = value
+
+
+def _disk_labels(
+    shape: tuple[int, int],
+    disks: list[tuple[int, int, int]],
+    dtype=np.uint32,
+) -> np.ndarray:
+    """A label image: one disk per (label_id, cy, cx, r), ids in order."""
+    labels = np.zeros(shape, dtype=dtype)
+    for label_id, (cy, cx, r) in zip(range(1, len(disks) + 1), disks):
+        _stamp_disk(labels, cy, cx, r, value=label_id)
+    return labels
+
+
+def _write_split_h5(
+    split_dir: Path,
+    files: int = 1,
+    disks: list[tuple[int, int, int]] | None = None,
+    *,
+    shape: tuple[int, int] = (64, 64),
+    background: int = 30,
+    raw_disk: int | None = None,
+    compression: str | None = None,
+) -> None:
+    """Write ``files`` h5 files into ``split_dir`` (named ``001.h5`` up).
+
+    The raw datasets are uint8 at a flat ``background`` grey — with the
+    planted disks painted ``raw_disk`` when given — and the label datasets
+    are int32 holding the disks as ids 1..k (all-zero without any).
+    ``compression`` applies to both datasets.
+    """
     split_dir.mkdir(parents=True, exist_ok=True)
-    path = split_dir / name
-    with h5py.File(path, "w") as h5:
-        h5.create_dataset("raw", data=np.zeros((8, 8), np.uint8))
-        h5.create_dataset("label", data=np.zeros((8, 8), np.int32))
-    return path
+    planted = disks or []
+    labels = _disk_labels(shape, planted, dtype=np.int32)
+    dataset_kwargs = {} if compression is None else {"compression": compression}
+    for i in range(1, files + 1):
+        raw = np.full(shape, background, np.uint8)
+        if raw_disk is not None:
+            for cy, cx, r in planted:
+                _stamp_disk(raw, cy, cx, r, value=raw_disk)
+        with h5py.File(split_dir / f"{i:03d}.h5", "w") as h5:
+            h5.create_dataset("raw", data=raw, **dataset_kwargs)
+            h5.create_dataset("label", data=labels, **dataset_kwargs)
+
+
+# --- train / evaluate: logged prerequisite errors (no model, no GPU) ----------
 
 
 def test_run_train_missing_split_logs_error(tmp_path, caplog):
@@ -451,7 +500,7 @@ def test_run_train_missing_split_logs_error(tmp_path, caplog):
 
 
 def test_run_train_missing_val_split_logs_error(tmp_path, caplog):
-    _write_split_h5(tmp_path / "data" / "train")
+    _write_split_h5(tmp_path / "data" / "train", shape=(8, 8), background=0)
     with caplog.at_level(logging.ERROR, logger="colony_tracking"):
         summary = run_train(
             TrainOptions(data_dir=tmp_path / "data", out_dir=tmp_path / "run")
@@ -470,7 +519,7 @@ def test_run_evaluate_missing_split_logs_error(tmp_path, caplog):
 
 
 def test_run_evaluate_missing_checkpoint_logs_error(tmp_path, caplog):
-    _write_split_h5(tmp_path / "data" / "val")
+    _write_split_h5(tmp_path / "data" / "val", shape=(8, 8), background=0)
     with caplog.at_level(logging.ERROR, logger="colony_tracking"):
         summary = run_evaluate(
             EvaluateOptions(
@@ -490,23 +539,6 @@ def test_run_evaluate_missing_checkpoint_logs_error(tmp_path, caplog):
 # the caps flow option -> run_evaluate -> predict_instances end to end.
 
 
-def _write_split_with_disks(
-    split_dir: Path,
-    files: int = 3,
-    disks: list[tuple[int, int, int]] | None = None,
-) -> None:
-    """A tiny real h5 split with planted disks, so instances exist to score."""
-    split_dir.mkdir(parents=True, exist_ok=True)
-    if disks is None:
-        disks = [(20, 20, 6)]
-    for i in range(1, files + 1):
-        with h5py.File(split_dir / f"{i:03d}.h5", "w") as h5:
-            h5.create_dataset("raw", data=np.full((64, 64), 30, np.uint8))
-            h5.create_dataset(
-                "label", data=_disk_labels((64, 64), disks, dtype=np.int32)
-            )
-
-
 def _patch_get_sam_model(monkeypatch, disks) -> None:
     """Point ``micro_sam.util.get_sam_model`` (run_evaluate's lazy import) at
     a _FakePredictor for the shared disk label (every file plants the same
@@ -524,8 +556,9 @@ def _patch_get_sam_model(monkeypatch, disks) -> None:
 def test_run_evaluate_n_max_images_caps_the_split(
     tmp_path, monkeypatch, n_max_images, expected
 ):
-    _write_split_with_disks(tmp_path / "data" / "val", files=3)
-    _patch_get_sam_model(monkeypatch, [(20, 20, 6)])
+    disks = [(20, 20, 6)]
+    _write_split_h5(tmp_path / "data" / "val", files=3, disks=disks)
+    _patch_get_sam_model(monkeypatch, disks)
     summary = run_evaluate(
         EvaluateOptions(
             data_dir=tmp_path / "data", patch_shape=(64, 64),
@@ -548,7 +581,7 @@ def test_run_evaluate_scores_every_instance_by_default(tmp_path, monkeypatch):
     # The control for the instance cap: two disks per file, no cap -> both
     # score (the second's IoU is whatever the fake makes of it — counts only).
     disks = [(20, 20, 6), (45, 40, 5)]
-    _write_split_with_disks(tmp_path / "data" / "val", files=2, disks=disks)
+    _write_split_h5(tmp_path / "data" / "val", files=2, disks=disks)
     _patch_get_sam_model(monkeypatch, disks)
     summary = run_evaluate(
         EvaluateOptions(data_dir=tmp_path / "data", patch_shape=(64, 64))
@@ -560,7 +593,7 @@ def test_run_evaluate_scores_every_instance_by_default(tmp_path, monkeypatch):
 
 def test_run_evaluate_n_max_instances_caps_the_scoring(tmp_path, monkeypatch):
     disks = [(20, 20, 6), (45, 40, 5)]
-    _write_split_with_disks(tmp_path / "data" / "val", files=2, disks=disks)
+    _write_split_h5(tmp_path / "data" / "val", files=2, disks=disks)
     _patch_get_sam_model(monkeypatch, disks)
     summary = run_evaluate(
         EvaluateOptions(
@@ -584,24 +617,6 @@ def test_run_evaluate_n_max_instances_caps_the_scoring(tmp_path, monkeypatch):
 # the tile that best contains it. The predictor and the bounding-box helper
 # are injected, so the tile choice, the [y0, x0, y1, x1] -> [x0, y0, x1, y1]
 # swap, the IoU and the clipped flag are testable without micro-sam.
-
-
-def _stamp_disk(image: np.ndarray, cy: int, cx: int, r: int, value: int) -> None:
-    """Stamp a disk into an image, in place (v1's make_disk)."""
-    yy, xx = np.ogrid[: image.shape[0], : image.shape[1]]
-    image[(yy - cy) ** 2 + (xx - cx) ** 2 <= r * r] = value
-
-
-def _disk_labels(
-    shape: tuple[int, int],
-    disks: list[tuple[int, int, int]],
-    dtype=np.uint32,
-) -> np.ndarray:
-    """A label image: one disk per (label_id, cy, cx, r), ids in order."""
-    labels = np.zeros(shape, dtype=dtype)
-    for label_id, (cy, cx, r) in zip(range(1, len(disks) + 1), disks):
-        _stamp_disk(labels, cy, cx, r, value=label_id)
-    return labels
 
 
 def _gt_boxes(label: np.ndarray, mode: str = "p"):
@@ -697,27 +712,46 @@ def test_predict_instances_rejects_non_box_prompts(prompt):
     assert predictor.calls == []
 
 
-# --- the loader seam (ported from v1; no model, in-process torch is fine) ------
+def test_predict_instances_fallback_passes_mode_p(monkeypatch):
+    """Without an injected ``boxes_fn`` micro-sam's helper is called with
+    mode="p" (the pre-extraction call — the distance-transform default would
+    waste a full-image pass).
 
-def _h5_dataset(tmp_path: Path, n: int = 2) -> Path:
-    """A tiny train/val h5 split: 64x64 uint8 raw plus int32 disk labels."""
-    data = tmp_path / "data"
-    for split in ("train", "val"):
-        split_dir = data / split
-        split_dir.mkdir(parents=True)
-        for i in range(n):
-            raw = np.full((64, 64), 30, dtype=np.uint8)
-            _stamp_disk(raw, 32, 32, 12, value=200)
-            label = _disk_labels((64, 64), [(32, 32, 12)], dtype=np.int32)
-            with h5py.File(split_dir / f"img{i}.h5", "w") as h5:
-                h5.create_dataset("raw", data=raw, compression="gzip")
-                h5.create_dataset("label", data=label, compression="gzip")
-    return data
+    The real ``micro_sam.util`` import is intercepted in sys.modules, so the
+    model stack stays out of the process; the fake records how it was called.
+    """
+    import types
+
+    captured = {}
+
+    def fake_boxes(label, mode=None):
+        captured["mode"] = mode
+        return None, {}
+
+    fake_util = types.ModuleType("micro_sam.util")
+    fake_util.get_centers_and_bounding_boxes = fake_boxes
+    monkeypatch.setitem(sys.modules, "micro_sam.util", fake_util)
+
+    results = predict_instances(
+        object(), np.zeros((8, 8), np.uint8), np.zeros((8, 8), np.int32), (8, 8)
+    )
+    # An all-zero label has no positive ids: nothing is scored, and the
+    # predictor (bare object()) is never touched.
+    assert results == []
+    assert captured["mode"] == "p"
+
+
+# --- the loader seam (ported from v1; no model, in-process torch is fine) ------
 
 
 def test_build_loader_smoke(tmp_path):
     """The dataset/dataloader plumbing works end to end (no model loaded)."""
-    data = _h5_dataset(tmp_path)
+    data = tmp_path / "data"
+    for split in ("train", "val"):
+        _write_split_h5(
+            data / split, files=2, disks=[(32, 32, 12)],
+            raw_disk=200, compression="gzip",
+        )
     options = TrainOptions(
         data_dir=data,
         out_dir=tmp_path / "run",

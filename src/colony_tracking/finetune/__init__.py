@@ -15,6 +15,7 @@ injectable in tests) — importing this package never imports torch.
 
 from __future__ import annotations
 
+import functools
 import json
 import time
 from dataclasses import dataclass, field
@@ -315,7 +316,9 @@ def predict_instances(
     if boxes_fn is None:
         from micro_sam.util import get_centers_and_bounding_boxes
 
-        boxes_fn = get_centers_and_bounding_boxes
+        # v1 parity: the label-lookup mode ("p"), not the distance-transform
+        # default ("v") — the labels are already loaded here.
+        boxes_fn = functools.partial(get_centers_and_bounding_boxes, mode="p")
 
     results = []
     ids = np.unique(label)

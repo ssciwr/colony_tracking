@@ -376,6 +376,11 @@ def _dispatch(args: argparse.Namespace) -> int:
                 len(summary.failures), "; ".join(summary.failures),
             )
             return 1
+        if summary.failed_wells:
+            log.error("analyze: %d well(s) failed: %s",
+                      len(summary.failed_well_names),
+                      ", ".join(summary.failed_well_names))
+            return 1
         return 0
     if args.command == "pipeline":
         summary = run_pipeline(_pipeline_config(args))

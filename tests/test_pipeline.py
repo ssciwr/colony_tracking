@@ -55,8 +55,13 @@ def _seg_summary(failed: int = 0) -> SegmentationSummary:
     )
 
 
-def _ana_summary(failures: list[str] | None = None) -> AnalysisSummary:
-    return AnalysisSummary(failures=list(failures or []))
+def _ana_summary(failures: list[str] | None = None,
+                 failed_wells: dict[str, list[str]] | None = None
+                 ) -> AnalysisSummary:
+    return AnalysisSummary(
+        failures=list(failures or []),
+        failed_wells=dict(failed_wells or {}),
+    )
 
 
 def _install_fakes(
@@ -474,6 +479,32 @@ def test_analysis_failures_fail_the_summary(tmp_path, monkeypatch, caplog):
     assert summary.failed_stage == "analysis"
     assert summary.analysis is not None
     assert summary.analysis.failures == ["seg_growth_diff_LO005"]
+
+
+def test_analysis_failed_wells_fail_the_summary(tmp_path, monkeypatch, caplog):
+    """Per-well analyze failures abort the chain like every other stage's
+    failed-well count: a run with one failing well is not "ok"."""
+    config = _minimal_config(tmp_path)
+    calls = _install_fakes(
+        monkeypatch,
+        ana_summary=_ana_summary(failed_wells={"seg_growth": ["-H008"]}),
+    )
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = run_pipeline(config)
+    assert [name for name, _ in calls] == [
+        "difference",
+        "segmentation",
+        "analysis",
+    ]
+    assert summary.status == "failed"
+    assert summary.failed_stage == "analysis"
+    assert summary.analysis is not None
+    assert summary.analysis.failed_wells == {"seg_growth": ["-H008"]}
+    assert any(
+        "analyze stage failed" in r.getMessage()
+        and "-H008" in r.getMessage()
+        for r in caplog.records
+    )
 
 
 # --- interrupted-run re-entry (real difference stage, fake later stages) --------

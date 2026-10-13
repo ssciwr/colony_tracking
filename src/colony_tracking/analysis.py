@@ -876,13 +876,28 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
     (rim-excluded) or magenta (bad segment — from the series start or not
     growing), bad colonies filled translucent magenta. Saved as a 512x512
     composite.
+
+    A well with no rows at all (an empty well, or one whose colonies were
+    all discarded) gets a rim-only overlay — circle and rim zone over the
+    last raw frame, no colony tinting — so a human can eyeball whether the
+    well is truly empty. With no raw frames either, nothing is written and
+    the skip is logged.
     """
     from PIL import Image
 
     cy, cx, R = geo
-    last = max(r["frame"] for r in rows)
-    lrows = [r for r in rows if r["frame"] == last]
     frames = io.discover_wells(options.raw_dir, wells=[well]).get(well, [])
+    if rows:
+        last = max(r["frame"] for r in rows)
+    elif frames:
+        last = max(f.frame for f in frames)
+        log.info("[%s] no colony rows; rim-only QA overlay for frame %d",
+                 well, last)
+    else:
+        log.warning("[%s] no colony rows and no raw frames; no QA overlay",
+                    well)
+        return
+    lrows = [r for r in rows if r["frame"] == last]
     srcs = [f.path for f in frames if f.frame == last]
     if not srcs:
         log.warning("[%s] LO%03d: no raw frame for the QA overlay", well, last)
@@ -1114,6 +1129,8 @@ class RootSummary:
     bad_segments: int  # bad colonies across the wells
     excluded_wells: list[str]  # wells excluded from aggregates/plots
     pre_existing: int  # pre-existing (well, colony_id) segments
+    #: Wells whose analysis raised (caught per well, counted here).
+    failed_wells: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1127,14 +1144,23 @@ class AnalysisSummary:
         default_factory=dict)
     #: Segmentation roots that failed with an exception (by name).
     failures: list[str] = field(default_factory=list)
+    #: Wells that failed inside an otherwise-completed root, by root name.
+    failed_wells: dict[str, list[str]] = field(default_factory=dict)
+
+    @property
+    def failed_well_names(self) -> list[str]:
+        """The union of the per-root failed wells, sorted (status lines)."""
+        return sorted({w for ws in self.failed_wells.values() for w in ws})
 
 
-def _root_summary(name, traj, options, per_well_bad, excluded, wells=None):
+def _root_summary(name, traj, options, per_well_bad, excluded, wells=None,
+                  failed_wells=()):
     """The shared RootSummary tail of the two analysis paths.
 
     Collects the pre-existing (well, colony_id) set; ``per_well_bad`` and
     ``excluded`` are the caller's :func:`split_bad` results. ``wells`` is
     the caller's well count; when omitted (re-plot) it is derived from rows.
+    ``failed_wells`` are the root's per-well failures.
     """
     if wells is None:
         wells = len({r["well"] for r in traj})
@@ -1144,7 +1170,8 @@ def _root_summary(name, traj, options, per_well_bad, excluded, wells=None):
         colonies=len({(r["well"], r["colony_id"]) for r in traj}),
         rows=len(traj), rim_excluded=sum(r["rim_excluded"] for r in traj),
         bad_segments=sum(len(ids) for ids in per_well_bad.values()),
-        excluded_wells=sorted(excluded), pre_existing=len(pre))
+        excluded_wells=sorted(excluded), pre_existing=len(pre),
+        failed_wells=list(failed_wells))
 
 
 def _replot(name, out_dir, options):
@@ -1168,9 +1195,11 @@ def _replot(name, out_dir, options):
     return _root_summary(name, traj, options, per_well_bad, excluded)
 
 
-def _process_seg_dir(seg_root, name, out_dir, options, geometry):
+def _process_seg_dir(seg_root, name, out_dir, options, geometry, failed_wells):
     """Analyse one segmentation root: per-well trajectories + pooled outputs.
 
+    A well whose analysis raises is logged, appended to the caller's
+    ``failed_wells`` list, and skipped (the root's remaining wells carry on).
     Returns a RootSummary, or None when nothing was written (no wells, no
     colony rows).
     """
@@ -1196,6 +1225,7 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry):
             traj.extend(process_well(well, seg_root, options, out_dir,
                                      geometry))
         except Exception:
+            failed_wells.append(well)
             log.error("[%s] FAILED\n%s", well, traceback.format_exc())
 
     if not traj:
@@ -1203,7 +1233,8 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry):
         return None
 
     _, _, per_well_bad, excluded = write_outputs(traj, options, out_dir)
-    summary = _root_summary(name, traj, options, per_well_bad, excluded, len(wells))
+    summary = _root_summary(name, traj, options, per_well_bad, excluded,
+                            len(wells), failed_wells)
     log.info("%s done: %d wells, %d colonies, %d rows (%d rim-excluded), "
              "%.1fs", name, summary.wells, summary.colonies, summary.rows,
              summary.rim_excluded, time.time() - t0)
@@ -1219,7 +1250,10 @@ def run_analysis(options: AnalysisOptions) -> AnalysisSummary:
     and cached in ``<out_root>/well_geometry.csv`` (``refresh_geometry``
     forces refits, ``plots_only`` never fits). A root that fails with an
     exception is recorded in :attr:`AnalysisSummary.failures` and the
-    remaining roots are still processed.
+    remaining roots are still processed; a well that fails inside an
+    otherwise-completed root is recorded in
+    :attr:`AnalysisSummary.failed_wells` (and the root's own summary) —
+    both are surfaced to the pipeline's abort logic.
     """
     out_root = Path(options.out_root)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -1239,17 +1273,22 @@ def run_analysis(options: AnalysisOptions) -> AnalysisSummary:
         name = seg_root.name
         out_dir = out_root / name
         out_dir.mkdir(parents=True, exist_ok=True)
+        failed_wells: list[str] = []
         try:
             if options.plots_only:
                 root = _replot(name, out_dir, options)
             else:
                 root = _process_seg_dir(seg_root, name, out_dir, options,
-                                        geometry)
+                                        geometry, failed_wells)
             if root is not None:
                 summary.roots[name] = root
         except Exception:
             log.error("%s FAILED\n%s", name, traceback.format_exc())
             summary.failures.append(name)
+        if failed_wells:
+            summary.failed_wells[name] = failed_wells
+            log.error("%s: %d well(s) failed: %s", name, len(failed_wells),
+                      failed_wells)
 
     if not options.plots_only:
         io.write_geometry(geo_path, {w: g for w, g in geometry.items() if g})

@@ -16,11 +16,12 @@ previous stage's output:
 Each stage's own resume logic applies (per-well done markers), so an
 interrupted run re-enters at the first incomplete stage's incomplete wells;
 the pipeline keeps no extra bookkeeping and always calls all three stages. A
-stage failure — an exception, or a failed stage summary (``failed`` wells, or
-the analyze stage's ``failures``) — aborts the chain: later stages are not
-called, the error is logged, and :class:`PipelineSummary` reports
-``status = "failed"`` with the failing stage's name. Raw-input segmentation
-stays available through the ``segment`` subcommand directly.
+stage failure — an exception, or a failed stage summary (``failed`` wells,
+or the analyze stage's ``failures``/``failed_wells``) — aborts the chain:
+later stages are not called, the error is logged, and
+:class:`PipelineSummary` reports ``status = "failed"`` with the failing
+stage's name. Raw-input segmentation stays available through the ``segment``
+subcommand directly.
 
 Derived names
 -------------
@@ -492,6 +493,21 @@ def _failed_wells(summary) -> str | None:
     return f"for {summary.failed} well(s)" if summary.failed else None
 
 
+def _failed_analysis(summary) -> str | None:
+    """Failure detail for the analyze stage (None when the stage ok).
+
+    Covers both failure channels: roots that raised (``failures``) and
+    wells that failed inside an otherwise-completed root
+    (``failed_wells``).
+    """
+    parts = []
+    if summary.failures:
+        parts.append(f"root(s) {summary.failures}")
+    if summary.failed_wells:
+        parts.append(f"well(s) {summary.failed_well_names}")
+    return f"for {' and '.join(parts)}" if parts else None
+
+
 def _run_stage(
     stage: Stage,
     label: str,
@@ -531,10 +547,11 @@ def run_pipeline(config: PipelineConfig) -> PipelineSummary:
     """Run the standard chain (see the module docstring).
 
     Stage failures — an exception, or a failed stage summary (``failed``
-    wells, or the analyze stage's ``failures``) — abort the chain: later
-    stages are not called, the error is logged, and the returned summary
-    reports ``status = "failed"`` with the failing stage's name. An invalid
-    config raises :class:`ConfigError` instead (the CLI maps it to exit 2).
+    wells, or the analyze stage's ``failures``/``failed_wells``) — abort
+    the chain: later stages are not called, the error is logged, and the
+    returned summary reports ``status = "failed"`` with the failing
+    stage's name. An invalid config raises :class:`ConfigError` instead
+    (the CLI maps it to exit 2).
     """
     diff_opts, seg_opts, ana_opts = config.resolve_stages()
     log.info(
@@ -558,7 +575,7 @@ def run_pipeline(config: PipelineConfig) -> PipelineSummary:
         "analysis", "[3/3] analyze", ana_opts.out_root,
         lambda: run_analysis(ana_opts),
         {"difference": diff_summary, "segmentation": seg_summary},
-        lambda s: f"for root(s) {s.failures}" if s.failures else None,
+        _failed_analysis,
     )
     if abort:
         return abort

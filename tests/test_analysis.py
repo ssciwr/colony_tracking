@@ -8,6 +8,8 @@ trajectory building, pre-existing probe, growth rates, bad split, aggregates)
 as input → output on synthetic data.
 """
 
+import logging
+
 import numpy as np
 import tifffile
 
@@ -829,3 +831,49 @@ def test_run_analysis_reads_legacy_tree(tmp_path):
     assert rates[0]["first_frame"] == "2" and rates[0]["last_frame"] == "4"
     assert rates[0]["max_ancestors"] == "1"
     assert abs(float(rates[0]["growth_rate_per_h"]) - np.log(2)) < 1e-5
+
+
+# --- empty wells (the QA overlay) ------------------------------------------------
+
+
+def test_process_well_empty_well_writes_rim_only_overlay(tmp_path):
+    """A well whose segmentation produced zero colonies but that has a fitted
+    well circle must not crash: ``process_well`` returns [] and still writes
+    a rim-only QA overlay (circle + rim zone, no colony tinting) so a human
+    can confirm the well is truly empty."""
+    well = "-A001"
+    build_mini_plate(
+        tmp_path / "raw", layout="flat", wells=(well,), n_frames=4,
+        rings={well: RingSpec()}, disks={well: []}, noise_sigma=0.0)
+    seg_root = tmp_path / "seg" / "seg_growth"
+    well_dir = seg_root / well
+    well_dir.mkdir(parents=True)
+    io.write_colonies(well_dir / "colonies.csv", [])
+    out_dir = tmp_path / "out" / "seg_growth"
+    traj = analysis.process_well(well, seg_root, _options(tmp_path), out_dir, {})
+    assert traj == []
+    overlay = out_dir / "qa" / f"{well}_rim.png"
+    assert overlay.exists() and overlay.stat().st_size > 0
+
+
+def test_run_analysis_surfaces_per_well_failures(tmp_path, monkeypatch, caplog):
+    """A well whose analysis raises is counted, not just logged: the root
+    summary and the run summary carry the failed well (the way the
+    pipeline's ``fail_detail`` reads them), so a run with one failing well
+    is not reported ok."""
+    _, seg_root = _build_e2e(tmp_path)
+    real = analysis.process_well
+
+    def failing(well, *args, **kwargs):
+        if well == "-A002":
+            raise RuntimeError("boom")
+        return real(well, *args, **kwargs)
+
+    monkeypatch.setattr(analysis, "process_well", failing)
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = analysis.run_analysis(
+            _options(tmp_path, seg_dirs=[seg_root]))
+    assert summary.failed_wells == {"seg_growth": ["-A002"]}
+    (root,) = summary.roots.values()
+    assert root.failed_wells == ["-A002"]
+    assert any("-A002" in m for m in caplog.messages)

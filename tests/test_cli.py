@@ -578,6 +578,17 @@ def test_failed_analyze_summary_is_runtime_error(monkeypatch, caplog):
     assert code == 1 and "no wells found" in caplog.text
 
 
+def test_failed_analyze_wells_are_runtime_error(monkeypatch, caplog):
+    monkeypatch.setattr(cli, "run_analysis",
+                        lambda options: AnalysisSummary(
+                            failed_wells={"seg_growth": ["-H008"]}))
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        code = cli.main(["analyze", "--seg-dir", "seg",
+                         "--raw-dir", "raw", "--out-root", "out"])
+
+    assert code == 1 and "-H008" in caplog.text
+
+
 def test_failed_pipeline_summary_is_runtime_error(monkeypatch, caplog,
                                                   tmp_path):
     monkeypatch.setattr(cli, "run_pipeline", lambda config: PipelineSummary(

@@ -213,16 +213,27 @@ _PIPELINE_OVERRIDES = ("raw_dir", "out_root", "reference", "wells")
 
 
 def _pipeline_config(args: argparse.Namespace) -> PipelineConfig:
-    """The pipeline config: the TOML file plus the run-level command-line
+    """The pipeline config: the TOML file (optional — omit it to drive the
+    run from the command line alone) plus the run-level command-line
     overrides (which take precedence — they are merged into the plain
     document before :meth:`PipelineConfig.from_dict` resolves the stages,
     so the derived names follow the overridden values)."""
-    path = Path(args.config)
-    try:
-        with open(path, "rb") as handle:
-            doc = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"{path}: not valid TOML: {exc}") from exc
+    if args.config is None:
+        missing = [name for name in ("raw_dir", "out_root")
+                   if getattr(args, name) is None]
+        if missing:
+            flags = " and ".join(f"--{name.replace('_', '-')}"
+                                 for name in missing)
+            raise _UsageError(f"{flags} required when --config is omitted")
+        doc: dict = {}
+    else:
+        path = Path(args.config)
+        try:
+            with open(path, "rb") as handle:
+                doc = tomllib.load(handle)
+        except tomllib.TOMLDecodeError as exc:
+            raise ConfigError(f"{path}: not valid TOML: {exc}") from exc
+        log.info("pipeline config: reading %s", path)
     section = doc.setdefault("pipeline", {})
     if not isinstance(section, dict):
         section = doc["pipeline"] = {}
@@ -230,16 +241,16 @@ def _pipeline_config(args: argparse.Namespace) -> PipelineConfig:
     for name, value in overrides.items():
         if value is not None:
             section[name] = str(value) if isinstance(value, Path) else value
-    log.info("pipeline config: reading %s", path)
     return PipelineConfig.from_dict(doc)
 
 
 def _add_pipeline_flags(parser: argparse.ArgumentParser) -> None:
     help_by_field = {f.name: f.metadata["help"] for f in fields(PipelineConfig)}
     parser.add_argument(
-        "--config", type=Path, required=True,
+        "--config", type=Path,
         help="TOML config file: a [pipeline] section plus one optional "
-        "section per stage.",
+        "section per stage. Omit to drive the run from the command line "
+        "alone (--raw-dir and --out-root required then).",
     )
     parser.add_argument(
         "--raw-dir", dest="raw_dir", type=Path,
@@ -316,11 +327,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     _add_pipeline_flags(subparsers.add_parser(
         "pipeline",
-        help="The standard chain (difference → segment → analyze) from a TOML config.",
+        help="The standard chain (difference → segment → analyze) from a "
+        "TOML config or the command line.",
         description="The standard chain (difference → segment → analyze) "
-        "from a TOML config file; the command line carries the config path "
-        "and the run-level overrides only — per-stage tuning belongs in the "
-        "config file.",
+        "from a TOML config file, or from the command line alone; the "
+        "command line carries the config path and the run-level overrides "
+        "only — per-stage tuning belongs in the config file.",
     ))
     train_parser = subparsers.add_parser(
         "train",

@@ -11,9 +11,9 @@ script and pasting its output:
     uv run python tests/test_readme.py
 
 Rendering rules (the Default column, backticked): ``required`` for flags
-without a default, ``none`` for ``None``, ``on``/``off`` for booleans (the
-value in force when the flag is omitted), ``512 512`` for n-value tuples,
-otherwise the plain value.
+without a default, ``none`` for ``None``, ``unset`` for booleans (the flag
+is absent unless given; the help text states the value in force),
+``512 512`` for n-value tuples, otherwise the plain value.
 """
 
 from __future__ import annotations
@@ -69,8 +69,7 @@ def _default_cell(action: argparse.Action) -> str:
         return "`required`"
     default = action.default
     if isinstance(default, bool):
-        # store_true defaults to False, store_false (--no-x) to True.
-        return "`on`" if default else "`off`"
+        return "`unset`"
     if default is None:
         return "`none`"
     if isinstance(default, tuple):

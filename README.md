@@ -17,7 +17,8 @@ Three stages make up the standard chain:
    colonies, and writes trajectories, growth rates, pooled aggregates, and
    plots.
 
-The `pipeline` subcommand runs the three stages from one TOML config file.
+The `pipeline` subcommand runs the three stages, configured by one TOML
+config file or by command-line flags alone.
 The `train` subcommands (`prepare`, `train`, `evaluate`) are the finetuning
 track: they convert raw frames plus ground-truth label images into a
 well-split h5 training set, run micro-sam decoder training, and benchmark
@@ -128,14 +129,15 @@ trees.
 ### pipeline
 
 The standard chain (difference → segment on the difference tree → analyze)
-from a TOML config file. The command line carries the config path and the
-run-level overrides only; per-stage tuning belongs in the config file,
-where every option of the tables above is valid in its stage's section
-(`[difference]`, `[segmentation]`, `[analysis]`, snake_case keys).
+from a TOML config file, or from the command line alone. The command line
+carries the config path and the run-level overrides only; per-stage tuning
+belongs in the config file, where every option of the tables above is valid
+in its stage's section (`[difference]`, `[segmentation]`, `[analysis]`,
+snake_case keys).
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--config` | `required` | TOML config file: a [pipeline] section plus one optional section per stage. |
+| `--config` | `none` | TOML config file: a [pipeline] section plus one optional section per stage. Omit to drive the run from the command line alone (--raw-dir and --out-root required then). |
 | `--raw-dir` | `none` | Directory of raw plate frames (flat or per-well layout). Overrides the config file. |
 | `--out-root` | `none` | Root directory every tree of the run is written into. Overrides the config file. |
 | `--reference` | `none` | Reference frame: "first" or a 1-based frame number; drives the derived tree names. Overrides the config file. |
@@ -149,6 +151,16 @@ raw_dir = "data/20260825_160101_Plate1"
 out_root = "out"
 reference = 5
 ```
+
+The config file is optional: a flag-only run is equivalent to the minimal
+config —
+
+```
+colony-tracking pipeline --raw-dir data/20260825_160101_Plate1 --out-root out --reference 5
+```
+
+— and the flags are required when `--config` is omitted. Per-stage tuning
+still needs a config file.
 
 Tree names derive from the out root and the reference: `difference_LO005`,
 `seg_growth_diff_LO005`, `analysis/`. A stage section can override its

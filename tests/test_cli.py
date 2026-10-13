@@ -308,12 +308,33 @@ def test_pipeline_unknown_config_key_is_usage_error(tmp_path, caplog):
     assert "nonsense" in caplog.text
 
 
-def test_pipeline_requires_config(monkeypatch):
+def test_pipeline_without_config_file(monkeypatch):
+    calls = []
     monkeypatch.setattr(
         cli, "run_pipeline",
-        lambda config: PipelineSummary(status="ok"),
+        lambda config: (calls.append(config), PipelineSummary(status="ok"))[1],
     )
-    assert cli.main(["pipeline", "--raw-dir", "x"]) == 2
+    code = cli.main([
+        "pipeline", "--raw-dir", "raw", "--out-root", "out",
+        "--reference", "5", "--wells=-A001",
+    ])
+
+    assert code == 0
+    (resolved,) = calls
+    assert isinstance(resolved, PipelineConfig)
+    assert resolved.raw_dir == Path("raw") and resolved.out_root == Path("out")
+    assert resolved.reference == 5 and resolved.wells == ["-A001"]
+    # The derived names follow the flag values, as with a config file.
+    assert resolved.difference.out_dir == Path("out") / "difference_LO005"
+    assert resolved.segmentation.exclude_before == 5
+
+
+def test_pipeline_without_config_requires_raw_dir_and_out_root(caplog):
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        code = cli.main(["pipeline", "--reference", "5"])
+
+    assert code == 2
+    assert "--raw-dir" in caplog.text and "--out-root" in caplog.text
 
 
 # --- flag parsing (train) --------------------------------------------------------

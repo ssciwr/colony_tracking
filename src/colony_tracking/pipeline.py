@@ -49,6 +49,8 @@ plus one optional section per stage holding any of that stage's options;
 omitted keys take their defaults. :func:`read_config` parses one,
 :func:`write_config` writes one (for the future TUI), and
 ``PipelineConfig.from_dict`` / ``to_dict`` round-trip the plain document.
+(The CLI's ``--config`` is optional: without it, the run-level settings come
+entirely from the command line.)
 
 Some fields are owned by the pipeline and cannot be set in a stage section:
 ``[difference].raw_dir`` / ``reference`` and ``[analysis].raw_dir`` come from

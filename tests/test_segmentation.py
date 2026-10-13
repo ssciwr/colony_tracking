@@ -26,7 +26,13 @@ from colony_tracking.segmentation import (
     filter_to_mask,
     run_segmentation,
 )
-from conftest import T_STEP_MS, build_label_series, build_mini_plate, frame_name
+from conftest import (
+    T_STEP_MS,
+    build_label_series,
+    build_mini_plate,
+    frame_name,
+    read_marker,
+)
 
 
 def _model_stack_pulled(modules_before: set[str]) -> set[str]:
@@ -450,7 +456,7 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     assert rows[0]["group_id"] == "1"
     assert rows[0]["t_seconds"] == str(T_STEP_MS)  # LO002's T field (ms)
     assert rows[0]["image"] == names_a[1]
-    assert io.read_done(a_dir) == {
+    assert read_marker(a_dir) == {
         "frames": 5, "groups": 1, "colonies": 1, "pre_existing_colonies": 2,
         "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
     }
@@ -475,13 +481,13 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
         ("4", "1", "", "0"), ("4", "2", "", "0"),
         ("5", "1", "2", "0"),  # the merge: colony 2 absorbed
     ]
-    assert io.read_done(b_dir) == {
+    assert read_marker(b_dir) == {
         "frames": 4, "groups": 1, "colonies": 2, "pre_existing_colonies": 0,
         "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
     }
 
     # -- well C: empty reference — nothing to re-assign, marker rewritten -----
-    assert io.read_done(out / "-C003") == {
+    assert read_marker(out / "-C003") == {
         "frames": 5, "groups": 0, "colonies": 0, "pre_existing_colonies": 0,
         "merge_events": 0, "forked_segments": 0, "discarded_instances": 0,
     }

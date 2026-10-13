@@ -63,6 +63,34 @@ def frame_name(well: str, lo: int, t_ms: int) -> str:
     )
 
 
+# --- reading written outputs --------------------------------------------------
+
+
+def read_marker(well_dir: Path | str) -> dict[str, int | str]:
+    """Read a well's done marker (tab-separated ``key<TAB>value`` lines).
+
+    Values parse as ints when possible and stay strings otherwise; absent
+    keys are simply missing. Test-side stand-in for the removed
+    ``io.read_done`` — the format it asserts is the written output's.
+    """
+    # Deferred: the package import chain pulls plotting code, which must
+    # not load before the Agg backend is forced below.
+    from colony_tracking import io
+
+    values: dict[str, int | str] = {}
+    with open(io.done_marker_path(well_dir)) as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            key, _, value = line.partition("\t")
+            try:
+                values[key] = int(value)
+            except ValueError:
+                values[key] = value
+    return values
+
+
 # --- the planted objects ------------------------------------------------------
 
 

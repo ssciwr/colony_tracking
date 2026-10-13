@@ -48,6 +48,7 @@ from pathlib import Path
 import pytest
 
 from colony_tracking import PipelineConfig, io, run_pipeline
+from conftest import read_marker
 
 #: The data root (raw plate + the prototype's published outputs).
 DATA_ENV = "COLONY_TRACKING_DATA_ROOT"
@@ -99,7 +100,7 @@ def _marker_sums(seg_root: Path) -> dict[str, int]:
     for path in sorted(seg_root.iterdir()):
         if not (path.is_dir() and io.parse_well(path.name)):
             continue
-        for key, value in io.read_done(path).items():
+        for key, value in read_marker(path).items():
             try:
                 sums[key] = sums.get(key, 0) + int(value)
             except (TypeError, ValueError):

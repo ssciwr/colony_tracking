@@ -23,6 +23,7 @@ from conftest import (
     build_mini_plate,
     disk_mask,
     frame_name,
+    read_marker,
 )
 
 # A realistic raw-plate frame name (real acquisition vocabulary, the
@@ -306,14 +307,14 @@ def test_done_marker_roundtrip(tmp_path):
     io.write_done(well, counters)
     assert (well / "_done.txt").exists()
     assert io.is_done(well)
-    assert io.read_done(well) == counters
+    assert read_marker(well) == counters
 
 
 def test_done_marker_reader_tolerates_missing_keys(tmp_path):
     well = tmp_path / "-A001"
     well.mkdir()
     (well / "_done.txt").write_text("frames\t8\ncolonies\t3\n")
-    assert io.read_done(well) == {"frames": 8, "colonies": 3}
+    assert read_marker(well) == {"frames": 8, "colonies": 3}
     assert io.is_done(well)
 
 
@@ -321,8 +322,6 @@ def test_done_marker_absent(tmp_path):
     well = tmp_path / "-A001"
     well.mkdir()
     assert not io.is_done(well)
-    with pytest.raises(FileNotFoundError):
-        io.read_done(well)
 
 
 # --- colonies.csv (canonical columns, legacy mapping) ------------------------
@@ -419,19 +418,6 @@ def test_geometry_roundtrip(tmp_path):
 
 def test_geometry_read_missing_file(tmp_path):
     assert io.read_geometry(tmp_path / "well_geometry.csv") == {}
-
-
-def test_geometry_update_read_modify_write(tmp_path):
-    path = tmp_path / "well_geometry.csv"
-    io.update_geometry(path, "-A001", 1036.4, 1064.7, 941.6)
-    io.update_geometry(path, "-B004", 900.0, 900.0, 950.0)
-    back = io.read_geometry(path)
-    assert set(back) == {"-A001", "-B004"}
-    # Updating an existing well replaces it in place.
-    io.update_geometry(path, "-A001", 1.0, 2.0, 3.0)
-    back = io.read_geometry(path)
-    assert back["-A001"] == (1.0, 2.0, 3.0)
-    assert back["-B004"] == (900.0, 900.0, 950.0)
 
 
 # --- label images -------------------------------------------------------------

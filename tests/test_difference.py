@@ -27,7 +27,7 @@ from colony_tracking.difference import (
     DifferenceSummary,
     run_difference,
 )
-from conftest import DiskSpec, build_mini_plate, disk_mask, frame_name
+from conftest import DiskSpec, build_mini_plate, disk_mask, frame_name, read_marker
 
 
 def _diff_name(frame: str) -> str:
@@ -208,7 +208,7 @@ def test_rerun_skips_complete_wells_and_touches_nothing(tmp_path):
     assert _snapshot(out) == before
 
     # The done marker records the frame count.
-    assert io.read_done(out / "-A001")["frames"] == 2
+    assert read_marker(out / "-A001")["frames"] == 2
 
 
 # --- dry run -----------------------------------------------------------------
@@ -356,4 +356,4 @@ def test_single_frame_well_stays_a_complete_series(tmp_path):
     assert (img == 128).all()
     # An unchanged well floors the display limit at 1.0.
     assert float(io.read_scale(well_dir)["display_limit_int16"]) == 1.0
-    assert io.read_done(well_dir)["frames"] == 1
+    assert read_marker(well_dir)["frames"] == 1

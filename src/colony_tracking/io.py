@@ -259,26 +259,6 @@ def write_done(well_dir: Path | str, counters: Mapping[str, int | str]) -> Path:
     return path
 
 
-def read_done(well_dir: Path | str) -> dict[str, int | str]:
-    """Read the per-well done marker; absent keys are simply missing.
-
-    Values are parsed as ints when possible, kept as strings otherwise.
-    """
-    path = done_marker_path(well_dir)
-    values: dict[str, int | str] = {}
-    with open(path) as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            key, _, value = line.partition("\t")
-            try:
-                values[key] = int(value)
-            except ValueError:
-                values[key] = value
-    return values
-
-
 #: The canonical colonies.csv columns (spec: I/O contract).
 COLONIES_COLUMNS = (
     "well", "frame", "t_seconds", "image", "colony_id", "group_id",
@@ -368,15 +348,6 @@ def write_geometry(
             cy, cx, radius = geometry[well]
             writer.writerow([well, f"{cy:.1f}", f"{cx:.1f}", f"{radius:.1f}"])
     return path
-
-
-def update_geometry(
-    path: Path | str, well: str, cy: float, cx: float, radius: float
-) -> None:
-    """Read-modify-write one well's fitted circle in the geometry cache."""
-    geometry = read_geometry(path)
-    geometry[well] = (float(cy), float(cx), float(radius))
-    write_geometry(path, geometry)
 
 
 def write_label_image(path: Path | str, labels: np.ndarray) -> Path:

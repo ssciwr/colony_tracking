@@ -339,7 +339,7 @@ def _write_outputs(
 ) -> None:
     """Write one well's per-frame label images and colonies.csv."""
     for frame, label in zip(frames, labels):
-        io.write_label_image(well_dir / f"{frame.path.stem}__labels.tif", label)
+        io.write_label_image(well_dir / f"{frame.stem}__labels.tif", label)
     io.write_colonies(well_dir / "colonies.csv", rows)
 
 
@@ -509,9 +509,7 @@ def _reid_well(
         if exclude_before is not None and frame.frame < exclude_before:
             kept.append(np.zeros(groups.shape, np.uint32))
             continue
-        labels = io.read_label_image(
-            well_dir / f"{frame.path.stem}__labels.tif"
-        )
+        labels = io.read_label_image(well_dir / f"{frame.stem}__labels.tif")
         local = np.zeros(labels.shape, np.uint32)
         for local_id, segment in enumerate(extract_segments(labels), start=1):
             local[segment.mask] = local_id

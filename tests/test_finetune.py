@@ -12,7 +12,9 @@ prompt contract — via an injectable predictor and bounding-box helper) and
 the loader seam ``build_loader`` (a one-batch smoke test, no model) are
 tested hermetically too. Only the real model runs stay outside the suite
 (no GPU or network — spec "Out of Scope"); the train/evaluate paths are
-covered for their logged missing-prerequisite errors only.
+covered for their logged missing-prerequisite errors, and ``run_evaluate``'s
+smoke-run caps (``n_max_images``, ``n_max_instances``) end to end on a tiny
+real split with the model stack monkeypatched to the fake predictor.
 """
 
 import dataclasses
@@ -85,6 +87,8 @@ def test_evaluate_options_fields_match_contract():
         "checkpoint",
         "model_type",
         "patch_shape",
+        "n_max_images",
+        "n_max_instances",
         "output",
     ]
 
@@ -146,6 +150,8 @@ def test_evaluate_options_defaults():
     assert opts.checkpoint is None
     assert opts.model_type == "vit_t"
     assert opts.patch_shape == (512, 512)
+    assert opts.n_max_images is None
+    assert opts.n_max_instances is None
     assert opts.output is None
 
 
@@ -177,6 +183,9 @@ def test_finetune_options_roundtrip():
         data_dir=Path("/data/finetune"),
         split="train",
         checkpoint=Path("/data/run/best.pt"),
+        patch_shape=(256, 256),
+        n_max_images=3,
+        n_max_instances=10,
         output=Path("/data/report.json"),
     )
     assert EvaluateOptions.from_dict(opts.to_dict()) == opts
@@ -474,6 +483,101 @@ def test_run_evaluate_missing_checkpoint_logs_error(tmp_path, caplog):
     assert "torch" not in sys.modules
 
 
+# --- run_evaluate's smoke-run caps (n_max_images / n_max_instances) -----------
+#
+# A tiny real h5 split with planted disks, the model stack monkeypatched to a
+# _FakePredictor (imported lazily inside run_evaluate, so the patch lands):
+# the caps flow option -> run_evaluate -> predict_instances end to end.
+
+
+def _write_split_with_disks(
+    split_dir: Path,
+    files: int = 3,
+    disks: list[tuple[int, int, int]] | None = None,
+) -> None:
+    """A tiny real h5 split with planted disks, so instances exist to score."""
+    split_dir.mkdir(parents=True, exist_ok=True)
+    if disks is None:
+        disks = [(20, 20, 6)]
+    for i in range(1, files + 1):
+        with h5py.File(split_dir / f"{i:03d}.h5", "w") as h5:
+            h5.create_dataset("raw", data=np.full((64, 64), 30, np.uint8))
+            h5.create_dataset(
+                "label", data=_disk_labels((64, 64), disks, dtype=np.int32)
+            )
+
+
+def _patch_get_sam_model(monkeypatch, disks) -> None:
+    """Point ``micro_sam.util.get_sam_model`` (run_evaluate's lazy import) at
+    a _FakePredictor for the shared disk label (every file plants the same
+    disks, so one predictor serves the whole split)."""
+    label = _disk_labels((64, 64), disks)
+    monkeypatch.setattr(
+        "micro_sam.util.get_sam_model", lambda **_: _FakePredictor(label)
+    )
+
+
+@pytest.mark.parametrize(
+    ("n_max_images", "expected"), [(None, 3), (0, 3), (2, 2)],
+    ids=["uncapped", "zero-disables", "capped"],
+)
+def test_run_evaluate_n_max_images_caps_the_split(
+    tmp_path, monkeypatch, n_max_images, expected
+):
+    _write_split_with_disks(tmp_path / "data" / "val", files=3)
+    _patch_get_sam_model(monkeypatch, [(20, 20, 6)])
+    summary = run_evaluate(
+        EvaluateOptions(
+            data_dir=tmp_path / "data", patch_shape=(64, 64),
+            n_max_images=n_max_images,
+        )
+    )
+    assert summary.error is None
+    assert summary.n_images == expected
+    # the first N files of the split (sorted glob order)
+    assert [entry["file"] for entry in summary.per_image] == [
+        f"{i:03d}.h5" for i in range(1, expected + 1)
+    ]
+    # one real instance scored per image (the fake segments its bound id
+    # perfectly — "no instances evaluated" would report an error instead)
+    assert summary.n_instances == expected
+    assert summary.mean_iou == pytest.approx(1.0)
+
+
+def test_run_evaluate_scores_every_instance_by_default(tmp_path, monkeypatch):
+    # The control for the instance cap: two disks per file, no cap -> both
+    # score (the second's IoU is whatever the fake makes of it — counts only).
+    disks = [(20, 20, 6), (45, 40, 5)]
+    _write_split_with_disks(tmp_path / "data" / "val", files=2, disks=disks)
+    _patch_get_sam_model(monkeypatch, disks)
+    summary = run_evaluate(
+        EvaluateOptions(data_dir=tmp_path / "data", patch_shape=(64, 64))
+    )
+    assert summary.error is None
+    assert summary.n_instances == 4
+    assert all(entry["n_instances"] == 2 for entry in summary.per_image)
+
+
+def test_run_evaluate_n_max_instances_caps_the_scoring(tmp_path, monkeypatch):
+    disks = [(20, 20, 6), (45, 40, 5)]
+    _write_split_with_disks(tmp_path / "data" / "val", files=2, disks=disks)
+    _patch_get_sam_model(monkeypatch, disks)
+    summary = run_evaluate(
+        EvaluateOptions(
+            data_dir=tmp_path / "data", patch_shape=(64, 64),
+            n_max_instances=1,
+        )
+    )
+    assert summary.error is None
+    assert summary.n_images == 2
+    assert summary.n_instances == 2
+    assert all(entry["n_instances"] == 1 for entry in summary.per_image)
+    # the lowest instance id scores first (v1 semantics) — and the fake
+    # segments its bound id perfectly, so the capped score is 1.0 (a cap
+    # taking the last id instead would score 0.0 here).
+    assert summary.mean_iou == pytest.approx(1.0)
+
+
 # --- the scoring seam (ported from v1; hermetic — no model stack) -------------
 #
 # ``predict_instances`` scores every ground-truth instance exactly once, in
@@ -517,13 +621,19 @@ def _gt_boxes(label: np.ndarray, mode: str = "p"):
 
 
 class _FakePredictor:
-    """A perfect predictor: returns the ground-truth mask of the prompted
-    instance in the tile the box refers to."""
+    """A perfect box-prompt predictor: the ground-truth mask of the prompted
+    instance in the tile the box refers to.
 
-    def __init__(self, label: np.ndarray, iid: int):
+    The prompt arrives in the tile's own coordinates (SAM's [x0, y0, x1, y1]
+    order); the fake recovers the tile offset as the one that maps the box
+    onto a planted instance's full-image box — the box size plus the valid
+    offset range single it out for the disks planted in these tests (a
+    prompt that does not identify a unique instance is an error)."""
+
+    def __init__(self, label: np.ndarray):
         self.label = label
-        self.iid = iid
         self.calls: list = []
+        self.boxes = _gt_boxes(label)[1]
 
     def set_image(self, image) -> None:
         self.image = np.asarray(image)
@@ -531,17 +641,25 @@ class _FakePredictor:
     def predict(self, point_coords=None, point_labels=None, box=None,
                 multimask_output=False):
         self.calls.append((point_coords, point_labels, box))
-        ys, xs = np.where(self.label == self.iid)
-        ty, tx = ys.min() - int(box[0][1]), xs.min() - int(box[0][0])
-        ph = self.image.shape[0]
-        pred = self.label[ty : ty + ph, tx : tx + ph] == self.iid
+        box = np.asarray(box)[0]  # [x0, y0, x1, y1], tile-local
+        h, w = self.label.shape
+        th, tw = self.image.shape[:2]
+        (iid, ty, tx), = [
+            (iid, int(fb[0]) - int(box[1]), int(fb[1]) - int(box[0]))
+            for iid, fb in self.boxes.items()
+            if fb[3] - fb[1] == box[2] - box[0]
+            and fb[2] - fb[0] == box[3] - box[1]
+            and 0 <= fb[0] - box[1] <= h - th
+            and 0 <= fb[1] - box[0] <= w - tw
+        ]
+        pred = self.label[ty : ty + th, tx : tx + tw] == iid
         return pred[None], None, None
 
 
 def test_predict_instances_perfect():
     label = _disk_labels((64, 64), [(20, 20, 6)])
     raw = np.full((64, 64), 30, np.uint8)
-    predictor = _FakePredictor(label, 1)
+    predictor = _FakePredictor(label)
     results = predict_instances(predictor, raw, label, (32, 32), boxes_fn=_gt_boxes)
     assert len(results) == 1
     assert results[0]["id"] == 1
@@ -557,7 +675,7 @@ def test_predict_instances_clipped_and_capped():
     # The first disk is 35 px across — larger than the 32-px tile.
     label = _disk_labels((64, 64), [(32, 32, 17), (10, 10, 3)])
     raw = np.full((64, 64), 30, np.uint8)
-    predictor = _FakePredictor(label, 1)
+    predictor = _FakePredictor(label)
     results = predict_instances(
         predictor, raw, label, (32, 32), n_max_instances=1, boxes_fn=_gt_boxes
     )
@@ -573,7 +691,7 @@ def test_predict_instances_rejects_non_box_prompts(prompt):
     # before the predictor or micro-sam are touched.
     label = _disk_labels((64, 64), [(20, 20, 6)])
     raw = np.full((64, 64), 30, np.uint8)
-    predictor = _FakePredictor(label, 1)
+    predictor = _FakePredictor(label)
     with pytest.raises(ValueError, match="prompt"):
         predict_instances(predictor, raw, label, (32, 32), prompt, boxes_fn=_gt_boxes)
     assert predictor.calls == []

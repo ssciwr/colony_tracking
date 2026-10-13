@@ -389,7 +389,9 @@ def run_evaluate(options: EvaluateOptions) -> EvaluateSummary:
     The per-instance IoU is computed in the best containing tile
     (``patch_shape``); instances larger than a tile are flagged clipped.
     Reports mean/median IoU and the fractions above 0.5 / 0.75 / 0.9; an
-    optional JSON report is written to ``output``. The model stack is
+    optional JSON report is written to ``output``. ``n_max_images`` and
+    ``n_max_instances`` cap the run to the first N images of the split and
+    the first N instances per image (a quick smoke run). The model stack is
     imported lazily, only once the prerequisites check out — a missing
     split or checkpoint is a logged error, not a traceback.
     """
@@ -405,6 +407,8 @@ def run_evaluate(options: EvaluateOptions) -> EvaluateSummary:
             checkpoint=options.checkpoint,
             error=message,
         )
+    if options.n_max_images:  # falsy cap disables the slice (v1 semantics)
+        files = files[: options.n_max_images]
     if options.checkpoint is not None and not Path(options.checkpoint).exists():
         message = f"no such checkpoint: {options.checkpoint}"
         log.error(message)
@@ -441,7 +445,10 @@ def run_evaluate(options: EvaluateOptions) -> EvaluateSummary:
         with h5py.File(f) as h5:
             raw = np.asarray(h5["raw"][:])
             label = np.asarray(h5["label"][:])
-        results = predict_instances(predictor, raw, label, patch_shape)
+        results = predict_instances(
+            predictor, raw, label, patch_shape,
+            n_max_instances=options.n_max_instances,
+        )
         if results:
             ious = [r["iou"] for r in results]
             all_ious.extend(ious)

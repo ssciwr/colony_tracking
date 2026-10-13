@@ -442,6 +442,17 @@ class EvaluateOptions(Options):
             "tile are flagged clipped."
         },
     )
+    n_max_images: int | None = field(
+        default=None,
+        metadata={
+            "help": "Evaluate only the first N h5 images of the "
+            "split (a quick smoke run)."
+        },
+    )
+    n_max_instances: int | None = field(
+        default=None,
+        metadata={"help": "Score only the first N instances per image."},
+    )
     output: Path | None = field(
         default=None, metadata={"help": "Optional path for a JSON report."}
     )

@@ -209,6 +209,8 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 | `--checkpoint` | `none` | Finetuned checkpoint; omit to evaluate the pretrained base model. |
 | `--model-type` | `vit_t` | SAM variant the checkpoint was trained with. |
 | `--patch-shape` | `512 512` | Tile size in px, (height, width); instances larger than a tile are flagged clipped. |
+| `--n-max-images` | `none` | Evaluate only the first N h5 images of the split (a quick smoke run). |
+| `--n-max-instances` | `none` | Score only the first N instances per image. |
 | `--output` | `none` | Optional path for a JSON report. |
 
 ## Python API

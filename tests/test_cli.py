@@ -409,6 +409,7 @@ def test_train_evaluate_flags(monkeypatch, tmp_path):
         "train", "evaluate", "--data-dir", str(tmp_path / "h5"),
         "--split", "train", "--checkpoint", str(checkpoint),
         "--model-type", "vit_t", "--patch-shape", "1024", "1024",
+        "--n-max-images", "3", "--n-max-instances", "10",
         "--output", str(tmp_path / "report.json"),
     ])
 
@@ -417,6 +418,7 @@ def test_train_evaluate_flags(monkeypatch, tmp_path):
     assert options == EvaluateOptions(
         data_dir=tmp_path / "h5", split="train", checkpoint=checkpoint,
         model_type="vit_t", patch_shape=(1024, 1024),
+        n_max_images=3, n_max_instances=10,
         output=tmp_path / "report.json",
     )
 

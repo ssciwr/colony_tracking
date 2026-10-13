@@ -40,6 +40,7 @@ def _to_plain(value: Any) -> Any:
     return value
 
 
+# Shared internal helper of this package: also imported by pipeline.py and cli.py.
 def _union_members(hint: Any) -> tuple[Any, ...] | None:
     """The non-None members of a union hint (``typing.Union`` or
     ``types.UnionType``), else None."""

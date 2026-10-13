@@ -155,7 +155,7 @@ def _derived_segment_root(out_root: Path, reference: Reference) -> Path:
 
 #: Scalar hint → (plain-value predicate, phrase, plural phrase): one table
 #: shared by ``_human_hint`` and ``_compatible`` so the wording cannot drift.
-_SCALARS: dict = {
+_SCALARS: dict[type, tuple[Callable[[Any], bool], str, str]] = {
     Path: (lambda v: isinstance(v, str), "a path string", "path strings"),
     bool: (lambda v: isinstance(v, bool), "true or false", "booleans"),
     int: (lambda v: isinstance(v, int) and not isinstance(v, bool),
@@ -178,6 +178,8 @@ def _human_hint(hint: Any) -> str:
         return f"a list of {_PLURAL.get(item, item)}"
     if (members := _union_members(hint)) is not None:  # a Union
         return " or ".join(_human_hint(a) for a in members)
+    if args:  # another parameterized hint: list its members
+        return " or ".join(_human_hint(a) for a in args if a is not type(None))
     if hint in _SCALARS:
         return _SCALARS[hint][1]
     return getattr(hint, "__name__", str(hint))

@@ -1038,7 +1038,8 @@ def write_outputs(traj, options, out_dir):
     flagged, pre-existing ones via the pre_existing column); the pooled
     aggregates and the plots use only rows from wells that are not excluded
     for repeated bad segments, that are not bad, and that are not
-    pre-existing (unless ``keep_pre_existing``). Returns (rates, areas_agg).
+    pre-existing (unless ``keep_pre_existing``). Returns (rates, areas_agg,
+    per_well_bad, excluded) — the ``split_bad`` results for the summary.
     """
     out_dir = Path(out_dir)
     io.write_csv_rows(out_dir / "trajectories.csv", traj, TRAJ_FIELDS)
@@ -1098,7 +1099,7 @@ def write_outputs(traj, options, out_dir):
                           out_dir / "growth_rates_by_ancestors.png",
                           well_names=n_note,
                           alpha_on=not options.no_group_alpha)
-    return rates, areas_agg
+    return rates, areas_agg, per_well_bad, excluded
 
 
 @dataclass(frozen=True)
@@ -1128,16 +1129,15 @@ class AnalysisSummary:
     failures: list[str] = field(default_factory=list)
 
 
-def _root_summary(name, traj, options, wells=None):
+def _root_summary(name, traj, options, per_well_bad, excluded, wells=None):
     """The shared RootSummary tail of the two analysis paths.
 
-    Runs :func:`split_bad` over the trajectory rows and collects the
-    pre-existing (well, colony_id) set. ``wells`` is the caller's well
-    count; when omitted (the re-plot path) it is derived from the rows.
+    Collects the pre-existing (well, colony_id) set; ``per_well_bad`` and
+    ``excluded`` are the caller's :func:`split_bad` results. ``wells`` is
+    the caller's well count; when omitted (re-plot) it is derived from rows.
     """
     if wells is None:
         wells = len({r["well"] for r in traj})
-    _, per_well_bad, excluded = split_bad(traj, options)
     pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
     return RootSummary(
         name=name, wells=wells,
@@ -1164,8 +1164,8 @@ def _replot(name, out_dir, options):
             r[k] = typ(r[k]) if r[k] != "" else None
         traj.append(r)
     log.info("%s: re-plotting from %s", name, path)
-    write_outputs(traj, options, out_dir)
-    return _root_summary(name, traj, options)
+    _, _, per_well_bad, excluded = write_outputs(traj, options, out_dir)
+    return _root_summary(name, traj, options, per_well_bad, excluded)
 
 
 def _process_seg_dir(seg_root, name, out_dir, options, geometry):
@@ -1202,8 +1202,8 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry):
         log.warning("%s: no colony rows at all", name)
         return None
 
-    write_outputs(traj, options, out_dir)
-    summary = _root_summary(name, traj, options, wells=len(wells))
+    _, _, per_well_bad, excluded = write_outputs(traj, options, out_dir)
+    summary = _root_summary(name, traj, options, per_well_bad, excluded, len(wells))
     log.info("%s done: %d wells, %d colonies, %d rows (%d rim-excluded), "
              "%.1fs", name, summary.wells, summary.colonies, summary.rows,
              summary.rim_excluded, time.time() - t0)

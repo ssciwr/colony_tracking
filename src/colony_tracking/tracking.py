@@ -60,6 +60,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.ndimage import binary_dilation, label
 
 from . import log
 
@@ -79,82 +80,7 @@ ABSORB_COVERAGE = 0.5
 TOUCH_DILATE = 3
 
 
-# --- pure numpy geometry (no scipy: this module stays numpy + stdlib) -------
-
-
-def _label_components(mask: np.ndarray) -> tuple[np.ndarray, int]:
-    """Label the 4-connected components of a boolean mask.
-
-    Returns ``(labels, n)`` with components numbered 1..n in row-major order
-    of their first pixel — the same connectivity and numbering
-    ``scipy.ndimage.label`` produces with its default structure, so local
-    segment IDs match the prototype's. Runs of set pixels are extracted per
-    row and unified with a small union-find over vertically overlapping
-    runs (4-connectivity: a pixel only touches the pixel directly above).
-    """
-    mask = np.asarray(mask, dtype=bool)
-    labels = np.zeros(mask.shape, np.int32)
-    if not mask.any():
-        return labels, 0
-    parent: list[int] = []
-
-    def find(x: int) -> int:
-        root = x
-        while parent[root] != root:
-            root = parent[root]
-        while parent[x] != root:  # path compression
-            parent[x], x = root, parent[x]
-        return root
-
-    runs: list[tuple[int, int, int, int]] = []  # (y, start, end, run id)
-    prev: list[tuple[int, int, int]] = []  # (start, end, run id) of the row above
-    for y in range(mask.shape[0]):
-        row = mask[y]
-        if not row.any():
-            prev = []
-            continue
-        edges = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
-        starts = np.flatnonzero(edges == 1)
-        ends = np.flatnonzero(edges == -1)
-        cur: list[tuple[int, int, int]] = []
-        first = 0  # prev runs with end <= start can never overlap a later run
-        for s, e in zip(starts.tolist(), ends.tolist()):
-            rid = len(parent)
-            parent.append(rid)
-            while first < len(prev) and prev[first][1] <= s:
-                first += 1
-            j = first
-            while j < len(prev) and prev[j][0] < e:
-                proot = find(prev[j][2])
-                if proot != rid:
-                    parent[proot] = rid
-                j += 1
-            cur.append((s, e, rid))
-            runs.append((y, s, e, rid))
-        prev = cur
-
-    # Number the components 1..n in row-major order of their first pixel.
-    name_of_root: dict[int, int] = {}
-    for _, _, _, rid in runs:
-        root = find(rid)
-        if root not in name_of_root:
-            name_of_root[root] = len(name_of_root) + 1
-    for y, s, e, rid in runs:
-        labels[y, s:e] = name_of_root[find(rid)]
-    return labels, len(name_of_root)
-
-
-def _dilate(mask: np.ndarray, iterations: int) -> np.ndarray:
-    """Dilate a boolean mask with the 4-neighbourhood cross, k iterations."""
-    out = np.asarray(mask, dtype=bool)
-    for _ in range(iterations):
-        grown = out.copy()
-        grown[1:, :] |= out[:-1, :]
-        grown[:-1, :] |= out[1:, :]
-        grown[:, 1:] |= out[:, :-1]
-        grown[:, :-1] |= out[:, 1:]
-        out = grown
-    return out
+# --- geometry (scipy.ndimage: same 4-connectivity as segmentation.py) -------
 
 
 def _center(mask: np.ndarray) -> tuple[float, float]:
@@ -184,7 +110,7 @@ def extract_segments(labels: np.ndarray) -> list[Segment]:
     for value in np.unique(labels):
         if value == 0:
             continue
-        cc, n = _label_components(labels == value)
+        cc, n = label(labels == value)
         for i in range(1, n + 1):
             m = cc == i
             cy, cx = _center(m)
@@ -226,7 +152,10 @@ def premerge_touching(
         merged_any = False
         for s in segs:
             for k in kept:
-                if (_dilate(k.mask, TOUCH_DILATE) & s.mask).any():
+                # iterations is always TOUCH_DILATE >= 1 here: scipy's
+                # binary_dilation(iterations=0) dilates until stability,
+                # while a 0-iteration cross dilation is a no-op.
+                if (binary_dilation(k.mask, iterations=TOUCH_DILATE) & s.mask).any():
                     k.mask |= s.mask
                     k.area += s.area
                     merged_any = True

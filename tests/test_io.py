@@ -9,6 +9,7 @@ later tickets inherit a known-good builder.
 """
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -70,6 +71,28 @@ def test_parse_time():
     assert io.parse_time("ref__labels.tif") is None
     # The TM field must not be mistaken for the T field.
     assert io.parse_time("-A001--TM366--X0.tif") is None
+
+
+# --- Frame.stem --------------------------------------------------------------
+
+
+def test_frame_stem():
+    # The stem is the file name without its ``.tif``/``.tiff`` suffix, found
+    # case-insensitively: a ``.tiff``/``.TIFF`` name must not lose an extra
+    # character (the reason stages must not derive stems ad hoc, v1's
+    # ``Frame.stem`` adopted here).
+    frame = io.Frame(
+        well="-A001", frame=1, t=0, name=RAW_NAME, path=Path(RAW_NAME)
+    )
+    tiff_frame = io.Frame(
+        well="-A001", frame=1, t=0, name=RAW_NAME[:-4] + ".tiff", path=None
+    )
+    upper_tiff_frame = io.Frame(
+        well="-A001", frame=1, t=0, name=RAW_NAME[:-4] + ".TIFF", path=None
+    )
+    assert frame.stem == RAW_NAME[:-4]
+    assert tiff_frame.stem == RAW_NAME[:-4]
+    assert upper_tiff_frame.stem == RAW_NAME[:-4]
 
 
 # --- input-tree discovery ---------------------------------------------------

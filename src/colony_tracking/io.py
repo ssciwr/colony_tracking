@@ -71,6 +71,12 @@ class Frame:
     name: str  # the frame's file name
     path: Path  # full path to the frame file
 
+    @property
+    def stem(self) -> str:
+        """File name without its ``.tif``/``.tiff`` suffix."""
+        return self.name[:-5] if self.name.lower().endswith(".tiff") \
+            else self.name[:-4]
+
 
 def discover_wells(
     root: Path | str,

@@ -25,8 +25,7 @@ import sys
 import tomllib
 from dataclasses import MISSING, fields
 from pathlib import Path
-from types import UnionType
-from typing import Union, get_args, get_origin, get_type_hints
+from typing import get_args, get_origin, get_type_hints
 
 from . import log
 from ._options import (
@@ -34,6 +33,7 @@ from ._options import (
     DifferenceOptions,
     Reference,
     SegmentationOptions,
+    _union_members,
 )
 from .analysis import AnalysisSummary, run_analysis
 from .difference import run_difference
@@ -146,10 +146,9 @@ def _add_flags(parser: argparse.ArgumentParser, cls: type, *,
                        else f.default_factory())
         hint = hints[f.name]
         origin = get_origin(hint)
-        if origin is Union or origin is UnionType:  # X | None
-            non_none = [a for a in get_args(hint) if a is not type(None)]
-            if len(non_none) == 1:
-                hint, origin = non_none[0], get_origin(non_none[0])
+        members = _union_members(hint)
+        if members is not None and len(members) == 1:  # X | None
+            hint, origin = members[0], get_origin(members[0])
         kwargs: dict = {"help": f.metadata["help"], "default": default,
                         "required": required, "dest": f.name}
         if hint is bool:

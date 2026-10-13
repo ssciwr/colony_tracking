@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Literal, get_type_hints
+from types import UnionType
+from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
 
 #: Reference frame selection: ``"first"`` or a 1-based frame number.
 Reference = Literal["first"] | int
@@ -39,21 +40,24 @@ def _to_plain(value: Any) -> Any:
     return value
 
 
+def _union_members(hint: Any) -> tuple[Any, ...] | None:
+    """The non-None members of a union hint (``typing.Union`` or
+    ``types.UnionType``), else None."""
+    if get_origin(hint) not in (Union, UnionType):
+        return None
+    return tuple(a for a in get_args(hint) if a is not type(None)) or None
+
+
 def _from_plain(value: Any, type_hint: Any) -> Any:
     """Coerce a plain value back to the field's declared type."""
-    args = getattr(type_hint, "__args__", None)
-    if args is not None:
-        non_none = [a for a in args if a is not type(None)]
-        if len(args) == len(non_none) + 1 and len(non_none) == 1:
-            # ``X | None``: coerce against X.
-            return _from_plain(value, non_none[0])
-        origin = getattr(type_hint, "__origin__", None)
-        if origin is list and isinstance(value, list):
-            item_hint = args[0]
-            return [_from_plain(v, item_hint) for v in value]
-        if origin is tuple and isinstance(value, (list, tuple)):
-            item_hint = args[0]
-            return tuple(_from_plain(v, item_hint) for v in value)
+    if (members := _union_members(type_hint)) is not None and len(members) == 1:
+        # ``X | None``: coerce against X.
+        return _from_plain(value, members[0])
+    origin, args = get_origin(type_hint), get_args(type_hint)
+    if origin is list and isinstance(value, list) and args:
+        return [_from_plain(v, args[0]) for v in value]
+    if origin is tuple and isinstance(value, (list, tuple)) and args:
+        return tuple(_from_plain(v, args[0]) for v in value)
     if type_hint is Path and isinstance(value, str):
         return Path(value)
     return value

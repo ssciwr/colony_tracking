@@ -2,7 +2,8 @@
 
 Seams under test (per the ticket): the pure helpers of
 ``colony_tracking.segmentation`` — the drift-gate decision, the growth-mask
-construction, and the mask-overlap filter — plus ``run_segmentation`` in its
+construction, the mask-overlap filter, and the foreground gap closure —
+plus ``run_segmentation`` in its
 model-free paths (the up-front rejection of a difference reference equal to
 the final frame, and the re-ID mode over a synthetic label tree). No model,
 no GPU, no network: the model path itself is never entered.
@@ -21,6 +22,7 @@ from colony_tracking.segmentation import (
     build_growth_mask,
     drift_gate_limit,
     drift_gate_skips,
+    fill_enclosed_gaps,
     filter_to_mask,
     run_segmentation,
 )
@@ -175,6 +177,63 @@ def test_filter_without_groups_applies_the_mask_rule_only():
     out, discarded = filter_to_mask(instances, mask, None, min_overlap=0.5)
     assert discarded == 0
     assert (out[2:12, 10:30] == 1).all()
+
+
+# --- the foreground gap closure -------------------------------------------------
+
+
+def _dipped_foreground(dip: float) -> np.ndarray:
+    """A decoder foreground with a solid object and an interior dip.
+
+    The object spans rows/cols 5..24 at 0.9; the interior dip (rows/cols
+    12..17) sits below the 0.5 instance threshold at ``dip``.
+    """
+    fg = np.zeros((30, 30), np.float32)
+    fg[5:25, 5:25] = 0.9
+    fg[12:18, 12:18] = dip
+    return fg
+
+
+def test_enclosed_subthreshold_gap_is_restored():
+    # an interior dip just below the threshold (0.4 < 0.5) is the colony-
+    # interior case: the watershed would slice a hole into the instance
+    fg = _dipped_foreground(0.4)
+    out = fill_enclosed_gaps(fg, 0.5)
+    assert (out[12:18, 12:18] == 1.0).all()  # raised into the mask
+    assert (out[5:25, 5:25] != 0).all()  # the instance is hole-free now
+    # pixels below the threshold but outside the dip are untouched
+    assert (out[5:12, 5:12] == 0.9).all()
+
+
+def test_enclosed_background_level_gap_is_not_restored():
+    # the model scores the enclosed region as background (0.1 < half the
+    # threshold): the repair must not presume shapes — a genuinely annular
+    # object's interior stays out of the instance
+    fg = _dipped_foreground(0.1)
+    out = fill_enclosed_gaps(fg, 0.5)
+    assert (out[12:18, 12:18] == 0.1).all()
+
+
+def test_open_subthreshold_border_is_not_restored():
+    # a sub-threshold fringe open to the image background is a colony's soft
+    # border, not an enclosed gap: instance borders stay at the threshold
+    fg = _dipped_foreground(0.4)
+    fg[25:30, 5:25] = 0.4  # touches the image edge -> not enclosed
+    out = fill_enclosed_gaps(fg, 0.5)
+    assert (out[25:30, 5:25] == 0.4).all()
+    assert (out[12:18, 12:18] == 1.0).all()  # the enclosed dip is restored
+
+
+def test_gap_closure_without_gaps_returns_the_foreground_unchanged():
+    # nothing above the threshold / everything above it / no enclosed dips:
+    # all no-ops, and the input array is never mutated
+    for fg in (np.zeros((8, 8), np.float32),
+               np.full((8, 8), 0.9, np.float32),
+               _dipped_foreground(0.6)):
+        before = fg.copy()
+        out = fill_enclosed_gaps(fg, 0.5)
+        assert np.array_equal(out, before)
+        assert np.array_equal(fg, before)  # the input is untouched
 
 
 # --- run_segmentation: validation and the up-front reference rejection ----------

@@ -32,6 +32,13 @@ largest extent. One well is processed like this:
    pre-existing filter blanks frames before N and flags colonies first
    detected at or before N as ``pre_existing=1``.
 
+Every model call first restores the decoder foreground's enclosed
+sub-threshold gaps (:func:`fill_enclosed_gaps`) and is drift-gated before
+segmenting: the strict foreground threshold draws instance boundaries —
+where a colony interior's score dips just below it, the watershed would
+slice a hole into the instance, and the growth mask would propagate that
+hole into every earlier frame it clears the foreground for.
+
 Inputs (``input``): with ``"raw"`` each raw frame is 1/99 percentile-
 stretched to uint8 (the shared io helper, matching the finetuning data
 prep). With ``"diff"`` the uint8 difference frames are fed as written
@@ -111,6 +118,56 @@ def drift_gate_skips(
     if max_fg_ratio <= 0:
         return False
     return elevated > drift_gate_limit(ref_frac, max_fg_ratio)
+
+
+# --- the foreground gap closure ---------------------------------------------------
+
+
+#: An enclosed sub-threshold pixel is restored to the watershed mask when the
+#: decoder still scores it at ``GAP_FLOOR`` (0.5) of the frame's foreground
+#: threshold. Measured on this data, real background scores orders of
+#: magnitude below that (≤ 0.1 against a 0.3–0.5 threshold), while a colony
+#: interior the threshold slices out scores just under it — the strict
+#: threshold exists to draw instance boundaries, and an enclosed dip below it
+#: is a thresholding artifact, not evidence of background.
+GAP_FLOOR = 0.5
+
+
+def fill_enclosed_gaps(fg: np.ndarray, threshold: float) -> np.ndarray:
+    """Restore the enclosed sub-threshold gaps of the decoder foreground.
+
+    The decoder's watershed labels only pixels above ``threshold``, so an
+    interior region where the foreground score dips below it — common where
+    a dense colony's score hovers just under the instance-boundary
+    threshold — is left unassigned and becomes a hole in the instance. This
+    repairs the foreground before the watershed: pixels **enclosed** by the
+    above-threshold mask (they cannot be reached from the background) and
+    still scored at least ``GAP_FLOOR * threshold`` — the model's own
+    evidence that they are not background — are raised to 1.0, so the
+    watershed floods them into the instance that encloses them.
+
+    Two gates keep the repair away from real background:
+
+    - *enclosure*: a sub-threshold region open to the image background
+      (a colony's soft border fringe) is left alone — instance borders
+      stay where the threshold put them;
+    - *evidence*: an enclosed region the model scores below
+      ``GAP_FLOOR * threshold`` — background by the model's own lights,
+      e.g. the interior of a genuinely annular object — is left alone.
+
+    The closure does not assume anything about the shapes it repairs: it
+    only follows the decoder's scores. Returns a repaired **copy**; the
+    input is left untouched.
+    """
+    fg = np.asarray(fg, dtype=np.float32).copy()
+    above = fg >= threshold
+    if not above.any() or above.all():
+        return fg
+    gaps = ndi.binary_fill_holes(above) & ~above
+    restore = gaps & (fg >= GAP_FLOOR * threshold)
+    if restore.any():
+        fg[restore] = 1.0
+    return fg
 
 
 # --- growth-mask construction -----------------------------------------------------
@@ -279,7 +336,7 @@ def _segment_frame(
     max_fg_ratio: float,
     desc: str,
 ) -> tuple[np.ndarray, float]:
-    """One model call: decoder foreground, drift gate, masked watershed.
+    """One model call: decoder foreground, drift gate, gap closure, watershed.
 
     Returns ``(instances, elevated-foreground fraction)`` — the fraction of
     the whole image above the foreground threshold. With ``ref_frac`` (the
@@ -288,7 +345,10 @@ def _segment_frame(
     the foreground globally and hallucinates confident giant instances, so
     zeros are returned instead of instances. With ``allowed`` (the growth
     mask) the decoder foreground is cleared outside it before the
-    watershed, so no instance can start there at all.
+    watershed, so no instance can start there at all. Before either, the
+    decoder foreground's enclosed sub-threshold gaps are restored
+    (:func:`fill_enclosed_gaps`) — the strict threshold draws instance
+    boundaries and must not slice holes into an instance's interior.
     """
     segmenter.initialize(image)
     elevated = float((segmenter._foreground >= fg_threshold).mean())
@@ -303,6 +363,9 @@ def _segment_frame(
             desc, elevated, gate, ref_frac,
         )
         return np.zeros(image.shape, np.uint32), elevated
+    segmenter._foreground = fill_enclosed_gaps(
+        segmenter._foreground, fg_threshold
+    )
     if allowed is not None:
         segmenter._foreground[~allowed] = 0.0
     return segmenter.generate(

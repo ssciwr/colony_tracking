@@ -12,7 +12,7 @@ Three stages make up the standard chain:
    ADR 0001).
 2. **segment** runs micro-sam instance segmentation over the difference
    frames, gates it with a growth mask built from the final frame, and
-   tracks colonies across frames by IoU (ADR 0002).
+   tracks colonies across frames by IoU and mask containment (ADR 0002).
 3. **analyze** fits the well circles, excludes rim-touching and bad
    colonies, and writes trajectories, growth rates, pooled aggregates, and
    plots.

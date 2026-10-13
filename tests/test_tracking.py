@@ -2,7 +2,8 @@
 
 Seams under test (per the ticket): the tracking entry point
 ``track_colonies`` (synthetic label series in -> per-frame label images,
-CSV-ready rows and done-marker counters out), the touching-segment
+CSV-ready rows and done-marker counters out; identity rules incl. the
+containment continuation for strong growth), the touching-segment
 pre-merge (``premerge_touching``), and the transitive ancestor count
 (``ancestor_counts``). Pure input -> output on small synthetic masks; no
 fixture plate, no model.
@@ -104,6 +105,55 @@ def test_iou_below_threshold_does_not_continue():
         groups,
     )
     assert [r["colony_id"] for r in res.rows] == [1, 2]
+
+
+# --- containment continuation (strong growth) ---------------------------------
+
+
+def test_full_containment_continues_despite_low_iou():
+    groups = one_group((60, 60))
+    # a colony that grows 4x in one frame: the old mask sits fully inside the
+    # new segment, but the IoU of a perfect continuation is only 100/400 = 0.25
+    res = track_colonies(
+        [(10, box_image({1: (10, 10, 20, 20)}, shape=(60, 60))),
+         (11, box_image({1: (5, 5, 25, 25)}, shape=(60, 60)))],
+        groups,
+    )
+    assert [r["colony_id"] for r in res.rows] == [1, 1]
+    assert res.rows[1]["merged_with"] == ""  # growth, not a merge
+    assert res.counters["merge_events"] == 0
+    assert res.counters["colonies"] == 1
+    assert (res.labels[1][5:25, 5:25] == 1).all()
+
+
+def test_containment_needs_half_the_colonys_mask():
+    groups = one_group((60, 60))
+    # the new segment overlaps only 40 of the colony's 100 px (it moved
+    # mostly away, and is far bigger than the colony so the IoU is low too):
+    # no continuation, a new colony starts
+    res = track_colonies(
+        [(10, box_image({1: (10, 10, 20, 20)}, shape=(60, 60))),
+         (11, box_image({1: (10, 16, 30, 26)}, shape=(60, 60)))],
+        groups,
+    )
+    assert [r["colony_id"] for r in res.rows] == [1, 2]
+
+
+def test_merge_beyond_the_iou_rule_keeps_the_dominant_colony():
+    groups = one_group((40, 64))
+    frames = [
+        # colonies A (300 px) -> 1 and B (100 px) -> 2
+        (1, box_image({1: (10, 2, 20, 32), 2: (10, 40, 20, 50)}, shape=(40, 64))),
+        # one blob covers both fully and has outgrown the IoU rule (IoU with
+        # A = 300/1200 = 0.25): A continues, B is absorbed — no new colony
+        (2, box_image({3: (5, 0, 25, 60)}, shape=(40, 64))),
+    ]
+    res = track_colonies(frames, groups)
+    assert [r["colony_id"] for r in res.rows] == [1, 2, 1]
+    assert res.rows[2]["merged_with"] == "2"
+    assert res.counters["merge_events"] == 1
+    assert res.counters["colonies"] == 2  # the blob started no third colony
+    assert (res.labels[1][5:25, 0:60] == 1).all()
 
 
 def test_unmatched_segment_starts_a_new_id():

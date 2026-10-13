@@ -6,10 +6,18 @@ outputs are label images, CSV-ready rows, and counters.
 
 Identity rules (tracked forward in time, per well and per reference group):
 
-- A segment whose IoU with a colony's last-known mask reaches ``MATCH_IOU``
-  (0.3) **continues** that colony (same ID). Among matching colonies the
-  best IoU wins, ties broken by the larger colony — favouring the
-  up-to-date colony over the stale masks of long-absorbed ones.
+- A segment **continues** a colony (same ID) when it matches the colony's
+  last-known mask by IoU ≥ ``MATCH_IOU`` (0.3) **or** covers at least
+  ``ABSORB_COVERAGE`` (0.5) of it. The containment rule is the growth case
+  the IoU rule cannot see: colonies only grow, so a colony's next segment
+  contains its previous extent — but with strong growth in one frame
+  (more than ~3.3×) the IoU of a perfect continuation drops below the
+  threshold, and without the containment rule the segment would start a
+  new colony and record a bogus merge. Among matching colonies the best
+  IoU wins, ties broken by the larger colony — favouring the up-to-date
+  colony over the stale masks of long-absorbed ones, and the dominant
+  colony of a merge over the colonies it absorbs (for equal coverage the
+  larger colony has the higher IoU).
 - A segment that continues no colony but covers at least ``ABSORB_COVERAGE``
   (0.5) of a further colony's last-known mask **absorbs** it: the survivor
   keeps its own ID, the absorbed IDs are recorded in that frame's row as
@@ -340,14 +348,18 @@ def track_colonies(
             # the decoder split off it, so forks are judged against this.
             start_masks = [o["mask"] for o in active]
             for s in segs:
-                # colonies whose last-known extent this segment matches
+                # colonies whose last-known extent this segment matches: by
+                # IoU, or by containing at least ABSORB_COVERAGE of the
+                # colony's mask (the strong-growth case where the IoU of a
+                # perfect continuation drops below MATCH_IOU)
                 cands = []
                 for o in active:
                     if o["id"] in taken:
                         continue
                     inter = float((s.mask & o["mask"]).sum())
                     iou = inter / float(s.area + o["area"] - inter)
-                    if iou >= MATCH_IOU:
+                    covered = inter / float(o["area"])
+                    if iou >= MATCH_IOU or covered >= ABSORB_COVERAGE:
                         cands.append((iou, o["area"], o))
                 if cands:
                     cands.sort(key=lambda c: (-c[0], -c[1]))

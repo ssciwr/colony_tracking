@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 
 # Spec: learn-from-v1
 
@@ -32,3 +32,9 @@ not worth churn alone; fold it in only if item 1 lands there anyway. v1's docstr
 fixtures, and options inside stage modules equal or trail v2's.
 
 Verdict: adopt items 1 and 2 plus the small item 3; everything else in v1 is matched or beaten by v2.
+
+## Comments
+
+- 2026-10-13: Implemented on integration branch learn-from-v1 (tickets 01-04 resolved;
+  final state ef778c2 after code-review fixes; 233 passed, 1 deselected).
+

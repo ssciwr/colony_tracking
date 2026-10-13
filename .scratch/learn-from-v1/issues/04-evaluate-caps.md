@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01
 
 # Adopt v1's evaluate caps: `n_max_images` / `n_max_instances` on `EvaluateOptions`
@@ -81,3 +81,16 @@ ticket wires the option-level caps on top of it.
 - The two caps work end to end (option → run_evaluate →
   `predict_instances`), defaults keep current behaviour, README/CLI/contract
   tests consistent, `uv run pytest` passes.
+
+## Comments
+
+- 2026-10-13: Resolved by branch t04-evaluate-caps (commit a1f5544, ff-merged into
+  learn-from-v1). `n_max_images` / `n_max_instances` on EvaluateOptions (v1 order,
+  per-field help), wired in run_evaluate (falsy image cap disables the files slice;
+  instance cap passed to predict_instances); no prompt option added. Contract,
+  defaults, roundtrip, CLI-flag, and README-table ripple all done (tables
+  regenerated per tests/test_readme.py). End-to-end hermetic caps tests via a
+  monkeypatched micro_sam.util.get_sam_model + FakePredictor on a real h5 split;
+  _FakePredictor generalized to identify the prompted instance geometrically (size
+  + valid tile offset) so un-capped controls with a second instance work. Review
+  follow-up (ef778c2): the n_max_images help text now documents "0 = uncapped".

@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 
 # README: short in-process Python API section
 
@@ -60,3 +60,14 @@ removed.
 ## Acceptance criteria
 
 - The section exists, the example is accurate for v2, the suite passes.
+
+## Comments
+
+- 2026-10-13: Resolved by branch t03-readme-api (commit 0581499, ff-merged into
+  learn-from-v1 at 200f57c). `## Python API` section added between Usage and Input
+  trees (~19 lines): run_difference example, the options/run_*/summary shape,
+  PipelineConfig with read_config/write_config TOML round-trip, finetune options,
+  private conversion module. Every named symbol verified against `__all__` and
+  pipeline.py; the example executed hermetically on a synthetic plate. Deliberate
+  deviation from the ticket sketch: the example uses `out_dir="difference_LO005"`
+  (v2's own output convention) instead of `diff_LO005`.

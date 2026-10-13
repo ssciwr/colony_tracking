@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 
 # Add `Frame.stem` (v1's .tif/.tiff-safe stem) and route stem derivation through it
 
@@ -60,3 +60,12 @@ Ad-hoc derivation is exactly what produced the known `[:-4]` bug
   other production stem derivation of a `Frame` remains (grep for
   `path.stem` / `Path(frame.name)`).
 - `uv run pytest` passes; output names unchanged.
+
+## Comments
+
+- 2026-10-13: Resolved by branch t02-frame-stem (commit 1be336c, ff-merged into
+  learn-from-v1). `Frame.stem` added to io.py mirroring v1's case-insensitive
+  .tif/.tiff strip; the three call sites routed through it (segmentation.py label
+  write + re-read, difference.py `<stem>_diff_uint8.tif`); analysis.py:292 and
+  _convert.py:201 untouched per ticket out-of-scope. New `test_frame_stem`
+  (.tif/.tiff/.TIFF); output names unchanged; 221 passed at the time of the merge.

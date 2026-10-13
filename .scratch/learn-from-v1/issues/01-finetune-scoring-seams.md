@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: resolved
 
 # Adopt v1's testable finetune seams: module-level `predict_instances` and `build_loader`, ported hermetic tests
 
@@ -92,3 +92,19 @@ option-contract tests are untouched by this ticket.
   above; `run_train`/`run_evaluate` behaviour unchanged.
 - The three ported scoring tests and the loader smoke test pass hermetically.
 - `uv run pytest` passes.
+
+## Comments
+
+- 2026-10-13: Resolved by branch t01-scoring-seams (commit 203060b, ff-merged into
+  learn-from-v1 at 0d427b7). Module-level `predict_instances(predictor, raw, label,
+  patch_shape, prompt="box", n_max_instances=None, boxes_fn=None)` and
+  `build_loader(paths, options, is_train, *, num_workers=4)` in
+  `finetune/__init__.py` with lazy torch/micro-sam/torch_em imports; both in the
+  finetune `__all__` only (package root untouched). 6 new hermetic tests (perfect
+  scoring incl. the (4,4) tile-offset box assertion, clipped+capped, point/box_point
+  rejection, loader smoke on 64x64 h5, export contract). Two beyond-the-ticket fixes:
+  `build_loader` normalizes paths to `str` (torch_em's loader type-checks paths — a
+  latent run_train TypeError) and three test_segmentation.py model-stack asserts moved
+  to sys.modules-delta form (the in-process torch import is now legitimate). Review
+  follow-up (ef778c2): the boxes_fn fallback pins `mode="p"` via functools.partial,
+  restoring pre-extraction semantics, with a sys.modules-fake pinning test.

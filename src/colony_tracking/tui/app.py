@@ -22,12 +22,13 @@ flow that starts a run, never opened from a menu. The stage screens'
 run actions reach it through
 :func:`~colony_tracking.tui.screens.run.open_stage_run` /
 :func:`~colony_tracking.tui.screens.run.open_pipeline_run` (the shipped
-default of :meth:`~colony_tracking.tui.screens.stage.StageScreen.
-start_run`), the quick start's *Run now* through
+default of
+:meth:`StageScreen.start_run <colony_tracking.tui.screens.stage.StageScreen.start_run>`),
+the quick start's *Run now* through
 :func:`~colony_tracking.tui.screens.run.open_pipeline_run` — both entry
 points write the config TOML first (reproducibility) and then push the
 run screen, which starts the run through the
-:class:`~colony_tracking.tui.runner` in-process.
+:mod:`~colony_tracking.tui.runner` in-process.
 
 Everything user-visible goes into widgets; runtime diagnostics flow through
 the package logger (:data:`colony_tracking.log`) — nothing ever prints.

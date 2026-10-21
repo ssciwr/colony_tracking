@@ -20,6 +20,7 @@ dependencies = [
   "torch_em",
   "h5py",
   "tomli-w",
+  "textual>=8.2.8",
 ]
 
 [project.scripts]

@@ -189,6 +189,51 @@ def test_summary_failed_maps_the_cli_exit_1_semantics():
     )
 
 
+def test_failed_summary_lines_are_the_cli_wording():
+    """The failed-summary lines — the single source the runner logs and
+    the run screen's error panel shows — are the CLI's ``_dispatch``
+    ERROR lines, verbatim; empty when nothing failed."""
+    difference = DifferenceSummary(
+        wells={
+            "-A001": WellResult(
+                well="-A001",
+                status="failed",
+                n_frames=3,
+                error="no frames",
+            )
+        },
+        processed=0,
+        skipped=0,
+        failed=1,
+    )
+    assert runner.failed_summary_lines("difference", difference) == [
+        "difference: 1 well(s) failed: -A001 (no frames)"
+    ]
+    segmentation = SegmentationSummary(
+        wells=2,
+        processed=0,
+        skipped=0,
+        failed=2,
+        failed_wells=["-A001", "-B002"],
+    )
+    assert runner.failed_summary_lines("segmentation", segmentation) == [
+        "segment: 2 well(s) failed: -A001, -B002"
+    ]
+    analysis = AnalysisSummary(
+        failures=["seg_growth_diff"],
+        failed_wells={"other": ["-C003"]},
+    )
+    assert runner.failed_summary_lines("analysis", analysis) == [
+        "analyze: 1 root(s) failed: seg_growth_diff",
+        "analyze: 1 well(s) failed: -C003",
+    ]
+    pipeline = PipelineSummary(status="failed", failed_stage="difference")
+    assert runner.failed_summary_lines("pipeline", pipeline) == [
+        "pipeline: the difference stage failed"
+    ]
+    assert runner.failed_summary_lines("difference", _diff_summary()) == []
+
+
 def test_a_failed_summary_is_reported_and_logged_like_the_cli(
     monkeypatch, tmp_path, caplog
 ):

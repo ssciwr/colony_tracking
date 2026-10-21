@@ -26,8 +26,10 @@ on the :class:`RunHandle`, logged, and reported through ``on_done`` — the
 app must survive any stage failure. A summary that reports failed work
 (failed wells, the analyze stage's failures, a failed pipeline status)
 surfaces the same way the CLI's exit code 1 does: as an error panel in the
-UI. Run handles also carry the run's ``config`` so the UI can show what is
-running without extra plumbing.
+UI, worded exactly like the runner's logged ERROR lines
+(:func:`failed_summary_lines` is the single source). Run handles also
+carry the run's ``config`` so the UI can show what is running without
+extra plumbing.
 """
 
 from __future__ import annotations
@@ -63,6 +65,15 @@ _RUNNERS: dict[str, Callable[[PipelineConfig], Any]] = {
 _ACTIVE: RunHandle | None = None
 _LOCK = threading.Lock()
 
+#: The one-run-at-a-time message, formatted with the active run's kind:
+#: :func:`start` raises it as its :class:`RuntimeError` and the run
+#: screens report the same text — one wording.
+ACTIVE_MESSAGE = (
+    "a {kind} run is already active — the runner runs one at a time and "
+    "cannot cancel: wait for it to finish, or quit the TUI (the next "
+    "start resumes via done markers)"
+)
+
 
 def summary_failed(summary: object) -> bool:
     """Whether a stage/pipeline summary reports failed work — the CLI's
@@ -80,42 +91,56 @@ def summary_failed(summary: object) -> bool:
     return False
 
 
-def _log_failed_summary(kind: str, summary: Any) -> None:
-    """Log a failed summary with the CLI's wording (the same ERROR lines
-    ``cli._dispatch`` writes for an exit-1 run), so the log pane carries
-    the context the CLI user would see."""
+def failed_summary_lines(kind: str, summary: Any) -> list[str]:
+    """The failed-work lines of one finished run of ``kind``, in the CLI's
+    wording (the same ERROR lines ``cli._dispatch`` writes for an exit-1
+    run) — the single source the runner logs and the run screen's error
+    panel shows, so the panel reads exactly like the logged lines. Empty
+    when the summary reports no failed work of that kind."""
     if kind == "difference":
         failed = [
             (result.well, result.error)
             for result in summary.wells.values()
             if result.status == "failed"
         ]
-        log.error(
-            "difference: %d well(s) failed: %s",
-            len(failed),
-            ", ".join(f"{well} ({error})" for well, error in failed),
-        )
-    elif kind == "segmentation":
-        log.error(
-            "segment: %d well(s) failed: %s",
-            summary.failed,
-            ", ".join(summary.failed_wells),
-        )
-    elif kind == "analysis":
+        if not failed:
+            return []
+        return [
+            f"difference: {len(failed)} well(s) failed: "
+            + ", ".join(f"{well} ({error})" for well, error in failed)
+        ]
+    if kind == "segmentation":
+        if not summary.failed_wells:
+            return []
+        return [
+            f"segment: {summary.failed} well(s) failed: "
+            + ", ".join(summary.failed_wells)
+        ]
+    if kind == "analysis":
+        lines = []
         if summary.failures:
-            log.error(
-                "analyze: %d root(s) failed: %s",
-                len(summary.failures),
-                "; ".join(summary.failures),
+            lines.append(
+                f"analyze: {len(summary.failures)} root(s) failed: "
+                + "; ".join(summary.failures)
             )
         if summary.failed_wells:
-            log.error(
-                "analyze: %d well(s) failed: %s",
-                len(summary.failed_well_names),
-                ", ".join(summary.failed_well_names),
+            lines.append(
+                f"analyze: {len(summary.failed_well_names)} well(s) failed: "
+                + ", ".join(summary.failed_well_names)
             )
-    else:
-        log.error("pipeline: the %s stage failed", summary.failed_stage)
+        return lines
+    if kind == "pipeline":
+        return [f"pipeline: the {summary.failed_stage} stage failed"]
+    return []
+
+
+def _log_failed_summary(kind: str, summary: Any) -> None:
+    """Log a failed summary with the CLI's wording (the same ERROR lines
+    ``cli._dispatch`` writes for an exit-1 run), so the log pane carries
+    the context the CLI user would see — :func:`failed_summary_lines` is
+    the single source the run screen's error panel shares."""
+    for line in failed_summary_lines(kind, summary):
+        log.error("%s", line)
 
 
 @dataclass
@@ -267,11 +292,7 @@ def start(
         raise ValueError(f"unknown run kind {kind!r} — expected one of {list(KINDS)}")
     with _LOCK:
         if _ACTIVE is not None and not _ACTIVE.done.is_set():
-            raise RuntimeError(
-                f"a {_ACTIVE.kind} run is already active — the runner runs "
-                "one at a time and cannot cancel: wait for it to finish, or "
-                "quit the TUI (the next start resumes via done markers)"
-            )
+            raise RuntimeError(ACTIVE_MESSAGE.format(kind=_ACTIVE.kind))
         handle = RunHandle(kind=kind, config=config)
         _ACTIVE = handle
     _spawn(handle, on_done=on_done, on_record=on_record, app=app)

@@ -447,6 +447,47 @@ def test_a_failed_pipeline_shows_the_error_panel_and_the_app_survives(
     asyncio.run(scenario())
 
 
+def test_a_failed_stage_panel_reads_like_the_runners_logged_lines(
+    monkeypatch, tmp_path
+):
+    """Behavior parity: the error panel's failure line is the runner's
+    logged ERROR line, verbatim (the shared
+    :func:`~colony_tracking.tui.runner.failed_summary_lines`)."""
+    summary = DifferenceSummary(
+        wells={
+            "-A001": WellResult(
+                well="-A001",
+                status="failed",
+                n_frames=3,
+                error="no frames",
+            )
+        },
+        processed=0,
+        skipped=0,
+        failed=1,
+    )
+    monkeypatch.setattr(runner, "run_difference", lambda options: summary)
+    raw = tmp_path / "raw"
+    out = tmp_path / "out"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test() as pilot:
+            app.push_screen(RunScreen("difference", _config(raw, out)))
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, RunScreen)
+            await _await_done(pilot, screen)
+            line = "difference: 1 well(s) failed: -A001 (no frames)"
+            assert line in _log_text(screen)  # the runner logged it
+            panel = screen.query_one("#run-error", Static)
+            assert panel.display
+            assert line in str(panel.render())  # the panel shows the same
+            assert app.screen is screen  # the app survived
+
+    asyncio.run(scenario())
+
+
 def test_a_raising_stage_shows_the_error_panel_and_the_app_survives(
     monkeypatch, tmp_path
 ):

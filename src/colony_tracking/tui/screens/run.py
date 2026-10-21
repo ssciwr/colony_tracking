@@ -64,7 +64,7 @@ from ...pipeline import (
 )
 from .. import runner
 from ..draft import STAGES, ConfigDraft
-from ..runner import RunHandle
+from ..runner import ACTIVE_MESSAGE, RunHandle, failed_summary_lines
 from ._save import SaveConfigDialog
 
 #: The exact template of the pipeline's stage-start marker:
@@ -73,14 +73,6 @@ from ._save import SaveConfigDialog
 #: marker, never its formatted text — drives the status line's
 #: current-stage hint without parsing log text (spec story 40).
 _STAGE_START_TEMPLATE = "pipeline: %s → %s"
-
-#: The busy-runner message shared by every direct-start entry point (the
-#: runner raises the same rule as a :class:`RuntimeError`).
-_ACTIVE_MESSAGE = (
-    "a {kind} run is already active — the runner runs one at a time and "
-    "cannot cancel: wait for it to finish, or quit the TUI (the next "
-    "start resumes via done markers)"
-)
 
 #: Rich style per log level for the pane's records (INFO stays plain).
 _LEVEL_STYLES: dict[int, str] = {
@@ -146,44 +138,6 @@ def _stage_detail(summary: Any) -> str:
     return detail
 
 
-def _stage_failure_lines(summary: Any) -> list[str]:
-    """What one stage summary says failed (empty when nothing did) — the
-    error panel's detail, derived from the summary objects only."""
-    if isinstance(summary, DifferenceSummary):
-        failed = [
-            (result.well, result.error or "unknown error")
-            for result in summary.wells.values()
-            if result.status == "failed"
-        ]
-        if not failed:
-            return []
-        return [
-            f"difference: {len(failed)} well(s) failed: "
-            + ", ".join(f"{well} ({error})" for well, error in failed)
-        ]
-    if isinstance(summary, SegmentationSummary):
-        if not summary.failed_wells:
-            return []
-        return [
-            f"segmentation: {summary.failed} well(s) failed: "
-            + ", ".join(summary.failed_wells)
-        ]
-    if isinstance(summary, AnalysisSummary):
-        lines = []
-        if summary.failures:
-            lines.append(
-                f"analysis: {len(summary.failures)} root(s) failed: "
-                + ", ".join(summary.failures)
-            )
-        if summary.failed_wells:
-            lines.append(
-                f"analysis: {len(summary.failed_well_names)} well(s) "
-                "failed: " + ", ".join(summary.failed_well_names)
-            )
-        return lines
-    return []
-
-
 def _pipeline_summary_lines(summary: PipelineSummary) -> list[str]:
     """The per-stage lines of a pipeline summary, in chain order: the
     stages that completed carry their summaries; the stage that failed
@@ -235,7 +189,9 @@ def _outcome_text(handle: RunHandle) -> str:
 def _problem_lines(handle: RunHandle) -> list[str]:
     """The error panel's lines for a finished run (empty when it did not
     fail): the exception, or the failed work the summary reports — never
-    log text."""
+    log text, and worded exactly like the runner's logged ERROR lines
+    (the shared
+    :func:`~colony_tracking.tui.runner.failed_summary_lines`)."""
     if handle.error is not None:
         raised = (
             f"the {handle.kind} run raised "
@@ -250,9 +206,9 @@ def _problem_lines(handle: RunHandle) -> list[str]:
         if summary.failed_stage is not None:
             embedded = getattr(summary, summary.failed_stage)
             if embedded is not None:
-                lines.extend(_stage_failure_lines(embedded))
+                lines.extend(failed_summary_lines(summary.failed_stage, embedded))
         return lines
-    return _stage_failure_lines(summary)
+    return failed_summary_lines(handle.kind, summary)
 
 
 def _report(app: App[Any], message: str) -> str:
@@ -338,7 +294,7 @@ class RunScreen(Screen[None]):
         active = runner.active()
         if active is None:
             return None
-        return _ACTIVE_MESSAGE.format(kind=active.kind)
+        return ACTIVE_MESSAGE.format(kind=active.kind)
 
     def _on_record(self, record: logging.LogRecord) -> None:
         """One log record of the active run: into the pane, plus the
@@ -415,7 +371,7 @@ def _open_run(app: App[Any], draft: ConfigDraft, kind: str) -> str | None:
     (also reported in the UI), None once the dialog is up."""
     active = runner.active()
     if active is not None:
-        return _report(app, _ACTIVE_MESSAGE.format(kind=active.kind))
+        return _report(app, ACTIVE_MESSAGE.format(kind=active.kind))
     try:
         config = draft.resolve()
     except ConfigError as err:

@@ -23,6 +23,8 @@ The `train` subcommands (`prepare`, `train`, `evaluate`) are the finetuning
 track: they convert raw frames plus ground-truth label images into a
 well-split h5 training set, run micro-sam decoder training, and benchmark
 the checkpoint against the held-out wells.
+The `tui` subcommand opens a terminal interface over the same stages
+(see below).
 
 ## Install
 
@@ -46,7 +48,7 @@ uv run pytest
 
 ## Usage
 
-The `colony-tracking` console script has five subcommands. Runtime output
+The `colony-tracking` console script has six subcommands. Runtime output
 goes to stderr through the package logger; nothing prints. Exit codes:
 0 success, 1 runtime error (a stage failure, logged with context), 2 usage
 error (bad flags, invalid option combination, invalid config).
@@ -224,6 +226,40 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 | `--n-max-images` | `none` | Evaluate only the first N h5 images of the split (a quick smoke run); 0 = uncapped. |
 | `--n-max-instances` | `none` | Score only the first N instances per image. |
 | `--output` | `none` | Optional path for a JSON report. |
+
+### tui
+
+The terminal user interface: `colony-tracking tui` (no flags). The same
+stages as the CLI, driven from one in-progress config document shared by
+every screen; every runtime line the stages log streams live into the
+run screen. The home menu offers:
+
+- **Quick start (full-auto)** — the raw directory and the out root (the
+  reference frame and wells optional), then *Run now*: the whole chain
+  runs in-process with every stage option at its default.
+- **Difference / Segment / Analyze** — one screen per stage: its options
+  as a form (the same option dataclasses the CLI flags come from; labels
+  are the kebab-case flag names), the pipeline-owned fields shown
+  read-only with their derived values, and *Run this stage*. Re-running a
+  stage re-enters it — per-well done markers make that a resume, not a
+  wipe.
+- **Pipeline config** — the run-level settings plus the draft's effective
+  TOML preview.
+- **Train** — planned; the stage registry leaves the slot.
+
+Each stage is a decision point: after its options are filled, either
+*Write TOML…* or a direct start — and a direct start writes the TOML
+first, so every run is reproducible from its config file. The suggested
+path is `<out-root>/pipeline.toml`. Config-only mode is the same flow
+without a run: fill what you need, *Write TOML…*, quit, and run
+`colony-tracking pipeline --config <file>` later.
+
+A run opens on its own screen: the live log, the stage status line, and
+the final per-stage summaries (from the summary objects, never from the
+log text); a stage failure — an exception or failed wells — becomes an
+error panel and the app stays alive. There is no cancellation in v1:
+quitting (Ctrl-Q) mid-run is safe, the stages are crash-safe via their
+done markers, and the next start resumes where the run left off.
 
 ## Python API
 

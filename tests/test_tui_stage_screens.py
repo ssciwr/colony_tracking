@@ -12,11 +12,11 @@ ticket wires).
 
 Pilot scenarios run through ``asyncio.run`` (no async test plugin in the
 dev group; the suite stays dependency-free). Assertions run inside the
-headless session — the app's screen stack is gone once it ends. The app's
-screen registry still holds ticket 01's placeholders (the integration
-ticket wires it), so these tests push the real screens directly; the
-navigation they exercise (home → stage screen → config screen → back) is
-exactly what the registry will drive.
+headless session — the app's screen stack is gone once it ends. These
+tests mostly push the real screens directly (the registry-driven
+navigation home → stage screen → config screen is covered end-to-end in
+``tests/test_tui_app.py``); the navigation they exercise is exactly what
+the registry drives.
 """
 
 import asyncio
@@ -406,10 +406,13 @@ def test_run_actions_hand_the_resolved_config_to_the_run_flow(tmp_path):
     asyncio.run(scenario())
 
 
-def test_unwired_run_flow_reports_without_starting(tmp_path):
-    """Without the run flow wired (the default seam), a run action reports
-    in the UI and starts nothing."""
+def test_run_action_opens_the_save_dialog_by_default(tmp_path):
+    """The shipped default run flow (no explicit ``start_run``): *Run
+    this stage* opens the shared save dialog — the reproducibility write —
+    and nothing runs until that write succeeds (escaping it runs
+    nothing)."""
     from colony_tracking.tui import runner
+    from colony_tracking.tui.screens._save import SaveConfigDialog
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -420,7 +423,12 @@ def test_unwired_run_flow_reports_without_starting(tmp_path):
             await pilot.pause()
             await pilot.click("#run-stage")
             await pilot.pause()
+            assert isinstance(app.screen, SaveConfigDialog)
             assert runner.active() is None
+            await pilot.press("escape")  # cancel: nothing written, nothing run
+            await pilot.pause()
+            assert runner.active() is None
+            assert not (tmp_path / "out" / "pipeline.toml").exists()
 
     asyncio.run(scenario())
 

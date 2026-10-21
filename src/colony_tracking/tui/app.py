@@ -3,19 +3,31 @@ draft.
 
 :class:`ColonyTuiApp` is the whole TUI's root: it owns the one
 :class:`~colony_tracking.tui.draft.ConfigDraft` every screen edits (the
-config source of truth), the screen registry every screen is opened
-through, and the escape-to-go-back navigation. The home screen is real
-from ticket 01 on; the other screens are placeholders until their tickets
-mount the real ones — a later ticket replaces its registry entry with the
-real screen factory and leaves the app alone otherwise:
+config source of truth), the screen registry (:attr:`SCREENS`) every
+screen is opened through, and the escape-to-go-back navigation:
 
-- ``quick_start`` — the full-auto flow (ticket 03);
+- ``quick_start`` — the full-auto flow
+  (:class:`~colony_tracking.tui.screens.quick_start.QuickStartScreen`);
 - ``difference`` / ``segmentation`` / ``analysis`` — one
-  :class:`~colony_tracking.tui.screens.stage.StageScreen` each, generated
-  from the stage's options dataclass (ticket 02);
-- ``config`` — run-level settings plus the effective TOML (ticket 02);
-- ``run`` — the live run screen (ticket 03), pushed by the screens that
-  start runs.
+  :class:`~colony_tracking.tui.screens.stage.StageScreen` per registered
+  stage, generated from the stage's options dataclass via the stage
+  registry (:data:`colony_tracking.tui.screens.stage.STAGES`) — a future
+  stage (train) slots in there, with no per-stage class anywhere;
+- ``config`` — the run level plus the effective TOML
+  (:class:`~colony_tracking.tui.screens.config.ConfigScreen`).
+
+There is no ``run`` entry: the live run screen
+(:class:`~colony_tracking.tui.screens.run.RunScreen`) is pushed by the
+flow that starts a run, never opened from a menu. The stage screens'
+run actions reach it through
+:func:`~colony_tracking.tui.screens.run.open_stage_run` /
+:func:`~colony_tracking.tui.screens.run.open_pipeline_run` (the shipped
+default of :meth:`~colony_tracking.tui.screens.stage.StageScreen.
+start_run`), the quick start's *Run now* through
+:func:`~colony_tracking.tui.screens.run.open_pipeline_run` — both entry
+points write the config TOML first (reproducibility) and then push the
+run screen, which starts the run through the
+:class:`~colony_tracking.tui.runner` in-process.
 
 Everything user-visible goes into widgets; runtime diagnostics flow through
 the package logger (:data:`colony_tracking.log`) — nothing ever prints.
@@ -25,37 +37,26 @@ from __future__ import annotations
 
 from typing import Callable, ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Static
 
 from .draft import ConfigDraft
+from .screens.config import ConfigScreen
 from .screens.home import HomeScreen
+from .screens.quick_start import QuickStartScreen
+from .screens.stage import STAGES, StageScreen
 
 
-class _PlaceholderScreen(Screen[None]):
-    """A stand-in for a screen a later ticket mounts (see the module
-    docstring): shows its title, waits for escape."""
-
-    def __init__(self, title: str) -> None:
-        super().__init__()
-        self._title = title
-
-    def compose(self) -> ComposeResult:
-        yield Header()
-        yield Static(
-            f"[b]{self._title}[/b] — planned; a later ticket mounts the "
-            "real screen here. Escape goes back.",
-        )
-        yield Footer()
-
-
-def _placeholder(title: str) -> Callable[[], Screen]:
-    """The screen factory for one of the later tickets' screens."""
+def _stage_screen(name: str) -> Callable[[], Screen]:
+    """The screen factory for one registered stage: a
+    :class:`~colony_tracking.tui.screens.stage.StageScreen` for ``name``
+    (the draft comes from the running app; the run actions use the
+    shipped default run flow — see
+    :meth:`~colony_tracking.tui.screens.stage.StageScreen.start_run`)."""
 
     def factory() -> Screen:
-        return _PlaceholderScreen(title)
+        return StageScreen(name)
 
     return factory
 
@@ -63,9 +64,9 @@ def _placeholder(title: str) -> Callable[[], Screen]:
 class ColonyTuiApp(App[None]):
     """The colony-tracking TUI (see the module docstring).
 
-    The screen registry (:attr:`SCREENS`) names every screen; the home
-    screen is the bottom of the stack and :attr:`draft` is the one config
-    document every screen edits.
+    The screen registry (:attr:`SCREENS`) names every screen the home
+    menu opens; the home screen is the bottom of the stack and
+    :attr:`draft` is the one config document every screen edits.
     """
 
     TITLE = "colony-tracking"
@@ -73,15 +74,18 @@ class ColonyTuiApp(App[None]):
     BINDINGS = [Binding("escape", "back", "Back")]
 
     #: The screen registry: registered name -> screen factory. The names
-    #: are the contract between the home menu, the screens, and the later
-    #: tickets (which replace the placeholder factories).
+    #: are the contract between the home menu and the screens; the run
+    #: screen is not registered — runs are pushed by the flow that starts
+    #: them (see the module docstring). The stage entries come straight
+    #: from the stage registry, so a future stage's screen is its
+    #: ``STAGES`` entry (plus its home-menu line and draft section), not a
+    #: line here.
     SCREENS: ClassVar[dict[str, Callable[[], Screen]]] = {
-        "quick_start": _placeholder("Quick start"),
-        "difference": _placeholder("Difference"),
-        "segmentation": _placeholder("Segment"),
-        "analysis": _placeholder("Analyze"),
-        "config": _placeholder("Pipeline config"),
-        "run": _placeholder("Run"),
+        "quick_start": QuickStartScreen,
+        "config": ConfigScreen,
+        **{
+            spec.name: _stage_screen(spec.name) for spec in STAGES.values()
+        },
     }
 
     def __init__(self) -> None:

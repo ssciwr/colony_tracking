@@ -49,6 +49,7 @@ from ...pipeline import (
 )
 from ..draft import RUN_LEVEL, ConfigDraft
 from ..forms import FormScreen, OptionForm, kebab, specs_of
+from .run import open_pipeline_run, open_stage_run
 
 
 @dataclass(frozen=True)
@@ -242,16 +243,21 @@ class StageScreen(FormScreen):
 
         ``kind`` is the stage's name or ``"pipeline"``; ``config`` is the
         resolved :class:`~colony_tracking.pipeline.PipelineConfig`. The
-        default reports that runs are not wired yet — the run screens'
-        ticket replaces this hand-off (write the TOML first, start the run
-        through the runner, show it on the run screen) by passing a
-        ``start_run`` callable to the constructor, leaving the form
+        shipped default dispatches to the run screens' entry points —
+        :func:`~colony_tracking.tui.screens.run.open_stage_run` for a
+        single stage, :func:`~colony_tracking.tui.screens.run.
+        open_pipeline_run` for the whole chain — which write the TOML
+        first (reproducibility, spec requirement 5) and push the run
+        screen; the entry points resolve the draft themselves, so the
+        config handed over here is the gate's confirmation. Tests can
+        pass a ``start_run`` callable to the constructor to observe the
+        hand-off without the dialog and the runner, leaving the form
         machinery unchanged.
         """
         if self._start_run is not None:
             self._start_run(kind, config)
             return
-        self.app.notify(
-            "Running is not wired yet — write the TOML and start the run "
-            "with: colony-tracking pipeline --config"
-        )
+        if kind == "pipeline":
+            open_pipeline_run(self.app, self.draft)
+        else:
+            open_stage_run(self.app, self.draft, kind)

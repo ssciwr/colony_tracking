@@ -85,7 +85,9 @@ class ConfigDraft:
         refused with :class:`~colony_tracking.pipeline.ConfigError`.
         """
         section = self._section(stage)
-        if stage != RUN_LEVEL and key in _OWNED[stage]:
+        # A section added after construction (a future stage's) owns
+        # nothing yet; _OWNED only knows the pipeline's own stages.
+        if stage != RUN_LEVEL and key in _OWNED.get(stage, frozenset()):
             raise _config_error(
                 f"[{stage}] key {key!r} is owned by the pipeline — "
                 f"{_OWNED_REASON[stage, key]}"

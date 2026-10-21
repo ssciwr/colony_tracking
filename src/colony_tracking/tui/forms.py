@@ -10,8 +10,9 @@ dataclass needs no form code of its own:
 - ``bool`` — a ``Checkbox``;
 - ``int`` / ``float`` — an ``Input`` with numeric validation;
 - ``Literal[...]`` — a ``Select`` of the literal values;
-- ``Reference`` (``"first" | int``) — an ``Input`` accepting ``first`` or
-  digits;
+- ``Reference`` (``"first" | int``) — an ``Input`` parsed by the shared
+  :func:`~colony_tracking._options.parse_reference` (``first``, a frame
+  number, or the ``LO<nnn>`` file-name form — the CLI's spellings);
 - ``list[str] | None`` — an ``Input``, comma-separated;
 - ``tuple[int, ...]`` (and fixed ``tuple[int, int]``) — an ``Input``,
   comma- or space-separated;
@@ -64,7 +65,7 @@ from textual.widgets import (
     Static,
 )
 
-from .._options import _union_members
+from .._options import Reference, _union_members, parse_reference
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
 from .draft import ConfigDraft
 from .screens._save import SaveConfigDialog
@@ -103,7 +104,9 @@ def parse_field(text: str, hint: Any) -> Any:
 
     Blank (or blank-after-strip) text returns :data:`UNSET`; text that does
     not parse as the declared type raises :class:`FieldError` with a short
-    human message (the wording follows the pipeline's own ``_human_hint``).
+    human message (the wording follows the pipeline's own ``_human_hint``,
+    except the reference field's, which is the shared
+    :func:`~colony_tracking._options.parse_reference` message — the CLI's).
     Anything else comes back as the plain value the draft stores — paths
     and strings as ``str``, numbers as ``int`` / ``float``, sequences as
     ``list`` / ``tuple``.
@@ -111,6 +114,11 @@ def parse_field(text: str, hint: Any) -> Any:
     text = text.strip()
     if not text:
         return UNSET
+    if hint is Reference:  # one shared parser — the CLI's spellings
+        try:
+            return parse_reference(text)
+        except ValueError as err:
+            raise FieldError(str(err)) from None
     members = _union_members(hint)
     if members is not None:
         if len(members) == 1:  # X | None: parse as X (blank already handled)

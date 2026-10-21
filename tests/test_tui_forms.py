@@ -20,7 +20,7 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Checkbox, Input, Label, Select
 
-from colony_tracking._options import Options
+from colony_tracking._options import Options, Reference
 from colony_tracking.tui.draft import ConfigDraft
 from colony_tracking.tui.forms import (
     UNSET,
@@ -143,13 +143,13 @@ def test_parse_field_scalars():
 
 
 def test_parse_field_reference():
-    """Reference parses to "first" or a 1-based frame number, and rejects
-    anything else with the union's own wording."""
-    from colony_tracking._options import Reference
-
+    """Reference parses through the shared ``parse_reference`` — the CLI's
+    spellings: "first", a 1-based frame number, and the LO<nnn> file-name
+    form — and rejects anything else with the parser's message."""
     assert parse_field("first", Reference) == "first"
     assert parse_field("7", Reference) == 7
-    with pytest.raises(FieldError, match=r"must be 'first' or an integer"):
+    assert parse_field("LO005", Reference) == 5
+    with pytest.raises(FieldError, match="expected 'first', a 1-based frame"):
         parse_field("second", Reference)
 
 

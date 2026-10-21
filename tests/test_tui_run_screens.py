@@ -7,9 +7,10 @@ Seams under test:
   the mocked ``run_pipeline``'s call time), and the run screen ends with
   the chain's summaries displayed;
 - the quick start's *Write TOML…*: writes the config, never runs;
-- field problems (an incomplete draft, a reference that is neither
-  ``first`` nor a frame number) are reported inline and write/run
-  nothing;
+- the quick start's action gate (the stage screens' mechanism): the
+  actions stay disabled until the fields sync and the draft resolves —
+  the pipeline's exact ``ConfigError`` (or the reference parser's) on the
+  status line — and a press on a closed gate writes and runs nothing;
 - the run screen: log records reach the pane while the run is active,
   the current-stage line comes from the pipeline's structured stage-start
   markers (never parsed log text), the final summary block comes from the
@@ -36,7 +37,7 @@ from pathlib import Path
 
 import pytest
 from conftest import DiskSpec, build_mini_plate
-from textual.widgets import Input, RichLog, Static
+from textual.widgets import Button, Input, RichLog, Static
 
 from colony_tracking import (
     AnalysisSummary,
@@ -215,9 +216,11 @@ def test_quick_start_write_toml_writes_but_never_runs(monkeypatch, tmp_path):
     assert calls == []
 
 
-def test_quick_start_reports_an_incomplete_draft(monkeypatch, tmp_path):
-    """Run now with empty fields: the exact ConfigError is reported
-    inline; no dialog opens, nothing is written, nothing runs."""
+def test_quick_start_actions_are_gated_on_the_draft(monkeypatch, tmp_path):
+    """The stage screens' gate: *Write TOML…* and *Run now* start disabled
+    with the pipeline's exact ``ConfigError`` on the status line, stay
+    disabled while the draft does not resolve, and open once it does; a
+    press on a closed gate does nothing."""
     calls = []
     monkeypatch.setattr(runner, "run_pipeline", lambda config: calls.append(config))
 
@@ -228,13 +231,34 @@ def test_quick_start_reports_an_incomplete_draft(monkeypatch, tmp_path):
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, QuickStartScreen)
-            assert await pilot.click("#qs-run-now")
-            await pilot.pause()
-            assert isinstance(app.screen, QuickStartScreen)  # no dialog
+            # closed on the empty draft, with the pipeline's exact message
+            assert not screen.gate_open
+            for button_id in ("qs-write", "qs-run-now"):
+                assert screen.query_one(f"#{button_id}", Button).disabled
             error = screen.query_one("#qs-error", Static)
             assert error.display
-            assert "raw_dir" in str(error.render())
+            assert (
+                str(error.render())
+                == "missing required [pipeline] key(s): ['raw_dir', 'out_root']"
+            )
+            await pilot.click("#qs-run-now")  # disabled: nothing happens
+            await pilot.pause()
+            assert isinstance(app.screen, QuickStartScreen)  # no dialog
             assert runner.active() is None
+            # filling the required fields opens the gate
+            screen.query_one("#qs-raw-dir", Input).value = str(tmp_path)
+            await pilot.pause()
+            assert not screen.gate_open  # out_root still missing
+            assert (
+                str(error.render())
+                == "missing required [pipeline] key(s): ['out_root']"
+            )
+            screen.query_one("#qs-out-root", Input).value = str(tmp_path / "out")
+            await pilot.pause()
+            assert screen.gate_open
+            for button_id in ("qs-write", "qs-run-now"):
+                assert not screen.query_one(f"#{button_id}", Button).disabled
+            assert not error.display
 
     asyncio.run(scenario())
     assert calls == []
@@ -242,8 +266,10 @@ def test_quick_start_reports_an_incomplete_draft(monkeypatch, tmp_path):
 
 
 def test_quick_start_reports_a_bad_reference(monkeypatch, tmp_path):
-    """A reference that is neither "first" nor a frame number is reported
-    inline before anything is synced, written, or run."""
+    """A reference the shared parser rejects closes the gate with the
+    parser's message (the CLI's) and nothing is written or run; the other
+    fields keep syncing, and the CLI's LO<nnn> form opens the gate with
+    the parsed frame number."""
     calls = []
     monkeypatch.setattr(runner, "run_pipeline", lambda config: calls.append(config))
 
@@ -256,16 +282,32 @@ def test_quick_start_reports_a_bad_reference(monkeypatch, tmp_path):
             assert isinstance(screen, QuickStartScreen)
             screen.query_one("#qs-raw-dir", Input).value = str(tmp_path)
             screen.query_one("#qs-out-root", Input).value = str(tmp_path)
+            await pilot.pause()
+            assert screen.gate_open
             screen.query_one("#qs-reference", Input).value = "abc"
             await pilot.pause()
-            assert await pilot.click("#qs-run-now")
-            await pilot.pause()
-            assert isinstance(app.screen, QuickStartScreen)  # no dialog
+            assert not screen.gate_open
+            for button_id in ("qs-write", "qs-run-now"):
+                assert screen.query_one(f"#{button_id}", Button).disabled
             error = screen.query_one("#qs-error", Static)
             assert error.display
-            assert 'must be "first"' in str(error.render())
-            # nothing was synced into the shared draft either
-            assert app.draft.document() == {"pipeline": {}}
+            assert str(error.render()) == (
+                "invalid reference 'abc': expected 'first', a 1-based frame "
+                "number, or LO<nnn>"
+            )
+            # the other fields kept syncing; the reference key did not
+            assert app.draft.document() == {
+                "pipeline": {"raw_dir": str(tmp_path), "out_root": str(tmp_path)}
+            }
+            await pilot.click("#qs-run-now")  # disabled: nothing happens
+            await pilot.pause()
+            assert isinstance(app.screen, QuickStartScreen)  # no dialog
+            assert runner.active() is None
+            # the CLI's LO<nnn> form parses like in the CLI (frame 5)
+            screen.query_one("#qs-reference", Input).value = "LO005"
+            await pilot.pause()
+            assert screen.gate_open
+            assert app.draft.get("pipeline", "reference") == 5
 
     asyncio.run(scenario())
     assert calls == []

@@ -113,6 +113,22 @@ def test_invalid_draft_reports_and_writes_nothing(tmp_path: Path) -> None:
     _run(SaveConfigDialog(draft), (*str(path), "enter"), observe)
 
 
+def test_error_message_shows_bracketed_sections_verbatim(tmp_path: Path) -> None:
+    """The ConfigError text renders unchanged — section names like
+    ``[pipeline]`` must not be eaten as rich markup."""
+    draft = _draft(tmp_path, complete=False)
+    path = tmp_path / "run.toml"
+
+    def observe(app: ColonyTuiApp, result: object) -> None:
+        assert result is None
+        dialog = app.screen
+        assert isinstance(dialog, SaveConfigDialog)
+        message = str(dialog.query_one("#toml-error", Label).render())
+        assert message == "missing required [pipeline] key(s): ['raw_dir', 'out_root']"
+
+    _run(SaveConfigDialog(draft), (*str(path), "enter"), observe)
+
+
 def test_cancel_writes_nothing(tmp_path: Path) -> None:
     """Escape dismisses with None and writes no file."""
     draft = _draft(tmp_path, complete=True)

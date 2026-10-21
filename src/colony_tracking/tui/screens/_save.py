@@ -23,6 +23,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import ClassVar
 
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
@@ -82,7 +83,9 @@ class SaveConfigDialog(ModalScreen[tuple[Path, PipelineConfig] | None]):
         self.dismiss(None)
 
     def _write(self, raw: str) -> None:
-        """Write the draft to ``raw`` (typed path), or report why not."""
+        """Write the draft to ``raw`` (typed path), or report why not. The
+        messages go in as plain ``Text`` — they name config sections
+        (``[pipeline]``) and paths, which markup would eat."""
         path_text = raw.strip()
         error_label = self.query_one("#toml-error", Label)
         if not path_text:
@@ -92,10 +95,10 @@ class SaveConfigDialog(ModalScreen[tuple[Path, PipelineConfig] | None]):
         try:
             config = self.draft.write(path)
         except ConfigError as err:
-            error_label.update(str(err))
+            error_label.update(Text(str(err)))
             return
         except OSError as err:
-            error_label.update(f"could not write {path}: {err}")
+            error_label.update(Text(f"could not write {path}: {err}"))
             return
-        self.notify(f"Config written to {path}")
+        self.notify(Text(f"Config written to {path}"))
         self.dismiss((path, config))

@@ -83,9 +83,7 @@ class ColonyTuiApp(App[None]):
     SCREENS: ClassVar[dict[str, Callable[[], Screen]]] = {
         "quick_start": QuickStartScreen,
         "config": ConfigScreen,
-        **{
-            spec.name: _stage_screen(spec.name) for spec in STAGES.values()
-        },
+        **{spec.name: _stage_screen(spec.name) for spec in STAGES.values()},
     }
 
     def __init__(self) -> None:

@@ -292,10 +292,9 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             text = owned_text()
             assert f"raw-dir = {raw}" in text
             assert "reference = 2" in text
-            assert (
-                difference.form.query_one("#difference-out-dir", Input).placeholder
-                == str(out / "difference_LO002")
-            )
+            assert difference.form.query_one(
+                "#difference-out-dir", Input
+            ).placeholder == str(out / "difference_LO002")
             await pilot.click("#back")
             await pilot.pause()
 
@@ -304,24 +303,21 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             text = owned_text()
             assert "input = diff" in text
             assert f"diff-dir = {out / 'difference_LO002'}" in text
-            assert (
-                segmentation.form.query_one("#segmentation-out-dir", Input).placeholder
-                == str(out / "seg_growth_diff_LO002")
-            )
+            assert segmentation.form.query_one(
+                "#segmentation-out-dir", Input
+            ).placeholder == str(out / "seg_growth_diff_LO002")
             await pilot.click("#back")
             await pilot.pause()
 
             analysis = await _open_from_home(pilot, app, _ANALYSIS, StageScreen)
             assert analysis.gate_open
             assert f"raw-dir = {raw}" in owned_text()
-            assert (
-                analysis.form.query_one("#analysis-seg-dir", Input).placeholder
-                == str(out / "seg_growth_diff_LO002")
-            )
-            assert (
-                analysis.form.query_one("#analysis-out-root", Input).placeholder
-                == str(out / "analysis")
-            )
+            assert analysis.form.query_one(
+                "#analysis-seg-dir", Input
+            ).placeholder == str(out / "seg_growth_diff_LO002")
+            assert analysis.form.query_one(
+                "#analysis-out-root", Input
+            ).placeholder == str(out / "analysis")
             await pilot.click("#back")
             await pilot.pause()
             assert isinstance(app.screen, HomeScreen)
@@ -329,9 +325,7 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
     asyncio.run(scenario())
 
 
-def test_a_stage_screen_run_action_runs_through_the_wired_flow(
-    monkeypatch, tmp_path
-):
+def test_a_stage_screen_run_action_runs_through_the_wired_flow(monkeypatch, tmp_path):
     """*Run this stage* on a registry-opened stage screen (no explicit
     ``start_run`` — the shipped default): the shared dialog writes the
     TOML first, the run screen runs the difference stage with the wiring

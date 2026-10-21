@@ -1,7 +1,7 @@
 """The home screen: the TUI's top-level menu.
 
 One entry per top-level action, in the spec's order: Quick start (full-auto)
-— raw images to final analysis with zero configuration beyond the raw
+— raw frames to final analysis with zero configuration beyond the raw
 directory; the three stages (Difference, Segment, Analyze), each startable
 on its own and re-runnable (per-well done markers make a re-run a resume);
 Pipeline config (the run-level settings and the TOML); and the disabled

@@ -105,7 +105,7 @@ class QuickStartScreen(Screen[None]):
         draft = self.app.draft
         yield Header()
         yield Static(
-            "Full-auto: raw images to final analysis in one action — every "
+            "Full-auto: raw frames to final analysis in one action — every "
             "stage option takes its default. The config TOML is written "
             "first, so the run is reproducible.",
             id="qs-intro",

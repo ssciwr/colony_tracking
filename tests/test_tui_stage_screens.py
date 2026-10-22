@@ -1,14 +1,15 @@
 """Tests for the stage screens and the config screen (ticket 02).
 
 Screens under test: the per-stage :class:`StageScreen` — generated from
-the stage registry (``STAGES``), showing the pipeline-owned fields
-read-only with their derived values, its actions gated on
+the stage registry (``STAGES``), showing the chain-wired pipeline-owned
+fields read-only with their derived values (the run-level mirrors are
+editable since ticket 06; covered there), its actions gated on
 ``ConfigDraft.resolve()`` — and the :class:`ConfigScreen` (the run-level
-form plus the draft's effective TOML preview). The flows the spec fixes:
-fill a stage's options, then write the TOML through the shared save
-dialog (the written file loads unchanged through ``read_config``), or hand
-the resolved config to the app's run flow (the seam the run-screens
-ticket wires).
+form plus the draft's effective TOML preview; since ticket 06 the full
+editor). The flows the spec fixes: fill a stage's options, then write the
+TOML through the shared save dialog (the written file loads unchanged
+through ``read_config``), or hand the resolved config to the app's run
+flow (the seam the run-screens ticket wires).
 
 Pilot scenarios run through ``asyncio.run`` (no async test plugin in the
 dev group; the suite stays dependency-free). Assertions run inside the

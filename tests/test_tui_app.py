@@ -296,14 +296,12 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             difference = await _open_from_home(pilot, app, _DIFFERENCE, StageScreen)
             assert difference.gate_open
             assert "none" in owned_text()  # no chain-wired owned fields
-            assert (
-                difference.mirrors.query_one("#difference-run-raw-dir", Input).value
-                == str(raw)
-            )
-            assert (
-                difference.mirrors.query_one("#difference-run-out-root", Input).value
-                == str(out)
-            )
+            assert difference.mirrors.query_one(
+                "#difference-run-raw-dir", Input
+            ).value == str(raw)
+            assert difference.mirrors.query_one(
+                "#difference-run-out-root", Input
+            ).value == str(out)
             assert (
                 difference.mirrors.query_one("#difference-run-reference", Input).value
                 == "2"
@@ -319,12 +317,9 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             text = owned_text()
             assert "input = diff" in text
             assert f"diff-dir = {out / 'difference_LO002'}" in text
-            assert (
-                segmentation.mirrors.query_one(
-                    "#segmentation-run-out-root", Input
-                ).value
-                == str(out)
-            )
+            assert segmentation.mirrors.query_one(
+                "#segmentation-run-out-root", Input
+            ).value == str(out)
             assert segmentation.form.query_one(
                 "#segmentation-out-dir", Input
             ).placeholder == str(out / "seg_growth_diff_LO002")
@@ -334,14 +329,12 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             analysis = await _open_from_home(pilot, app, _ANALYSIS, StageScreen)
             assert analysis.gate_open
             assert "none" in owned_text()
-            assert (
-                analysis.mirrors.query_one("#analysis-run-raw-dir", Input).value
-                == str(raw)
-            )
-            assert (
-                analysis.mirrors.query_one("#analysis-run-out-root", Input).value
-                == str(out)
-            )
+            assert analysis.mirrors.query_one(
+                "#analysis-run-raw-dir", Input
+            ).value == str(raw)
+            assert analysis.mirrors.query_one(
+                "#analysis-run-out-root", Input
+            ).value == str(out)
             assert analysis.form.query_one(
                 "#analysis-seg-dir", Input
             ).placeholder == str(out / "seg_growth_diff_LO002")

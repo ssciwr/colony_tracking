@@ -422,6 +422,87 @@ def test_config_screen_writes_a_config_the_cli_accepts(tmp_path):
     asyncio.run(scenario())
 
 
+def test_arrow_keys_move_focus_between_fields():
+    """Down/up move the focus between the form's fields (wrapping) while
+    tab keeps its own course and left/right stay inside the focused
+    input."""
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            stage = StageScreen("difference")
+            app.push_screen(stage)
+            await pilot.pause()
+            out_dir = stage.form.query_one("#difference-out-dir", Input)
+            assert app.focused is out_dir  # the entry auto-focus
+            await pilot.press("down")
+            await pilot.pause()
+            wells = stage.form.query_one("#difference-wells")
+            assert app.focused is wells
+            await pilot.press("down")
+            await pilot.pause()
+            percent = stage.form.query_one("#difference-display-percentile")
+            assert app.focused is percent
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.focused is wells
+            # tab still moves on its own (wells -> display-percentile)
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is percent
+            # left/right stay inside the focused input
+            await pilot.press(*"97.5")
+            await pilot.pause()
+            await pilot.press("left")
+            await pilot.pause()
+            assert app.focused is percent
+            assert percent.cursor_position == 3
+            # down from the last field wraps back to the first
+            dry_run = stage.form.query_one("#difference-dry-run", Checkbox)
+            dry_run.focus()
+            await pilot.pause()
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.focused is out_dir
+
+    asyncio.run(scenario())
+
+
+def test_select_overlay_keeps_arrow_precedence(monkeypatch):
+    """A focused Select keeps its own arrow bindings: down opens its
+    dropdown, further downs navigate the overlay, and the screen's
+    field-stepping binding never steals the key."""
+    monkeypatch.setitem(
+        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+    )
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.draft.stages["train"] = {}
+            stage = StageScreen("train")
+            app.push_screen(stage)
+            await pilot.pause()
+            mode = stage.form.query_one("#train-mode", Select)
+            mode.focus()
+            await pilot.pause()
+            await pilot.press("down")  # the Select's own binding: open
+            await pilot.pause()
+            assert mode.expanded
+            await pilot.press("down")  # the overlay's highlight moves
+            await pilot.pause()
+            shape = stage.form.query_one("#train-shape")
+            assert app.focused is not shape  # the focus stayed with the select
+            await pilot.press("down")
+            await pilot.pause()
+            await pilot.press("enter")  # pick the highlighted literal
+            await pilot.pause()
+            assert not mode.expanded
+            assert app.draft.get("train", "mode") == "b"
+            assert app.focused is mode  # the focus came back to the field
+
+    asyncio.run(scenario())
+
+
 def test_run_actions_hand_the_resolved_config_to_the_run_flow(tmp_path):
     """*Run this stage* / *Run whole pipeline from draft* resolve the
     draft and hand (kind, config) to the app's run flow — the seam the

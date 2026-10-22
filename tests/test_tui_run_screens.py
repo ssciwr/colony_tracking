@@ -265,6 +265,31 @@ def test_quick_start_actions_are_gated_on_the_draft(monkeypatch, tmp_path):
     assert list(tmp_path.rglob("*.toml")) == []
 
 
+def test_arrow_keys_move_focus_between_quick_start_fields():
+    """Down/up step through the quick start's run-level fields (wrapping)
+    — the same field navigation the form screens get; tab keeps working."""
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.push_screen(QuickStartScreen())
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, QuickStartScreen)
+            raw_dir = screen.query_one("#qs-raw-dir", Input)
+            raw_dir.focus()
+            await pilot.press("down")
+            await pilot.pause()
+            assert app.focused is screen.query_one("#qs-out-root", Input)
+            await pilot.press("up")
+            await pilot.pause()
+            assert app.focused is raw_dir
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is screen.query_one("#qs-out-root", Input)
+
+    asyncio.run(scenario())
+
+
 def test_quick_start_reports_a_bad_reference(monkeypatch, tmp_path):
     """A reference the shared parser rejects closes the gate with the
     parser's message (the CLI's) and nothing is written or run; the other

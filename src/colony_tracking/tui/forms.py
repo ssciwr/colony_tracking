@@ -57,18 +57,19 @@ Browse
 A single-``Path`` field — a ``Path`` or ``Path | None`` hint, the fields
 that take one directory — also carries a *browse* button in its field
 row, next to the reset button: pressing it opens the directory-picker
-modal, textualize's ``textual-fspicker`` (:class:`~textual_fspicker.
-SelectDirectory` — spec addendum decision 6's preferred solution,
-verified against the pinned textual 8.x, which the package's
-``textual>=1.0.0`` floor admits but does not prove; its OptionList-based
-navigation ran clean here, so the hand-rolled ``DirectoryTree`` fallback
-stays unneeded). The picker starts at the field's current value's nearest
-existing directory (:func:`picker_location`), and the picked directory
-lands in the input as if typed — the normal on-change flow parses and
-stores it; cancelling closes the picker and changes nothing. A
-list-of-path field (``seg_dirs``) keeps manual entry — the picker picks
-one directory, the field wants a list — and the derived/read-only owned
-fields render no widgets, so they get no button.
+modal, textualize's ``textual-fspicker`` package —
+:class:`~textual_fspicker.SelectDirectory`, spec addendum decision 6's
+preferred solution, verified against the pinned textual 8.x, which the
+package's ``textual>=1.0.0`` floor admits but does not prove; its
+OptionList-based navigation ran clean here, so the hand-rolled
+``DirectoryTree`` fallback stays unneeded. The picker starts at the
+field's current value's nearest existing directory
+(:func:`picker_location`), and the picked directory lands in the input
+as if typed — the normal on-change flow parses and stores it; cancelling
+closes the picker and changes nothing. A list-of-path field
+(``seg_dirs``) keeps manual entry — the picker picks one directory, the
+field wants a list — and the derived/read-only owned fields render no
+widgets, so they get no button.
 """
 
 from __future__ import annotations
@@ -375,23 +376,11 @@ class BrowseButton(Button):
     for its field (see :func:`open_directory_picker`; the form's
     :meth:`OptionForm.on_button_pressed` and the quick start wire the
     press). Click-only — ``can_focus`` is off, like the reset buttons —
-    so tab and the arrow-key field walk stay field-to-field."""
+    so tab and the arrow-key field walk stay field-to-field.
 
-    DEFAULT_CSS = """
-    BrowseButton {
-        min-width: 0;
-        width: auto;
-        height: 1;
-        border: none;
-        background: $panel;
-        color: $text 60%;
-        margin-left: 1;
-    }
-    BrowseButton:hover {
-        background: $surface-darken-1;
-        color: $text;
-    }
-    """
+    The look comes from the hosting container (``.field-browse`` rules —
+    the reset button's approach: a ``Button``'s own type rules outrank a
+    bare type selector here, so the containers restyle the instance)."""
 
     can_focus = False
 
@@ -488,6 +477,19 @@ class OptionForm(VerticalScroll):
         margin-left: 1;
     }
     OptionForm .field-reset:hover {
+        background: $surface-darken-1;
+        color: $text;
+    }
+    OptionForm .field-browse {
+        min-width: 0;
+        width: auto;
+        height: 1;
+        border: none;
+        background: $panel;
+        color: $text 60%;
+        margin-left: 1;
+    }
+    OptionForm .field-browse:hover {
         background: $surface-darken-1;
         color: $text;
     }
@@ -600,7 +602,11 @@ class OptionForm(VerticalScroll):
                 with Horizontal(classes="field-row"):
                     yield widget
                     if _is_path_field(spec):  # one directory to pick: browse
-                        yield BrowseButton(BROWSE_LABEL, id=f"browse-{widget_id}")
+                        yield BrowseButton(
+                            BROWSE_LABEL,
+                            id=f"browse-{widget_id}",
+                            classes="field-browse",
+                        )
                     yield reset
                 yield Label(Text(spec.help), classes="field-help")
                 yield Label(Text(""), classes="field-error", id=f"error-{widget_id}")

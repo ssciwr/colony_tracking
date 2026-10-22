@@ -156,6 +156,40 @@ def test_empty_path_reports(tmp_path: Path) -> None:
     _run(SaveConfigDialog(draft), ("enter",), observe, before=_clear)
 
 
+def test_write_success_toast_renders_and_expires_without_erroring(
+    tmp_path: Path,
+) -> None:
+    """The success toast renders and expires without crashing the app:
+    ``App.notify`` takes a plain markup-free string — it re-processes the
+    content itself and a rich ``Text`` (or bracket-bearing text rendered as
+    markup) breaks the toast."""
+    draft = _draft(tmp_path, complete=True)
+    path = tmp_path / "run.toml"
+
+    async def scenario() -> None:
+        results: list[object] = []
+        app = ColonyTuiApp()
+        app.NOTIFICATION_TIMEOUT = 0.2  # shrink the toast's lifetime
+        async with app.run_test(notifications=True) as pilot:
+            app.push_screen(SaveConfigDialog(draft), results.append)
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            dialog.query_one("#toml-path", Input).value = str(path)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert path.exists()
+            assert isinstance(results[0], tuple)
+            toasts = list(app.screen.query("Toast"))
+            assert toasts  # the success toast rendered
+            assert "Config written to" in str(toasts[0].render().plain)
+            await pilot.pause(0.6)  # the toast expires; nothing raises
+            assert not list(app.screen.query("Toast"))
+
+    asyncio.run(scenario())
+
+
 def test_unwritable_path_reports(tmp_path: Path) -> None:
     """A path under a file (not a directory) reports the OSError and stays
     open."""

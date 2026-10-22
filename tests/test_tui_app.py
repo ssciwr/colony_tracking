@@ -236,11 +236,13 @@ def test_quick_start_runs_the_real_chain_end_to_end(monkeypatch, tmp_path):
 
 def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
     """home → each stage screen through the menu: the gate is closed on
-    the empty draft with the pipeline's exact ``ConfigError``, the owned
-    fields show their derived values (— while the run level is empty),
-    and *Back* returns home. After the run level is filled on the config
-    screen, the gate is open and the derived values and greyed defaults
-    name the chain's trees."""
+    the empty draft with the pipeline's exact ``ConfigError``, the
+    chain-wired owned fields show their derived values (— while the run
+    level is empty; the run-level mirrors are the editable inputs of the
+    mirror group instead), and *Back* returns home. After the run level
+    is filled on the config screen, the gate is open, the mirrors show
+    the run level, and the derived values and greyed defaults name the
+    chain's trees."""
     raw = tmp_path / "raw"
     out = tmp_path / "out"
     missing = "missing required [pipeline] key(s): ['raw_dir', 'out_root']"
@@ -252,11 +254,12 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             def owned_text() -> str:
                 return str(app.screen.query_one("#owned-values", Static).render())
 
-            # every stage opens gated, shows its owned fields, and backs out
+            # every stage opens gated, shows its chain-wired owned fields
+            # (or none), and backs out
             for index, stage, labels in (
-                (_DIFFERENCE, "difference", ("raw-dir = —", "reference = first")),
+                (_DIFFERENCE, "difference", ()),
                 (_SEGMENTATION, "segmentation", ("input = diff", "diff-dir = —")),
-                (_ANALYSIS, "analysis", ("raw-dir = —",)),
+                (_ANALYSIS, "analysis", ()),
             ):
                 screen = await _open_from_home(pilot, app, index, StageScreen)
                 assert screen.stage == stage
@@ -268,8 +271,11 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
                 for button_id in ("run-stage", "write-toml", "run-pipeline"):
                     assert app.screen.query_one(f"#{button_id}").disabled
                 text = owned_text()
-                for label in labels:
-                    assert label in text
+                if labels:
+                    for label in labels:
+                        assert label in text
+                else:
+                    assert "none" in text
                 await pilot.click("#back")
                 await pilot.pause()
                 assert isinstance(app.screen, HomeScreen)
@@ -285,13 +291,23 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             await pilot.click("#back")
             await pilot.pause()
 
-            # the stages now show the derived values, the gate is open,
-            # and the free fields grey their derived defaults
+            # the stages now show the run level in their mirrors, the gate
+            # is open, and the free fields grey their derived defaults
             difference = await _open_from_home(pilot, app, _DIFFERENCE, StageScreen)
             assert difference.gate_open
-            text = owned_text()
-            assert f"raw-dir = {raw}" in text
-            assert "reference = 2" in text
+            assert "none" in owned_text()  # no chain-wired owned fields
+            assert (
+                difference.mirrors.query_one("#difference-run-raw-dir", Input).value
+                == str(raw)
+            )
+            assert (
+                difference.mirrors.query_one("#difference-run-out-root", Input).value
+                == str(out)
+            )
+            assert (
+                difference.mirrors.query_one("#difference-run-reference", Input).value
+                == "2"
+            )
             assert difference.form.query_one(
                 "#difference-out-dir", Input
             ).placeholder == str(out / "difference_LO002")
@@ -303,6 +319,12 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
             text = owned_text()
             assert "input = diff" in text
             assert f"diff-dir = {out / 'difference_LO002'}" in text
+            assert (
+                segmentation.mirrors.query_one(
+                    "#segmentation-run-out-root", Input
+                ).value
+                == str(out)
+            )
             assert segmentation.form.query_one(
                 "#segmentation-out-dir", Input
             ).placeholder == str(out / "seg_growth_diff_LO002")
@@ -311,7 +333,15 @@ def test_stage_screens_open_from_home_gated_with_derived_values(tmp_path):
 
             analysis = await _open_from_home(pilot, app, _ANALYSIS, StageScreen)
             assert analysis.gate_open
-            assert f"raw-dir = {raw}" in owned_text()
+            assert "none" in owned_text()
+            assert (
+                analysis.mirrors.query_one("#analysis-run-raw-dir", Input).value
+                == str(raw)
+            )
+            assert (
+                analysis.mirrors.query_one("#analysis-run-out-root", Input).value
+                == str(out)
+            )
             assert analysis.form.query_one(
                 "#analysis-seg-dir", Input
             ).placeholder == str(out / "seg_growth_diff_LO002")

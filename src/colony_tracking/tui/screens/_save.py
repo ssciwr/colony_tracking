@@ -84,8 +84,11 @@ class SaveConfigDialog(ModalScreen[tuple[Path, PipelineConfig] | None]):
 
     def _write(self, raw: str) -> None:
         """Write the draft to ``raw`` (typed path), or report why not. The
-        messages go in as plain ``Text`` — they name config sections
-        (``[pipeline]``) and paths, which markup would eat."""
+        on-screen messages go in as plain ``Text`` — they name config
+        sections (``[pipeline]``) and paths, which markup would eat — and
+        the success toast goes out as a plain markup-free string:
+        ``App.notify`` re-processes the content itself, so a rich ``Text``
+        crashes it and markup would eat bracket-bearing paths."""
         path_text = raw.strip()
         error_label = self.query_one("#toml-error", Label)
         if not path_text:
@@ -100,5 +103,5 @@ class SaveConfigDialog(ModalScreen[tuple[Path, PipelineConfig] | None]):
         except OSError as err:
             error_label.update(Text(f"could not write {path}: {err}"))
             return
-        self.notify(Text(f"Config written to {path}"))
+        self.notify(f"Config written to {path}", markup=False)
         self.dismiss((path, config))

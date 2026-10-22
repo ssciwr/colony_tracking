@@ -213,8 +213,10 @@ def _problem_lines(handle: RunHandle) -> list[str]:
 
 def _report(app: App[Any], message: str) -> str:
     """Report a pre-flight problem in the UI and return it (callers may
-    also keep it on screen — the toast is transient)."""
-    app.notify(message, severity="error")
+    also keep it on screen — the toast is transient). The toast goes out
+    as a plain markup-free string: the message names config sections
+    (``[difference]``) and paths, which markup would eat."""
+    app.notify(message, severity="error", markup=False)
     return message
 
 

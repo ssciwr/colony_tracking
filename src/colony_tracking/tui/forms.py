@@ -51,6 +51,24 @@ another section's key (:attr:`FieldSpec.writes`): the stage screens'
 run-level mirrors read and write the ``[pipeline]`` key they name, labeled
 ``run-level: ...`` — the editable half of the owned-field split (spec
 addendum, decision 2).
+
+Browse
+------
+A single-``Path`` field — a ``Path`` or ``Path | None`` hint, the fields
+that take one directory — also carries a *browse* button in its field
+row, next to the reset button: pressing it opens the directory-picker
+modal, textualize's ``textual-fspicker`` (:class:`~textual_fspicker.
+SelectDirectory` — spec addendum decision 6's preferred solution,
+verified against the pinned textual 8.x, which the package's
+``textual>=1.0.0`` floor admits but does not prove; its OptionList-based
+navigation ran clean here, so the hand-rolled ``DirectoryTree`` fallback
+stays unneeded). The picker starts at the field's current value's nearest
+existing directory (:func:`picker_location`), and the picked directory
+lands in the input as if typed — the normal on-change flow parses and
+stores it; cancelling closes the picker and changes nothing. A
+list-of-path field (``seg_dirs``) keeps manual entry — the picker picks
+one directory, the field wants a list — and the derived/read-only owned
+fields render no widgets, so they get no button.
 """
 
 from __future__ import annotations
@@ -58,11 +76,12 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import MISSING, dataclass, fields, replace
+from pathlib import Path
 from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
 
 from rich.text import Text
 from textual import events
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
@@ -77,6 +96,7 @@ from textual.widgets import (
     Select,
     Static,
 )
+from textual_fspicker import SelectDirectory
 
 from .._options import Reference, _union_members, parse_reference
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
@@ -338,6 +358,79 @@ def _widget_kind(spec: FieldSpec) -> str:
     return "input"
 
 
+def _is_path_field(spec: FieldSpec) -> bool:
+    """Whether ``spec`` is a single-path field (a ``Path`` or
+    ``Path | None`` hint — the fields that take one directory, and so the
+    ones that get a browse button; see the module docstring's Browse
+    section)."""
+    return _optional_member(spec.hint) is Path
+
+
+#: A browse button's label (the field-row counterpart of ``reset``).
+BROWSE_LABEL: Final[str] = "browse"
+
+
+class BrowseButton(Button):
+    """A path field's *browse* button: it opens the directory-picker modal
+    for its field (see :func:`open_directory_picker`; the form's
+    :meth:`OptionForm.on_button_pressed` and the quick start wire the
+    press). Click-only — ``can_focus`` is off, like the reset buttons —
+    so tab and the arrow-key field walk stay field-to-field."""
+
+    DEFAULT_CSS = """
+    BrowseButton {
+        min-width: 0;
+        width: auto;
+        height: 1;
+        border: none;
+        background: $panel;
+        color: $text 60%;
+        margin-left: 1;
+    }
+    BrowseButton:hover {
+        background: $surface-darken-1;
+        color: $text;
+    }
+    """
+
+    can_focus = False
+
+
+def picker_location(value: str) -> Path:
+    """The directory a picker opens at for a path field showing ``value``:
+    the value's nearest existing directory — the path itself when it
+    exists as a directory, else the first existing directory on the way
+    up — or the working directory (an empty value, or a path with no
+    existing ancestor: the picker needs a real start)."""
+    stripped = value.strip()
+    if not stripped:
+        return Path.cwd()
+    path = Path(stripped)
+    for candidate in (path, *path.parents):
+        if candidate.is_dir():
+            return candidate
+    return Path.cwd()
+
+
+def open_directory_picker(
+    app: App[Any],
+    location: Path,
+    accept: Callable[[Path], None],
+) -> None:
+    """Open the directory-picker modal — textual-fspicker's
+    :class:`~textual_fspicker.SelectDirectory`, starting at ``location``.
+    Picking a directory hands it to ``accept`` (the caller writes it into
+    the field's input, which fires the normal change flow); cancelling —
+    escape or the dialog's Cancel — closes the picker and calls
+    nothing."""
+
+    def picked(path: Path | None) -> None:
+        if path is not None:
+            accept(path)
+
+    app.push_screen(SelectDirectory(location), picked)
+
+
 class OptionForm(VerticalScroll):
     """The option fields of one draft section (see the module docstring).
 
@@ -347,8 +440,10 @@ class OptionForm(VerticalScroll):
     owning screen whether every field currently parses. ``draft`` must be
     set before the first change — a screen's ``compose`` runs under the
     running app, so the screens pass ``app.draft`` at construction. Every
-    field carries its reset button; a field whose spec declares a mirror
-    target (:attr:`FieldSpec.writes`) reads and writes that (section, key)
+    field carries its reset button, and every single-``Path`` field a
+    browse button that opens the directory picker (the module docstring's
+    Browse section); a field whose spec declares a mirror target
+    (:attr:`FieldSpec.writes`) reads and writes that (section, key)
     instead of the form's own.
     """
 
@@ -374,7 +469,7 @@ class OptionForm(VerticalScroll):
         align-vertical: middle;
     }
     OptionForm .field-row Input {
-        width: 1fr;  # not 100%: the row shares it with the reset button
+        width: 1fr;  # not 100%: the row shares it with the other buttons
     }
     OptionForm .field-reset {
         min-width: 0;
@@ -435,6 +530,11 @@ class OptionForm(VerticalScroll):
         self._resets = {
             f"reset-{self._field_id(spec.key)}": spec for spec in self._specs
         }
+        self._browses = {
+            f"browse-{self._field_id(spec.key)}": spec
+            for spec in self._specs
+            if _is_path_field(spec)
+        }
 
     @property
     def valid(self) -> bool:
@@ -492,6 +592,8 @@ class OptionForm(VerticalScroll):
                     yield Label(label, classes="field-label")
                 with Horizontal(classes="field-row"):
                     yield widget
+                    if _is_path_field(spec):  # one directory to pick: browse
+                        yield BrowseButton(BROWSE_LABEL, id=f"browse-{widget_id}")
                     yield reset
                 yield Label(Text(spec.help), classes="field-help")
                 yield Label(Text(""), classes="field-error", id=f"error-{widget_id}")
@@ -572,9 +674,14 @@ class OptionForm(VerticalScroll):
         self._changed()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """A field's reset button pressed: clear exactly that field's
+        """A field's browse button opens the directory picker for that
+        field; a field's reset button pressed: clear exactly that field's
         draft key — back to the default — and re-show the field (the
         button disables itself: the key is no longer set)."""
+        browse = self._browses.get(event.button.id)
+        if browse is not None:
+            self._open_picker(browse)
+            return
         spec = self._resets.get(event.button.id)
         if spec is None:
             return
@@ -582,6 +689,19 @@ class OptionForm(VerticalScroll):
         self._refresh_one(spec)
         self._refresh_reset(spec)
         self._changed()
+
+    def _open_picker(self, spec: FieldSpec) -> None:
+        """Open the directory picker for ``spec``, starting at the input's
+        current value's nearest existing directory
+        (:func:`picker_location`): the picked directory lands in the
+        input, and the normal change flow does the rest — the parse, the
+        draft write, the reset button's state, the owning screen's gate."""
+        widget = self.query_one(f"#{self._field_id(spec.key)}", Input)
+
+        def accept(path: Path) -> None:
+            widget.value = str(path)
+
+        open_directory_picker(self.app, picker_location(widget.value), accept)
 
     def _apply_text(self, spec: FieldSpec, text: str) -> None:
         """Parse ``text`` for ``spec`` and write it — or mark the field

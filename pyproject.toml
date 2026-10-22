@@ -21,6 +21,7 @@ dependencies = [
   "h5py",
   "tomli-w",
   "textual>=8.2.8",
+  "textual-fspicker>=1.0.1",
 ]
 
 [project.scripts]

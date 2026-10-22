@@ -25,12 +25,18 @@ the status line, everything else shows the pipeline's exact
 text the CLI reports). Nothing is written or run while the gate is closed;
 the dialog reports deeper config errors the same way the spec asks for
 (exact problem, nothing written).
+
+The two path fields (raw directory, out root) carry the forms' browse
+button (see :mod:`colony_tracking.tui.forms`): it opens the directory
+picker, and the picked directory lands in the input — the change flow
+above does the rest.
 """
 
 from __future__ import annotations
 
 from dataclasses import fields
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import Any, ClassVar, Final
 
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -41,7 +47,13 @@ from textual.widgets import Button, Footer, Header, Input, Label, Static
 from ..._options import parse_reference
 from ...pipeline import ConfigError, PipelineConfig
 from ..draft import RUN_LEVEL, ConfigDraft
-from ..forms import focus_field
+from ..forms import (
+    BROWSE_LABEL,
+    BrowseButton,
+    focus_field,
+    open_directory_picker,
+    picker_location,
+)
 from ._save import SaveConfigDialog
 from .run import open_pipeline_run
 
@@ -49,6 +61,11 @@ from .run import open_pipeline_run
 #: labels pull their help text from the config dataclass's metadata —
 #: the single source, like the CLI's flag help.
 _FIELDS: tuple[str, ...] = ("raw_dir", "out_root", "reference", "wells")
+
+#: The fields that get a browse button: the run level's single-Path
+#: fields (reference and wells are not paths — see
+#: :mod:`colony_tracking.tui.forms`, the Browse section).
+_BROWSE_FIELDS: Final[tuple[str, ...]] = ("raw_dir", "out_root")
 
 #: Placeholder text per field (the hint an empty input shows).
 _PLACEHOLDERS: dict[str, str] = {
@@ -62,6 +79,12 @@ _PLACEHOLDERS: dict[str, str] = {
 def _field_id(name: str) -> str:
     """The widget id of one field (kebab-case, like the CLI's flags)."""
     return f"qs-{name.replace('_', '-')}"
+
+
+#: The browse buttons' ids → their field (the press handler's routing).
+_BROWSE_BUTTONS: Final[dict[str, str]] = {
+    f"browse-{_field_id(name)}": name for name in _BROWSE_FIELDS
+}
 
 
 def _help(name: str) -> str:
@@ -90,6 +113,8 @@ class QuickStartScreen(Screen[None]):
     CSS = """
     #qs-intro { padding: 0 1; margin-bottom: 1; }
     .qs-label { margin-top: 1; padding: 0 1; }
+    .qs-row { height: auto; align-vertical: middle; }
+    .qs-row Input { width: 1fr; }  # not 100%: the row shares it with the browse button
     #qs-error { color: red; padding: 0 1; margin-top: 1; display: none; }
     #qs-actions { height: auto; margin-top: 1; padding: 0 1; }
     #qs-actions Button { margin-right: 1; }
@@ -124,11 +149,17 @@ class QuickStartScreen(Screen[None]):
         )
         for name in _FIELDS:
             yield Label(f"{name.replace('_', '-')} — {_help(name)}", classes="qs-label")
-            yield Input(
+            widget = Input(
                 value=_prefill(draft, name),
                 placeholder=_PLACEHOLDERS[name],
                 id=_field_id(name),
             )
+            if name in _BROWSE_FIELDS:  # a single-Path field: browse joins it
+                with Horizontal(classes="qs-row"):
+                    yield widget
+                    yield BrowseButton(BROWSE_LABEL, id=f"browse-{_field_id(name)}")
+            else:
+                yield widget
         yield Static("", id="qs-error", markup=False)
         with Horizontal(id="qs-actions"):
             yield Button("Write TOML…", id="qs-write")
@@ -178,10 +209,17 @@ class QuickStartScreen(Screen[None]):
         return self._enabled
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """The two actions (see the module docstring). The gate keeps them
-        disabled until the draft resolves; a press re-syncs and
-        re-resolves defensively (the gate normally guarantees this) and
-        reports the problem instead of writing or running."""
+        """A browse button opens the directory picker for its path field
+        (the picked directory lands in the input — the change flow syncs
+        the draft and re-gates the actions from there); the two actions
+        (see the module docstring) keep the gate: disabled until the draft
+        resolves, and a press re-syncs and re-resolves defensively (the
+        gate normally guarantees this) and reports the problem instead of
+        writing or running."""
+        field = _BROWSE_BUTTONS.get(event.button.id or "")
+        if field is not None:
+            self._open_picker(field)
+            return
         if event.button.id not in self.GATED_ACTIONS or not self._enabled:
             return
         problem = self._sync_and_resolve()
@@ -198,6 +236,19 @@ class QuickStartScreen(Screen[None]):
         if run_problem is not None:  # reported as a toast too; keep a line here
             label.update(run_problem)
             label.display = True
+
+    def _open_picker(self, name: str) -> None:
+        """Open the directory picker for the path field ``name``, starting
+        at the field's current value's nearest existing directory
+        (:func:`~colony_tracking.tui.forms.picker_location`): the picked
+        directory lands in the field's input, which fires the normal
+        change flow (the draft sync, the gate)."""
+        widget = self.query_one(f"#{_field_id(name)}", Input)
+
+        def accept(path: Path) -> None:
+            widget.value = str(path)
+
+        open_directory_picker(self.app, picker_location(widget.value), accept)
 
     def _sync_and_resolve(self) -> str | None:
         """The fields → the draft, then the draft resolved: the problem

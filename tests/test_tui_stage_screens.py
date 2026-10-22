@@ -447,8 +447,20 @@ def test_arrow_keys_move_focus_between_fields():
             stage = StageScreen("difference")
             app.push_screen(stage)
             await pilot.pause()
+            raw_dir = stage.mirrors.query_one("#difference-run-raw-dir", Input)
+            assert app.focused is raw_dir  # the entry auto-focus
+            await pilot.press("down")
+            await pilot.pause()
+            reference = stage.mirrors.query_one("#difference-run-reference")
+            assert app.focused is reference
+            await pilot.press("down")
+            await pilot.pause()
+            out_root = stage.mirrors.query_one("#difference-run-out-root")
+            assert app.focused is out_root
+            await pilot.press("down")
+            await pilot.pause()
             out_dir = stage.form.query_one("#difference-out-dir", Input)
-            assert app.focused is out_dir  # the entry auto-focus
+            assert app.focused is out_dir
             await pilot.press("down")
             await pilot.pause()
             wells = stage.form.query_one("#difference-wells")
@@ -471,13 +483,14 @@ def test_arrow_keys_move_focus_between_fields():
             await pilot.pause()
             assert app.focused is percent
             assert percent.cursor_position == 3
-            # down from the last field wraps back to the first
+            # down from the last field wraps back to the first field —
+            # the run-level mirror the screen leads with
             dry_run = stage.form.query_one("#difference-dry-run", Checkbox)
             dry_run.focus()
             await pilot.pause()
             await pilot.press("down")
             await pilot.pause()
-            assert app.focused is out_dir
+            assert app.focused is raw_dir
 
     asyncio.run(scenario())
 

@@ -795,9 +795,11 @@ class FormScreen(Screen[None]):
             self.app.pop_screen()
 
     def _field_widgets(self) -> list[Widget]:
-        """The form's field widgets in DOM order (the declaration order of
-        the specs): one Input, Select, or Checkbox per non-owned field."""
-        return list(self._form.query("Input, Select, Checkbox"))
+        """The screen's field widgets in DOM order — every form's fields
+        (a screen with run-level mirrors leads with those, the DOM order
+        the entry auto-focus and tab follow; the declaration order of each
+        form's specs): one Input, Select, or Checkbox per field."""
+        return list(self.query("Input, Select, Checkbox"))
 
     def action_next_field(self) -> None:
         """Down arrow: move the focus to the next field of the form

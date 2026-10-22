@@ -26,7 +26,7 @@ from typing import Literal, get_origin, get_type_hints
 
 import pytest
 from textual.css.query import NoMatches
-from textual.widgets import Button, Checkbox, Input, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, Select, Static
 
 from colony_tracking._options import (
     AnalysisOptions,
@@ -262,6 +262,49 @@ def test_actions_gate_on_the_whole_draft(tmp_path):
             for button_id in ("run-stage", "write-toml", "run-pipeline"):
                 assert not app.screen.query_one(f"#{button_id}", Button).disabled
             assert str(app.screen.query_one("#resolve-status", Static).render()) == ""
+
+    asyncio.run(scenario())
+
+
+def test_toggling_dry_run_with_an_incomplete_draft_only_updates_the_status_line():
+    """The global draft error stays global: toggling ``dry_run`` while the
+    run level is incomplete updates only the ``#resolve-status`` line — no
+    Input's value or placeholder and no field's inline error ever receives
+    the ``ConfigError`` message."""
+    expected = "missing required [pipeline] key(s): ['raw_dir', 'out_root']"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            stage = StageScreen("difference")
+            app.push_screen(stage)
+            await pilot.pause()
+            out_dir = stage.form.query_one("#difference-out-dir", Input)
+            out_dir.focus()
+            await pilot.press(*"/data/diff")
+            await pilot.pause()
+            inputs_before = {
+                widget.id: (widget.value, widget.placeholder)
+                for widget in stage.form.query(Input)
+            }
+            checkbox = stage.form.query_one("#difference-dry-run", Checkbox)
+            stage.form.scroll_to_widget(checkbox, animate=False)
+            await pilot.pause()
+            checkbox.focus()
+            await pilot.press("space")
+            await pilot.pause()
+            assert app.draft.get("difference", "dry_run") is True  # toggle landed
+            assert (
+                str(app.screen.query_one("#resolve-status", Static).render())
+                == expected
+            )
+            for widget in stage.form.query(Input):
+                assert (widget.value, widget.placeholder) == inputs_before[
+                    widget.id
+                ], widget.id
+            for label in stage.form.query(Label):
+                if label.id and label.id.startswith("error-"):
+                    assert str(label.render()) == "", label.id
 
     asyncio.run(scenario())
 

@@ -20,12 +20,15 @@ async test plugin, and this keeps the tests dependency-free.
 """
 
 import asyncio
+import io
+import logging
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
-from textual.widgets import OptionList
+from textual.widgets import Input, OptionList
 
 import colony_tracking.cli as cli
 import colony_tracking.tui.runner as runner
@@ -38,7 +41,7 @@ from colony_tracking import (
     log,
 )
 from colony_tracking.difference import WellResult
-from colony_tracking.tui import run_tui
+from colony_tracking.tui import _configure_logging, run_tui
 from colony_tracking.tui.app import ColonyTuiApp
 from colony_tracking.tui.draft import ConfigDraft
 from colony_tracking.tui.screens.home import HomeScreen
@@ -379,6 +382,49 @@ def test_the_app_launches_and_navigates():
 def test_run_tui_rejects_arguments(caplog):
     assert run_tui(["--bogus"]) == 2  # the tui command takes no flags
     assert "usage error" in caplog.text
+
+
+def test_tui_logging_never_writes_to_the_terminal(monkeypatch):
+    """While the TUI runs, the package logger must never write raw text to
+    the terminal: textual parks the real cursor inside the focused input
+    after every frame, so a stray stderr log line materializes there (the
+    reported bug of the draft's ``ConfigError`` appearing inside the
+    last-selected field). The TUI's logging setup therefore replaces every
+    terminal-bound ``StreamHandler`` (the CLI installs a stderr one before
+    dispatching here) with a ``TextualHandler``."""
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stream)
+    cli_handler = logging.StreamHandler(sys.stderr)  # the CLI's precondition
+    cli_handler.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(cli_handler)
+    saved_handlers = list(log.handlers)
+    saved_level = log.level
+    try:
+        _configure_logging()
+        assert all(
+            not isinstance(handler, logging.StreamHandler)
+            for handler in log.handlers
+        )
+
+        async def scenario() -> None:
+            app = ColonyTuiApp()
+            async with app.run_test(size=(100, 44)) as pilot:
+                app.push_screen("difference")
+                await pilot.pause()
+                # the gate re-resolves (and logs) on every field change
+                out_dir = app.screen.form.query_one("#difference-out-dir", Input)
+                out_dir.focus()
+                await pilot.press(*"/data/diff")
+                await pilot.pause()
+
+        asyncio.run(scenario())
+        assert stream.getvalue() == ""  # nothing reached the terminal
+    finally:
+        for handler in list(log.handlers):
+            log.removeHandler(handler)
+        for handler in saved_handlers:
+            log.addHandler(handler)
+        log.setLevel(saved_level)
 
 
 def test_cli_dispatches_tui(monkeypatch):

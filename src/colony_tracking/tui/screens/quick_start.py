@@ -40,7 +40,7 @@ from typing import Any, ClassVar, Final
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
@@ -111,10 +111,24 @@ class QuickStartScreen(Screen[None]):
     like the stage screens do."""
 
     CSS = """
+    #qs-body { height: 1fr; }
     #qs-intro { padding: 0 1; margin-bottom: 1; }
     .qs-label { margin-top: 1; padding: 0 1; }
     .qs-row { height: auto; align-vertical: middle; }
     .qs-row Input { width: 1fr; }  # not 100%: the row shares it with the browse button
+    .qs-row .field-browse {
+        min-width: 0;
+        width: auto;
+        height: 1;
+        border: none;
+        background: $panel;
+        color: $text 60%;
+        margin-left: 1;
+    }
+    .qs-row .field-browse:hover {
+        background: $surface-darken-1;
+        color: $text;
+    }
     #qs-error { color: red; padding: 0 1; margin-top: 1; display: none; }
     #qs-actions { height: auto; margin-top: 1; padding: 0 1; }
     #qs-actions Button { margin-right: 1; }
@@ -140,26 +154,36 @@ class QuickStartScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         draft = self.app.draft
         yield Header()
-        yield Static(
-            "Full-auto: raw frames to final analysis in one action — every "
-            "stage option takes its default. The config TOML is written "
-            "first, so the run is reproducible.",
-            id="qs-intro",
-            markup=False,
-        )
-        for name in _FIELDS:
-            yield Label(f"{name.replace('_', '-')} — {_help(name)}", classes="qs-label")
-            widget = Input(
-                value=_prefill(draft, name),
-                placeholder=_PLACEHOLDERS[name],
-                id=_field_id(name),
+        # One scrollable body: the actions below stay reachable on a small
+        # terminal whatever the fields' combined height (the stage
+        # screens' pattern).
+        with VerticalScroll(id="qs-body"):
+            yield Static(
+                "Full-auto: raw frames to final analysis in one action — every "
+                "stage option takes its default. The config TOML is written "
+                "first, so the run is reproducible.",
+                id="qs-intro",
+                markup=False,
             )
-            if name in _BROWSE_FIELDS:  # a single-Path field: browse joins it
-                with Horizontal(classes="qs-row"):
+            for name in _FIELDS:
+                yield Label(
+                    f"{name.replace('_', '-')} — {_help(name)}", classes="qs-label"
+                )
+                widget = Input(
+                    value=_prefill(draft, name),
+                    placeholder=_PLACEHOLDERS[name],
+                    id=_field_id(name),
+                )
+                if name in _BROWSE_FIELDS:  # a single-Path field: browse joins it
+                    with Horizontal(classes="qs-row"):
+                        yield widget
+                        yield BrowseButton(
+                            BROWSE_LABEL,
+                            id=f"browse-{_field_id(name)}",
+                            classes="field-browse",
+                        )
+                else:
                     yield widget
-                    yield BrowseButton(BROWSE_LABEL, id=f"browse-{_field_id(name)}")
-            else:
-                yield widget
         yield Static("", id="qs-error", markup=False)
         with Horizontal(id="qs-actions"):
             yield Button("Write TOML…", id="qs-write")

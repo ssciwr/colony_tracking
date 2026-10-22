@@ -247,6 +247,10 @@ run screen. The home menu offers:
   TOML preview.
 - **Train** — planned; the stage registry leaves the slot.
 
+Path fields (the raw directory, the out root, output directories, and
+similar) carry a *browse* button that opens a directory picker; the
+choice lands in the field like typed text.
+
 Each stage is a decision point: after its options are filled, either
 *Write TOML…* or a direct start — and a direct start writes the TOML
 first, so every run is reproducible from its config file. The suggested

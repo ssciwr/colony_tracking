@@ -543,12 +543,13 @@ class FormScreen(Screen[None]):
     AUTO_FOCUS = "OptionForm Input"
 
     #: Screen-level arrow-key field navigation (spec addendum decision 4):
-    #: down/up step between the form's fields, wrapping. The focused
-    #: widget's own bindings keep precedence — an expanded Select's overlay
-    #: navigates with the arrows, a Select opens with them — and
+    #: down/up land the focus in the form's fields when it is elsewhere
+    #: (e.g. on the action buttons); inside the form the OptionForm's own
+    #: bindings route the same keys here. The focused widget's own
+    #: bindings keep precedence — an expanded Select's overlay navigates
+    #: with the arrows, a collapsed Select opens with them — and
     #: left/right stay inside the focused input (the Input's cursor
-    #: bindings). Screen bindings outrank the OptionForm's inherited
-    #: scroll-container bindings, so the step fires from any field.
+    #: bindings).
     BINDINGS = [
         Binding("down", "next_field", "Next field", show=False),
         Binding("up", "previous_field", "Previous field", show=False),

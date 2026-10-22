@@ -268,6 +268,7 @@ def test_quick_start_actions_are_gated_on_the_draft(monkeypatch, tmp_path):
 def test_arrow_keys_move_focus_between_quick_start_fields():
     """Down/up step through the quick start's run-level fields (wrapping)
     — the same field navigation the form screens get; tab keeps working."""
+
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:

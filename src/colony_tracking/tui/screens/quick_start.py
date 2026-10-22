@@ -33,6 +33,7 @@ from dataclasses import fields
 from typing import Any, ClassVar
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
@@ -40,6 +41,7 @@ from textual.widgets import Button, Footer, Header, Input, Label, Static
 from ..._options import parse_reference
 from ...pipeline import ConfigError, PipelineConfig
 from ..draft import RUN_LEVEL, ConfigDraft
+from ..forms import focus_field
 from ._save import SaveConfigDialog
 from .run import open_pipeline_run
 
@@ -97,6 +99,15 @@ class QuickStartScreen(Screen[None]):
     #: screens' gate: disabled until the draft resolves).
     GATED_ACTIONS: ClassVar[tuple[str, ...]] = ("qs-write", "qs-run-now")
 
+    #: Screen-level arrow-key field navigation (spec addendum decision 4,
+    #: the form screens' bindings): down/up step between the run-level
+    #: fields, wrapping; the inputs' own cursor bindings keep left/right
+    #: in-field.
+    BINDINGS = [
+        Binding("down", "next_field", "Next field", show=False),
+        Binding("up", "previous_field", "Previous field", show=False),
+    ]
+
     def __init__(self) -> None:
         super().__init__()
         self._enabled = False
@@ -134,6 +145,16 @@ class QuickStartScreen(Screen[None]):
         and re-checks it, so the actions gate on exactly what is on
         screen (the stage screens' forms behave the same way)."""
         self.refresh_gate()
+
+    def action_next_field(self) -> None:
+        """Down arrow: move the focus to the next run-level field
+        (wrapping; :func:`~colony_tracking.tui.forms.focus_field` rules)."""
+        focus_field(list(self.query(Input)), True)
+
+    def action_previous_field(self) -> None:
+        """Up arrow: move the focus to the previous run-level field
+        (wrapping; :func:`~colony_tracking.tui.forms.focus_field` rules)."""
+        focus_field(list(self.query(Input)), False)
 
     def refresh_gate(self) -> None:
         """Re-check the draft and enable or disable the actions: the

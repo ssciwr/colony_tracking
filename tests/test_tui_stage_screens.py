@@ -299,9 +299,9 @@ def test_toggling_dry_run_with_an_incomplete_draft_only_updates_the_status_line(
                 == expected
             )
             for widget in stage.form.query(Input):
-                assert (widget.value, widget.placeholder) == inputs_before[
+                assert (widget.value, widget.placeholder) == inputs_before[widget.id], (
                     widget.id
-                ], widget.id
+                )
             for label in stage.form.query(Label):
                 if label.id and label.id.startswith("error-"):
                     assert str(label.render()) == "", label.id
@@ -426,6 +426,7 @@ def test_arrow_keys_move_focus_between_fields():
     """Down/up move the focus between the form's fields (wrapping) while
     tab keeps its own course and left/right stay inside the focused
     input."""
+
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:
@@ -471,6 +472,8 @@ def test_select_overlay_keeps_arrow_precedence(monkeypatch):
     """A focused Select keeps its own arrow bindings: down opens its
     dropdown, further downs navigate the overlay, and the screen's
     field-stepping binding never steals the key."""
+    from colony_tracking.tui.screens.stage import StageSpec
+
     monkeypatch.setitem(
         STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
     )

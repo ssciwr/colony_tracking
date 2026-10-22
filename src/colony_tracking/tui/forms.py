@@ -45,15 +45,17 @@ states, handled like this:
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import MISSING, dataclass, fields
 from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
 
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import (
     Button,
     Checkbox,
@@ -79,6 +81,29 @@ RENAMES: Final[dict[str, str]] = {"seg_dirs": "seg-dir"}
 def kebab(name: str) -> str:
     """The CLI flag spelling of a field name: ``min_size`` → ``min-size``."""
     return RENAMES.get(name, name.replace("_", "-"))
+
+
+def focus_field(widgets: Sequence[Widget], forward: bool) -> None:
+    """Move the focus one field along ``widgets`` (DOM order): to the next
+    one for ``forward=True``, the previous one otherwise, wrapping at the
+    ends. When the currently focused widget is not among ``widgets`` the
+    focus enters at the near end — the first field for ``forward=True``,
+    the last one otherwise. A no-op when none of ``widgets`` can take the
+    focus. Tab/shift-tab keep the wider course, and a focused widget's own
+    bindings (an expanded Select's overlay) take precedence before any
+    screen-level arrow binding anyway."""
+    fields = [widget for widget in widgets if widget.focusable]
+    if not fields:
+        return
+    focused = fields[0].app.focused
+    try:
+        index = fields.index(focused)
+    except ValueError:
+        index = 0 if forward else len(fields) - 1
+        fields[index].focus()
+        return
+    step = 1 if forward else -1
+    fields[(index + step) % len(fields)].focus()
 
 
 class FieldError(ValueError):
@@ -309,6 +334,19 @@ class OptionForm(VerticalScroll):
     }
     """
 
+    #: Up/down step the field focus (spec addendum decision 4) instead of
+    #: the scroll-container scrolling the base class binds them to — the
+    #: subclass bindings replace the inherited ones for those keys. A
+    #: focused widget's own bindings keep precedence: an expanded Select's
+    #: overlay navigates with the arrows and a collapsed Select opens with
+    #: them, and the Inputs' inherited scroll actions skip (a one-row
+    #: input cannot scroll), handing the key on to the screen's
+    #: field-stepping action. Left/right stay inside the focused input.
+    BINDINGS = [
+        Binding("up", "screen.previous_field", "Previous field", show=False),
+        Binding("down", "screen.next_field", "Next field", show=False),
+    ]
+
     def __init__(
         self,
         section: str,
@@ -504,6 +542,18 @@ class FormScreen(Screen[None]):
     #: textual restores the previous focus and this stays out of the way.
     AUTO_FOCUS = "OptionForm Input"
 
+    #: Screen-level arrow-key field navigation (spec addendum decision 4):
+    #: down/up step between the form's fields, wrapping. The focused
+    #: widget's own bindings keep precedence — an expanded Select's overlay
+    #: navigates with the arrows, a Select opens with them — and
+    #: left/right stay inside the focused input (the Input's cursor
+    #: bindings). Screen bindings outrank the OptionForm's inherited
+    #: scroll-container bindings, so the step fires from any field.
+    BINDINGS = [
+        Binding("down", "next_field", "Next field", show=False),
+        Binding("up", "previous_field", "Previous field", show=False),
+    ]
+
     CSS = """
     #resolve-status {
         height: auto;
@@ -617,6 +667,21 @@ class FormScreen(Screen[None]):
         the app provides; a no-op on the stack's bottom)."""
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
+
+    def _field_widgets(self) -> list[Widget]:
+        """The form's field widgets in DOM order (the declaration order of
+        the specs): one Input, Select, or Checkbox per non-owned field."""
+        return list(self._form.query("Input, Select, Checkbox"))
+
+    def action_next_field(self) -> None:
+        """Down arrow: move the focus to the next field of the form
+        (wrapping; :func:`focus_field` rules)."""
+        focus_field(self._field_widgets(), True)
+
+    def action_previous_field(self) -> None:
+        """Up arrow: move the focus to the previous field of the form
+        (wrapping; :func:`focus_field` rules)."""
+        focus_field(self._field_widgets(), False)
 
     def _resolved_or_report(self) -> PipelineConfig | None:
         """The draft's resolved config, or ``None`` after showing why not

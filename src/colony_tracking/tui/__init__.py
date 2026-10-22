@@ -10,22 +10,35 @@ are handled in the UI; the app exits cleanly.
 from __future__ import annotations
 
 import logging
-import sys
+
+from textual.logging import TextualHandler
 
 from .. import log
 from .app import ColonyTuiApp
 
 
 def _configure_logging() -> None:
-    """The TUI's logging setup, mirroring the CLI's ``_configure_logging``
-    (that module is the precedent; it is mirrored, not imported): the
-    package logger goes to stderr at INFO. Idempotent — launching through
-    the CLI has already attached the stderr handler, so a handler is added
-    only when none exists (nothing here ever double-adds one)."""
-    if not log.handlers:
-        handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        log.addHandler(handler)
+    """Route the package logger for on-screen TUI operation (idempotent).
+
+    While the textual app runs it parks the real terminal cursor inside the
+    focused input after every frame, so any handler that writes raw text to
+    the terminal stream would materialize log lines right there — the
+    reported bug of the draft's ``ConfigError`` appearing inside the
+    last-selected text input (the gate's ``refresh_gate`` logs one
+    ``pipeline config:`` line per failed resolve, i.e. on every field
+    change). Every terminal-bound ``StreamHandler`` on the package logger —
+    the CLI installs a stderr one before dispatching here — is therefore
+    removed, and a :class:`textual.logging.TextualHandler` takes over:
+    records logged on the UI thread go to the app's own log, records from
+    worker threads are dropped (the runner's per-run forwarder already
+    delivers those to the run screen's log pane), and nothing ever reaches
+    the terminal. The usage-error path in :func:`run_tui` logs before this
+    reconfiguration, so pre-app diagnostics still reach stderr."""
+    for handler in list(log.handlers):
+        if isinstance(handler, logging.StreamHandler):
+            log.removeHandler(handler)
+    if not any(isinstance(handler, TextualHandler) for handler in log.handlers):
+        log.addHandler(TextualHandler(stderr=False))
     log.setLevel(logging.INFO)
 
 

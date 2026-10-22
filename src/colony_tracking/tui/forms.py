@@ -422,11 +422,18 @@ def open_directory_picker(
     Picking a directory hands it to ``accept`` (the caller writes it into
     the field's input, which fires the normal change flow); cancelling —
     escape or the dialog's Cancel — closes the picker and calls
-    nothing."""
+    nothing.
+
+    The hand-off waits for the dismissed screen's reveal to settle
+    (``call_after_refresh``): the pop resumes the screen behind the
+    picker, whose entry refresh re-shows the draft's values — a write
+    racing that refresh would be re-set from the draft before its change
+    event landed (the draft update is a queued event, not a synchronous
+    one), and the pick would be lost."""
 
     def picked(path: Path | None) -> None:
         if path is not None:
-            accept(path)
+            app.call_after_refresh(accept, path)
 
     app.push_screen(SelectDirectory(location), picked)
 

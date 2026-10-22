@@ -9,10 +9,20 @@ entry (and a ``draft.stages`` section), with no per-stage class anywhere.
 The editable fields come from the dataclass through
 :mod:`colony_tracking.tui.forms` (type hints + help metadata only); the
 pipeline-owned fields (:data:`colony_tracking.pipeline._OWNED` — they come
-from the run level and the chain wiring, never from a stage section) are
-not form fields: the screen shows them read-only with their derived values
-(:func:`owned_values`), and the free fields that default to a derived name
-grey that default in their empty input (:func:`placeholders`).
+from the run level and the chain wiring, never from a stage section) split
+per the spec addendum's decision 2:
+
+- the *run-level mirrors* (:func:`mirror_keys` — an owned key that names a
+  run-level field, plus ``out_root`` on every stage, since every derived
+  value hangs off it) are editable inputs in their own group under the
+  derived line (:func:`mirror_specs`, labeled ``run-level: ...``): every
+  edit writes the ``[pipeline]`` key the mirror names, so a stage run — a
+  difference run, say — is startable entirely from its stage screen;
+- the *chain-wired* fields (``[segmentation].input``/``diff_dir``) stay
+  read-only: the derived line shows them with their derived values
+  (:func:`owned_values`, filtered to them), and the free fields that
+  default to a derived name grey that default in their empty input
+  (:func:`placeholders`).
 
 The actions are the spec's per-stage decision point (requirement 5):
 *Run this stage*, *Write TOML…* (the shared
@@ -32,6 +42,7 @@ from typing import Callable, ClassVar
 from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import VerticalScroll
 from textual.widgets import Button, Static
 
 from ..._options import (
@@ -43,12 +54,20 @@ from ..._options import (
 from ...pipeline import (
     PipelineConfig,
     _OWNED,
+    _RUN_LEVEL_FIELDS,
     _derived_difference_tree,
     _derived_segment_root,
     _reference_number,
 )
 from ..draft import RUN_LEVEL, ConfigDraft
-from ..forms import FormScreen, OptionForm, kebab, specs_of
+from ..forms import (
+    FieldSpec,
+    FormScreen,
+    OptionForm,
+    kebab,
+    run_level_mirror,
+    specs_of,
+)
 from .run import open_pipeline_run, open_stage_run
 
 
@@ -81,20 +100,10 @@ def _shown(value: object) -> str:
     return "—" if value is None else str(value)
 
 
-def owned_values(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str], ...]:
-    """The owned fields of ``stage`` with their derived values, for the
-    stage screen's read-only display: ``(kebab label, value text)`` pairs,
-    in the options dataclass's declaration order.
-
-    The values are the derivation ``PipelineConfig.resolve_stages``
-    performs: the raw dir and the reference from ``[pipeline]``, the
-    segment input forced to ``diff``, and the difference tree behind the
-    segment stage's ``diff_dir`` (the difference section's own ``out_dir``
-    when set, else the derived tree name). A value that cannot be derived
-    yet shows as ``—``. The owned keys come from the registry entry's
-    dataclass and :data:`~colony_tracking.pipeline._OWNED` — a future
-    stage without owned fields displays nothing.
-    """
+def owned_entries(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str, str], ...]:
+    """The owned fields of ``stage`` with their derived values, as
+    ``(key, kebab label, value text)`` triples in the options dataclass's
+    declaration order (see :func:`owned_values` for the derivation)."""
     owned = _OWNED.get(stage, frozenset())
     keys = [spec.key for spec in specs_of(STAGES[stage].options) if spec.key in owned]
     raw = draft.get(RUN_LEVEL, "raw_dir")
@@ -113,7 +122,66 @@ def owned_values(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str], ...]:
         ("segmentation", "diff_dir"): _shown(diff_dir),
         ("analysis", "raw_dir"): _shown(raw),
     }
-    return tuple((kebab(key), shown.get((stage, key), "—")) for key in keys)
+    return tuple((key, kebab(key), shown.get((stage, key), "—")) for key in keys)
+
+
+def owned_values(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str], ...]:
+    """Every owned field of ``stage`` with its derived value, as
+    ``(kebab label, value text)`` pairs in the options dataclass's
+    declaration order.
+
+    The values are the derivation ``PipelineConfig.resolve_stages``
+    performs: the raw dir and the reference from ``[pipeline]``, the
+    segment input forced to ``diff``, and the difference tree behind the
+    segment stage's ``diff_dir`` (the difference section's own ``out_dir``
+    when set, else the derived tree name). A value that cannot be derived
+    yet shows as ``—``. The owned keys come from the registry entry's
+    dataclass and :data:`~colony_tracking.pipeline._OWNED` — a future
+    stage without owned fields contributes nothing.
+
+    The stage screen shows only the chain-wired half of these (the
+    run-level mirrors are editable there — :func:`mirror_keys`); the
+    config screen shows every entry read-only.
+    """
+    return tuple((label, value) for _key, label, value in owned_entries(draft, stage))
+
+
+def mirror_keys(stage: str) -> tuple[str, ...]:
+    """The run-level keys ``stage``'s screen mirrors, in display order:
+    the stage's owned fields that name a run-level field —
+    ``[difference].raw_dir``/``reference`` and ``[analysis].raw_dir``
+    (spec addendum decision 2: editable, writing the run level) — then
+    ``out_root``, editable on every stage screen because every derived
+    value hangs off it. The chain-wired owned fields
+    (``[segmentation].input``/``diff_dir``) are not mirrors: they stay
+    read-only derived. A future stage without owned fields mirrors only
+    ``out_root``."""
+    owned = [
+        spec.key
+        for spec in specs_of(STAGES[stage].options)
+        if spec.key in _OWNED.get(stage, frozenset())
+    ]
+    mirrors = [key for key in owned if key in _RUN_LEVEL_FIELDS]
+    if "out_root" not in mirrors:
+        mirrors.append("out_root")
+    return tuple(mirrors)
+
+
+def mirror_specs(stage: str) -> tuple[FieldSpec, ...]:
+    """The mirror fields' form specs for ``stage``'s screen (see
+    :func:`mirror_keys`): :func:`colony_tracking.tui.forms.
+    run_level_mirror` per key."""
+    return tuple(run_level_mirror(key) for key in mirror_keys(stage))
+
+
+def editable_specs(stage: str) -> tuple[FieldSpec, ...]:
+    """The stage's own editable option specs: every field of the registry
+    entry's dataclass except the pipeline-owned ones (a stage section
+    carries only those — the owned fields are derived, shown read-only)."""
+    owned = _OWNED.get(stage, frozenset())
+    return tuple(
+        spec for spec in specs_of(STAGES[stage].options) if spec.key not in owned
+    )
 
 
 def placeholders(draft: ConfigDraft, stage: str) -> dict[str, str]:
@@ -138,10 +206,15 @@ def placeholders(draft: ConfigDraft, stage: str) -> dict[str, str]:
     return per_stage.get(stage, {})
 
 
+#: The mirror group's heading: what the fields under it are (they write
+#: the ``[pipeline]`` section every stage shares).
+MIRROR_TITLE = "run level (writes [pipeline]; shared by every stage)"
+
+
 class StageScreen(FormScreen):
-    """The screen for one stage: its options as a form, the pipeline-owned
-    fields read-only with their derived values, and the spec's four
-    actions.
+    """The screen for one stage: the run-level mirror group, its options
+    as a form, the chain-wired owned fields read-only with their derived
+    values, and the spec's four actions.
 
     Instantiated per stage from the registry: ``StageScreen("difference")``
     renders the difference stage's options — a future stage needs only a
@@ -162,6 +235,24 @@ class StageScreen(FormScreen):
         Binding("p", "run_pipeline", "Run pipeline"),
     ]
 
+    CSS = """
+    #stage-body {
+        height: 1fr;
+    }
+    #stage-body OptionForm {
+        height: auto;
+    }
+    #mirror-title {
+        text-style: bold;
+        color: $accent;
+        margin-top: 1;
+    }
+    OptionForm.mirror-form {
+        border-left: tall $accent 40%;
+        padding-left: 1;
+    }
+    """
+
     def __init__(
         self,
         stage: str,
@@ -178,19 +269,42 @@ class StageScreen(FormScreen):
         """The screen's stage (the draft section name)."""
         return self._stage
 
+    @property
+    def mirrors(self) -> OptionForm:
+        """The screen's run-level mirror form (the owned fields the mirror
+        split makes editable, writing ``[pipeline]``)."""
+        return self._mirrors
+
+    @property
+    def forms(self) -> list[OptionForm]:
+        """The screen's option forms: the stage's own, then the run-level
+        mirrors (the entry refresh and the action gate cover both)."""
+        return [self._form, self._mirrors]
+
     def compose_body(self) -> ComposeResult:
         entry = STAGES[self._stage]
-        owned = _OWNED.get(self._stage, frozenset())
-        specs = specs_of(entry.options)
+        self._mirrors = OptionForm(
+            RUN_LEVEL,
+            mirror_specs(self._stage),
+            self._resolve_draft(),
+            id_prefix=f"{self._stage}-run",
+            on_change=self._on_form_change,
+        )
+        self._mirrors.add_class("mirror-form")
         self._form = OptionForm(
             self._stage,
-            [spec for spec in specs if spec.key not in owned],
+            editable_specs(self._stage),
             self._resolve_draft(),
             on_change=self._on_form_change,
         )
-        yield Static(f"{entry.title} — stage options", id="stage-title")
-        yield Static(Text(""), id="owned-values")
-        yield self._form
+        # One scrollable body: the actions below stay reachable on a small
+        # terminal whatever the two forms' combined height.
+        with VerticalScroll(id="stage-body"):
+            yield Static(f"{entry.title} — stage options", id="stage-title")
+            yield Static(Text(""), id="owned-values")
+            yield Static(Text(MIRROR_TITLE), id="mirror-title")
+            yield self._mirrors
+            yield self._form
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Run this stage", id="run-stage")
@@ -199,10 +313,16 @@ class StageScreen(FormScreen):
         yield Button("Back", id="back")
 
     def refresh_extras(self) -> None:
-        """The derived owned values and the greyed derived defaults — both
-        change when the run level changes (edited on the config screen)."""
-        values = owned_values(self.draft, self._stage)
-        joined = "  ".join(f"{label} = {value}" for label, value in values)
+        """The chain-wired owned values and the greyed derived defaults —
+        both change when the run level changes (the mirrors edit it right
+        here; the config screen edits it too)."""
+        mirrors = set(mirror_keys(self._stage))
+        derived = [
+            (label, value)
+            for key, label, value in owned_entries(self.draft, self._stage)
+            if key not in mirrors
+        ]
+        joined = "  ".join(f"{label} = {value}" for label, value in derived)
         self.query_one("#owned-values", Static).update(
             Text("owned by the pipeline (derived): " + (joined if joined else "none"))
         )

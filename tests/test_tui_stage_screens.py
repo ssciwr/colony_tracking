@@ -1,14 +1,15 @@
 """Tests for the stage screens and the config screen (ticket 02).
 
 Screens under test: the per-stage :class:`StageScreen` — generated from
-the stage registry (``STAGES``), showing the pipeline-owned fields
-read-only with their derived values, its actions gated on
+the stage registry (``STAGES``), showing the chain-wired pipeline-owned
+fields read-only with their derived values (the run-level mirrors are
+editable since ticket 06; covered there), its actions gated on
 ``ConfigDraft.resolve()`` — and the :class:`ConfigScreen` (the run-level
-form plus the draft's effective TOML preview). The flows the spec fixes:
-fill a stage's options, then write the TOML through the shared save
-dialog (the written file loads unchanged through ``read_config``), or hand
-the resolved config to the app's run flow (the seam the run-screens
-ticket wires).
+form plus the draft's effective TOML preview; since ticket 06 the full
+editor). The flows the spec fixes: fill a stage's options, then write the
+TOML through the shared save dialog (the written file loads unchanged
+through ``read_config``), or hand the resolved config to the app's run
+flow (the seam the run-screens ticket wires).
 
 Pilot scenarios run through ``asyncio.run`` (no async test plugin in the
 dev group; the suite stays dependency-free). Assertions run inside the
@@ -42,7 +43,12 @@ from colony_tracking.tui.forms import kebab
 from colony_tracking.tui.screens._save import SaveConfigDialog
 from colony_tracking.tui.screens.config import ConfigScreen
 from colony_tracking.tui.screens.home import HomeScreen
-from colony_tracking.tui.screens.stage import STAGES, StageScreen, owned_values
+from colony_tracking.tui.screens.stage import (
+    STAGES,
+    StageScreen,
+    mirror_keys,
+    owned_values,
+)
 
 
 @dataclass(kw_only=True)
@@ -121,8 +127,10 @@ def test_future_stage_slots_into_the_registry(monkeypatch):
 @pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
 def test_every_option_field_renders_as_its_widget(stage):
     """Every non-owned field of the stage renders as the spec table's
-    widget; the owned fields render read-only in the header instead (they
-    are derived, never edited)."""
+    widget; the owned fields split per the spec addendum's mirror
+    decision — the run-level mirrors render as editable mirror inputs in
+    the screen's mirror form, the chain-wired fields stay read-only in
+    the derived line (never widgets)."""
     hints = get_type_hints(STAGES[stage].options)
 
     async def scenario() -> None:
@@ -131,18 +139,24 @@ def test_every_option_field_renders_as_its_widget(stage):
             screen = StageScreen(stage)
             app.push_screen(screen)
             await pilot.pause()
+            mirrors = set(mirror_keys(stage))
             for key, hint in hints.items():
                 field_id = f"#{stage}-{kebab(key)}"
                 if key in _OWNED[stage]:
                     with pytest.raises(NoMatches):
                         screen.form.query_one(field_id)
+                    if key in mirrors:
+                        mirror_id = f"#{stage}-run-{kebab(key)}"
+                        assert type(screen.mirrors.query_one(mirror_id)) is Input, key
+                    else:
+                        owned_text = str(
+                            app.screen.query_one("#owned-values", Static).render()
+                        )
+                        assert kebab(key) in owned_text, key
                 else:
                     assert type(screen.form.query_one(field_id)) is _expected_widget(
                         hint
                     ), key
-            owned_text = str(app.screen.query_one("#owned-values", Static).render())
-            for key in _OWNED[stage]:
-                assert kebab(key) in owned_text
 
     asyncio.run(scenario())
 

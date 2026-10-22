@@ -40,20 +40,31 @@ states, handled like this:
   from the draft or the dataclass default); a checkbox whose value equals
   the unset key's default therefore stores nothing — ``resolve`` applies
   the default anyway, so the document stays free of no-op keys.
+
+Reset and mirrors
+-----------------
+Every field also carries a small *reset* button next to its widget: it
+clears exactly that field's draft key (``ConfigDraft.clear``) — back to
+the default — and stays enabled only while the key is set, so the
+set-vs-at-default state is visible at a glance. A field may also mirror
+another section's key (:attr:`FieldSpec.writes`): the stage screens'
+run-level mirrors read and write the ``[pipeline]`` key they name, labeled
+``run-level: ...`` — the editable half of the owned-field split (spec
+addendum, decision 2).
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection, Iterable, Sequence
-from dataclasses import MISSING, dataclass, fields
+from dataclasses import MISSING, dataclass, fields, replace
 from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
 
 from rich.text import Text
 from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import (
@@ -69,7 +80,7 @@ from textual.widgets import (
 
 from .._options import Reference, _union_members, parse_reference
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
-from .draft import ConfigDraft
+from .draft import RUN_LEVEL, ConfigDraft
 from .screens._save import SaveConfigDialog
 
 #: Field-name → label spelling, mirroring the CLI's ``_RENAMES`` (the CLI
@@ -240,6 +251,13 @@ class FieldSpec:
     default: Any = NO_DEFAULT
     #: Greyed hint text for an empty ``Input`` (a derived default).
     placeholder: str = ""
+    #: The widget's label (``kebab(key)`` when empty — a run-level mirror
+    #: overrides it, e.g. ``run-level: raw dir``).
+    label: str = ""
+    #: The (section, key) the field reads and writes when it mirrors a key
+    #: of another section — the stage screens' run-level mirrors write the
+    #: ``[pipeline]`` key they name (empty: the form's own section and key).
+    writes: tuple[str, str] = ()
 
 
 def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec, ...]:
@@ -270,6 +288,26 @@ def run_level_specs() -> tuple[FieldSpec, ...]:
     :class:`~colony_tracking.pipeline.PipelineConfig` (``raw_dir``,
     ``out_root``, ``reference``, ``wells``)."""
     return specs_of(PipelineConfig, keys=_RUN_LEVEL_FIELDS)
+
+
+def run_level_mirror(key: str) -> FieldSpec:
+    """The mirror of one run-level field: an editable field that reads and
+    writes the ``[pipeline]`` key ``key`` — what a stage screen shows for
+    the owned fields the mirror split makes editable (spec addendum,
+    decision 2), labeled ``run-level: <name>`` so a mirror reads as the
+    shared setting it is.
+
+    The spec is the run-level field's own — the same hint, help, and
+    default the config screen's run-level form shows (one source) — with
+    the mirror label and the ``[pipeline]`` write target added. A key
+    that is not a run-level field is a programming error.
+    """
+    (spec,) = [spec for spec in run_level_specs() if spec.key == key]
+    return replace(
+        spec,
+        label=f"run-level: {kebab(key).replace('-', ' ')}",
+        writes=(RUN_LEVEL, key),
+    )
 
 
 def _optional_member(hint: Any) -> Any:
@@ -308,7 +346,10 @@ class OptionForm(VerticalScroll):
     marks the field inline and writes nothing, and :attr:`valid` tells the
     owning screen whether every field currently parses. ``draft`` must be
     set before the first change — a screen's ``compose`` runs under the
-    running app, so the screens pass ``app.draft`` at construction.
+    running app, so the screens pass ``app.draft`` at construction. Every
+    field carries its reset button; a field whose spec declares a mirror
+    target (:attr:`FieldSpec.writes`) reads and writes that (section, key)
+    instead of the form's own.
     """
 
     DEFAULT_CSS = """
@@ -327,6 +368,26 @@ class OptionForm(VerticalScroll):
     }
     OptionForm .field-error {
         color: $error;
+    }
+    OptionForm .field-row {
+        height: auto;
+        align-vertical: middle;
+    }
+    OptionForm .field-row Input {
+        width: 1fr;  # not 100%: the row shares it with the reset button
+    }
+    OptionForm .field-reset {
+        min-width: 0;
+        width: auto;
+        height: 1;
+        border: none;
+        background: $panel;
+        color: $text 60%;
+        margin-left: 1;
+    }
+    OptionForm .field-reset:hover {
+        background: $surface-darken-1;
+        color: $text;
     }
     OptionForm Input.invalid,
     OptionForm Input.invalid:focus {
@@ -353,6 +414,7 @@ class OptionForm(VerticalScroll):
         specs: Iterable[FieldSpec],
         draft: ConfigDraft,
         *,
+        id_prefix: str | None = None,
         on_change: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
@@ -363,9 +425,16 @@ class OptionForm(VerticalScroll):
         self._specs = tuple(specs)
         self._on_change = on_change
         self._errors: dict[str, str] = {}
+        #: The widget-id prefix (the section, unless overridden — a screen
+        #: hosting a section's form a second time keeps ids unique, e.g.
+        #: the config screen's per-stage copies).
+        self._id_prefix = section if id_prefix is None else id_prefix
         self._ids = {self._field_id(spec.key): spec for spec in self._specs}
         self._kinds = {spec.key: _widget_kind(spec) for spec in self._specs}
         self._literals = {spec.key: _literal_values(spec.hint) for spec in self._specs}
+        self._resets = {
+            f"reset-{self._field_id(spec.key)}": spec for spec in self._specs
+        }
 
     @property
     def valid(self) -> bool:
@@ -378,44 +447,59 @@ class OptionForm(VerticalScroll):
         return self._errors.get(key, "")
 
     def _field_id(self, key: str) -> str:
-        """The widget id of a field (section-prefixed, so ids stay unique
+        """The widget id of a field (prefix-prefixed, so ids stay unique
         across the coexisting screens of the stack)."""
-        return f"{self.section}-{kebab(key)}"
+        return f"{self._id_prefix}-{kebab(key)}"
+
+    def _target(self, spec: FieldSpec) -> tuple[str, str]:
+        """The (section, key) ``spec`` reads and writes: the mirror target
+        it declares, else the form's own section and key."""
+        return spec.writes if spec.writes else (self.section, spec.key)
+
+    def _is_set(self, spec: FieldSpec) -> bool:
+        """Whether the field's draft key is set (its reset affordance is
+        enabled only then — at-default state stays visible)."""
+        return self.draft.get(*self._target(spec)) is not None
 
     def compose(self) -> ComposeResult:
         for spec in self._specs:
             kind = self._kinds[spec.key]
+            label = spec.label or kebab(spec.key)
+            widget_id = self._field_id(spec.key)
+            if kind == "checkbox":
+                widget = Checkbox(label, value=self._checked(spec), id=widget_id)
+            elif kind == "select":
+                values = self._literals[spec.key]
+                current = self.draft.get(*self._target(spec))
+                widget = Select(
+                    [(str(value), value) for value in values],
+                    prompt="(default)",
+                    allow_blank=True,
+                    value=current if current in values else Select.NULL,
+                    id=widget_id,
+                )
+            else:
+                widget = Input(
+                    value=format_field(self.draft.get(*self._target(spec))),
+                    placeholder=spec.placeholder,
+                    id=widget_id,
+                )
+            reset = Button("reset", id=f"reset-{widget_id}", classes="field-reset")
+            reset.can_focus = False  # click-only: not a tab stop between fields
+            reset.disabled = not self._is_set(spec)
             with Vertical(classes="option-field"):
                 if kind != "checkbox":  # the checkbox shows its own label
-                    yield Label(kebab(spec.key), classes="field-label")
-                widget_id = self._field_id(spec.key)
-                if kind == "checkbox":
-                    yield Checkbox(
-                        kebab(spec.key), value=self._checked(spec), id=widget_id
-                    )
-                elif kind == "select":
-                    values = self._literals[spec.key]
-                    current = self.draft.get(self.section, spec.key)
-                    yield Select(
-                        [(str(value), value) for value in values],
-                        prompt="(default)",
-                        allow_blank=True,
-                        value=current if current in values else Select.NULL,
-                        id=widget_id,
-                    )
-                else:
-                    yield Input(
-                        value=format_field(self.draft.get(self.section, spec.key)),
-                        placeholder=spec.placeholder,
-                        id=widget_id,
-                    )
+                    yield Label(label, classes="field-label")
+                with Horizontal(classes="field-row"):
+                    yield widget
+                    yield reset
                 yield Label(Text(spec.help), classes="field-help")
                 yield Label(Text(""), classes="field-error", id=f"error-{widget_id}")
 
     def _checked(self, spec: FieldSpec) -> bool:
         """A checkbox's initial state: the draft value, else the field's
         default (a required bool defaults to unchecked)."""
-        value = self.draft.get(self.section, spec.key)
+        value = self.draft.get(*self._target(spec))
         if value is None:
             value = spec.default if spec.default is not NO_DEFAULT else False
         return bool(value)
@@ -430,20 +514,25 @@ class OptionForm(VerticalScroll):
 
         A screen is mounted once but entered many times, and other screens
         may have edited the shared draft meanwhile. Idempotent: widgets
-        already showing the draft's value emit no change events.
+        already showing the draft's value emit no change events. The reset
+        buttons' enabled states follow along.
         """
         for spec in self._specs:
-            kind = self._kinds[spec.key]
-            widget = self.query_one(f"#{self._field_id(spec.key)}")
-            if kind == "input":
-                widget.value = format_field(self.draft.get(self.section, spec.key))
-            elif kind == "checkbox":
-                widget.value = self._checked(spec)
-            else:
-                value = self.draft.get(self.section, spec.key)
-                widget.value = (
-                    value if value in self._literals[spec.key] else Select.NULL
-                )
+            self._refresh_one(spec)
+        self._refresh_resets()
+
+    def _refresh_one(self, spec: FieldSpec) -> None:
+        """Set one field's widget from the draft again (the per-field half
+        of :meth:`refresh_from_draft`, also the reset's re-show)."""
+        kind = self._kinds[spec.key]
+        widget = self.query_one(f"#{self._field_id(spec.key)}")
+        if kind == "input":
+            widget.value = format_field(self.draft.get(*self._target(spec)))
+        elif kind == "checkbox":
+            widget.value = self._checked(spec)
+        else:
+            value = self.draft.get(*self._target(spec))
+            widget.value = value if value in self._literals[spec.key] else Select.NULL
 
     # --- change handling ------------------------------------------------------
 
@@ -464,9 +553,10 @@ class OptionForm(VerticalScroll):
             return
         default = bool(spec.default) if spec.default is not NO_DEFAULT else False
         if event.value == default:
-            self.draft.clear(self.section, spec.key)
+            self.draft.clear(*self._target(spec))
         else:
-            self.draft.set(self.section, spec.key, event.value)
+            self.draft.set(*self._target(spec), event.value)
+        self._refresh_reset(spec)
         self._changed()
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -475,9 +565,22 @@ class OptionForm(VerticalScroll):
         if spec is None:
             return
         if event.select.is_blank():
-            self.draft.clear(self.section, spec.key)
+            self.draft.clear(*self._target(spec))
         else:
-            self.draft.set(self.section, spec.key, event.value)
+            self.draft.set(*self._target(spec), event.value)
+        self._refresh_reset(spec)
+        self._changed()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """A field's reset button pressed: clear exactly that field's
+        draft key — back to the default — and re-show the field (the
+        button disables itself: the key is no longer set)."""
+        spec = self._resets.get(event.button.id)
+        if spec is None:
+            return
+        self.draft.clear(*self._target(spec))
+        self._refresh_one(spec)
+        self._refresh_reset(spec)
         self._changed()
 
     def _apply_text(self, spec: FieldSpec, text: str) -> None:
@@ -494,10 +597,22 @@ class OptionForm(VerticalScroll):
             del self._errors[spec.key]
             self._set_error(spec.key, "")
         if value is UNSET:
-            self.draft.clear(self.section, spec.key)
+            self.draft.clear(*self._target(spec))
         else:
-            self.draft.set(self.section, spec.key, value)
+            self.draft.set(*self._target(spec), value)
+        self._refresh_reset(spec)
         self._changed()
+
+    def _refresh_reset(self, spec: FieldSpec) -> None:
+        """Sync one field's reset button with its key's set-vs-default
+        state (enabled only while the key is set)."""
+        button = self.query_one(f"#reset-{self._field_id(spec.key)}", Button)
+        button.disabled = not self._is_set(spec)
+
+    def _refresh_resets(self) -> None:
+        """Sync every reset button (the entry refresh's pass)."""
+        for spec in self._specs:
+            self._refresh_reset(spec)
 
     def _set_error(self, key: str, message: str) -> None:
         """Show or clear one field's inline error (message + red border).
@@ -528,7 +643,9 @@ class FormScreen(Screen[None]):
     the status line shows the pipeline's exact ``ConfigError`` message
     otherwise (verbatim, the same text the CLI reports). Subclasses provide
     :meth:`compose_body` (which must set ``self._form``), their action
-    buttons, and :meth:`refresh_extras`.
+    buttons, and :meth:`refresh_extras`. A screen may edit several draft
+    sections (the stage screens' run-level mirror group): :attr:`forms`
+    lists them all, and the entry refresh and the gate cover every one.
     """
 
     #: The button ids the action gate enables and disables.
@@ -620,16 +737,17 @@ class FormScreen(Screen[None]):
         self.refresh_screen()
 
     def refresh_screen(self) -> None:
-        """Re-read the draft and refresh the form, the extras, and the
+        """Re-read the draft and refresh the forms, the extras, and the
         action gate (called on every entry; also right after editing the
-        draft from outside the form)."""
+        draft from outside the forms)."""
         self.draft = self._resolve_draft()
-        self._form.refresh_from_draft()
+        for form in self.forms:
+            form.refresh_from_draft()
         self.refresh_extras()
         self.refresh_gate()
 
     def refresh_gate(self) -> None:
-        """Re-check the draft and the form: enable the gated actions when
+        """Re-check the draft and the forms: enable the gated actions when
         everything resolves; otherwise disable them and show why — the
         pipeline's exact ``ConfigError`` message, verbatim."""
         message = ""
@@ -638,7 +756,7 @@ class FormScreen(Screen[None]):
         except ConfigError as err:
             self._enabled, message = False, str(err)
         else:
-            self._enabled = bool(self._form.valid)
+            self._enabled = all(form.valid for form in self.forms)
             if not self._enabled:
                 message = "Fix the marked fields to enable the actions."
         self.query_one("#resolve-status", Static).update(Text(message))
@@ -650,6 +768,13 @@ class FormScreen(Screen[None]):
         """Whether the actions are currently enabled (every field parses
         and the draft resolves)."""
         return self._enabled
+
+    @property
+    def forms(self) -> list[OptionForm]:
+        """The screen's option forms (the primary :attr:`form` first) —
+        the entry refresh and the action gate cover every one. Screens
+        that edit a single section need not override this."""
+        return [self._form]
 
     @property
     def form(self) -> OptionForm:

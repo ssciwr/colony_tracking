@@ -18,10 +18,10 @@ gates all detection with it:
 1. Final frame: instance segmentation at decoder foreground ≥ `fg_ref`
    (0.5); instances with area < `min_size` (200 px) or solidity <
    `min_solidity` (0.7) are dropped (well-ring junk).
-2. The survivors' union is split into connected components — **groups** —
-   and the groups are dilated by `mask_margin` (15 px) to form the growth
-   mask.
-3. Earlier frames: foreground ≥ `fg_early` (0.3 — the decoder under-fires on
+2. The survivors' union is split into connected components, the
+   **groups**, and the groups are dilated by `mask_margin` (15 px) to form
+   the growth mask.
+3. Earlier frames: foreground ≥ `fg_early` (0.3; the decoder under-fires on
    faint colonies); an instance is kept only if ≥ `min_overlap` (0.5) of its
    pixels lie inside the growth mask **and** inside a single group.
 
@@ -39,7 +39,7 @@ front: the growth mask would be empty.
 - Detection is confined to where colonies actually grow; phantom colonies
   from debris are suppressed without a second model pass.
 - A colony that appears only early and is gone before the final frame is
-  not detected — accepted for this dataset, where colonies grow over the
-  series.
+  not detected. That is accepted for this dataset, where colonies grow
+  over the series.
 - The final frame's segmentation quality bounds the whole run: a group the
   final frame misses makes everything that grows there invisible.

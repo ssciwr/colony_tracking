@@ -307,12 +307,12 @@ class AnalysisOptions(Options):
             "are exempt."
         },
     )
-    min_growth_2step: float = field(
-        default=0.3,
+    min_growth_per_frame: float = field(
+        default=0.1,
         metadata={
-            "help": "A colony whose every exact 2-frame window grows by less than "
-            "1 + this factor is bad (no_growth); pre-existing colonies "
-            "are exempt."
+            "help": "A colony for which any valid frame, compared to the earliest "
+            "valid frame >= 2 images ahead, grows by this factor or less per "
+            "image is bad (no_growth); pre-existing colonies are exempt."
         },
     )
     refresh_geometry: bool = field(

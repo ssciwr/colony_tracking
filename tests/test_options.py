@@ -73,7 +73,7 @@ def test_analysis_options_fields_match_contract():
         "keep_pre_existing",
         "raw_seg_dir",
         "start_frames",
-        "min_growth_2step",
+        "min_growth_per_frame",
         "refresh_geometry",
         "plots_only",
         "no_plots",
@@ -149,7 +149,7 @@ def test_analysis_options_defaults():
     assert opts.keep_pre_existing is False
     assert opts.raw_seg_dir is None
     assert opts.start_frames == 1
-    assert opts.min_growth_2step == 0.3
+    assert opts.min_growth_per_frame == 0.1
     assert opts.refresh_geometry is False
     assert opts.plots_only is False
     assert opts.no_plots is False

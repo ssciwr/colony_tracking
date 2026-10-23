@@ -170,7 +170,7 @@ def test_analyze_flags_map_kebab_case(monkeypatch, tmp_path):
         "--rim-overlap-max", "0.2", "--max-bad-segments", "3",
         "--keep-bad-wells", "--keep-pre-existing",
         "--raw-seg-dir", str(tmp_path / "raw_seg"),
-        "--start-frames", "2", "--min-growth-2step", "0.5",
+        "--start-frames", "2", "--min-growth-per-frame", "0.5",
         "--refresh-geometry", "--plots-only", "--no-plots", "--no-qa",
         "--no-group-alpha",
     ])
@@ -182,7 +182,7 @@ def test_analyze_flags_map_kebab_case(monkeypatch, tmp_path):
         wells=["-A001", "-B002"], rim_width_px=40, rim_overlap_max=0.2,
         max_bad_segments=3, keep_bad_wells=True, keep_pre_existing=True,
         raw_seg_dir=tmp_path / "raw_seg", start_frames=2,
-        min_growth_2step=0.5, refresh_geometry=True, plots_only=True,
+        min_growth_per_frame=0.5, refresh_geometry=True, plots_only=True,
         no_plots=True, no_qa=True, no_group_alpha=True,
     )
 
@@ -205,7 +205,7 @@ def test_analyze_seg_dir_comma_separated_defaults(monkeypatch, tmp_path):
     # The defaults the spec lists for the analyze stage.
     assert options.rim_width_px == 60 and options.rim_overlap_max == 0.1
     assert options.max_bad_segments == 2 and options.start_frames == 1
-    assert options.min_growth_2step == 0.3
+    assert options.min_growth_per_frame == 0.1
     assert not (options.keep_bad_wells or options.keep_pre_existing)
     assert not (options.plots_only or options.no_plots or options.no_qa
                 or options.no_group_alpha or options.refresh_geometry)

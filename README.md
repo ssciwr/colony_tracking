@@ -101,7 +101,7 @@ without the model.
 | `--min-overlap` | `0.5` | Minimum fraction of an instance's pixels that must lie inside the growth mask and inside a single group. |
 | `--max-fg-ratio` | `1.5` | Drift gate: skip frames whose elevated-foreground fraction exceeds this multiple of the reference frame's (0 disables the gate). |
 | `--exclude-before` | `none` | Flag colonies first detected at or before this frame number as pre-existing (excluded from the analysis); frames below it are still segmented and tracked. |
-| `--no-merge-touching` | `unset` | By default, touching segments of one group are pre-merged; the flag disables the pre-merge. |
+| `--no-merge-touching` | `unset` | Pre-merge touching segments of one group (disable with --no-merge-touching). |
 | `--redo` | `unset` | Reprocess wells even when their done marker is present. |
 | `--reid-only` | `unset` | Re-derive segments from the saved label images and re-track without the model (no GPU). |
 
@@ -127,13 +127,12 @@ trees.
 | `--keep-pre-existing` | `unset` | Include pre-existing colonies in aggregates and plots. |
 | `--raw-seg-dir` | `none` | Raw-root segmentation tree probed to flag pre-existing colonies of difference roots; without it the raw reference frame itself is probed (dark centroid window). |
 | `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start); pre-existing colonies are exempt. |
-| `--min-growth-2step` | `0.3` | A colony whose every exact 2-frame window grows by less than 1 + this factor is bad (no_growth); pre-existing colonies are exempt. |
+| `--min-growth-per-frame` | `0.1` | A colony for which any valid frame, compared to the earliest valid frame >= 2 images ahead, grows by this factor or less per image is bad (no_growth); pre-existing colonies are exempt. |
 | `--refresh-geometry` | `unset` | Re-fit the well circles instead of using the cached well_geometry.csv. |
 | `--plots-only` | `unset` | Re-render the plots from the existing trajectories CSV without image IO. |
 | `--no-plots` | `unset` | Skip the plots. |
 | `--no-qa` | `unset` | Skip the per-well QA overlays. |
 | `--no-group-alpha` | `unset` | Do not fade group opacity with member count. |
-
 ### pipeline
 
 The standard chain (difference → segment on the difference tree → analyze)

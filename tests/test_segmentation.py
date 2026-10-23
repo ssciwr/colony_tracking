@@ -27,7 +27,6 @@ from colony_tracking.segmentation import (
     run_segmentation,
 )
 from conftest import (
-    T_STEP_MS,
     build_label_series,
     build_mini_plate,
     frame_name,
@@ -430,13 +429,13 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     # re-ID never touches the model
     assert not _model_stack_pulled(modules_before)
 
-    # -- well A: IDs continue, the merge is recorded, frame 1 is blanked -----
+    # -- well A: IDs continue, the merge is recorded, frame 1 is flagged -----
     a_dir = out / "-A001"
     for name in names_a:  # outputs stay 1:1 with the input frames
         assert (a_dir / (name[:-4] + "__labels.tif")).exists()
     labels = [io.read_label_image(a_dir / (n[:-4] + "__labels.tif"))
               for n in names_a]
-    assert not labels[0].any()  # frame 1 < exclude_before: blanked
+    assert (labels[0][5:15, 5:15] == 1).all()  # frame 1 (< N) is tracked
     assert (labels[1][5:15, 5:15] == 1).all()  # colony 1 continues
     assert (labels[1][5:15, 25:35] == 2).all()  # colony 2
     assert (labels[3][25:35, 5:15] == 3).all()  # colony 3 from frame 4
@@ -446,6 +445,7 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     rows = io.read_colonies(a_dir / "colonies.csv")
     assert [(r["frame"], r["colony_id"], r["merged_with"], r["pre_existing"])
             for r in rows] == [
+        ("1", "1", "", "1"),  # first detected at 1 <= N
         ("2", "1", "", "1"), ("2", "2", "", "1"),  # first detected at 2 <= N
         ("3", "1", "", "1"), ("3", "2", "", "1"),
         ("4", "1", "", "1"), ("4", "2", "", "1"), ("4", "3", "", "0"),
@@ -454,8 +454,8 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     ]
     assert rows[0]["well"] == "-A001"
     assert rows[0]["group_id"] == "1"
-    assert rows[0]["t_seconds"] == str(T_STEP_MS)  # LO002's T field (ms)
-    assert rows[0]["image"] == names_a[1]
+    assert rows[0]["t_seconds"] == "0"  # LO001's T field (t0 = 0 ms)
+    assert rows[0]["image"] == names_a[0]
     assert read_marker(a_dir) == {
         "frames": 5, "groups": 1, "colonies": 1, "pre_existing_colonies": 2,
         "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
@@ -469,20 +469,21 @@ def test_reid_retracks_and_rewrites_outputs(tmp_path):
     assert not (b_dir / (names_b[1][:-4] + "__labels.tif")).exists()
     labels_b = [io.read_label_image(b_dir / (n[:-4] + "__labels.tif"))
                 for n in kept_names]
-    assert not labels_b[0].any()  # frame 1 < exclude_before: blanked
-    assert (labels_b[1][10:20, 10:20] == 1).all()  # first seen at 3: new growth
-    assert (labels_b[1][10:20, 30:40] == 2).all()
+    assert (labels_b[0][10:20, 10:20] == 1).all()  # frame 1 (< N) is tracked
+    assert (labels_b[1][10:20, 10:20] == 1).all()  # colony 1 continues
+    assert (labels_b[1][10:20, 30:40] == 2).all()  # first seen at 3: new growth
     assert (labels_b[3][10:20, 10:40] == 1).all()  # merge product keeps ID 1
 
     rows_b = io.read_colonies(b_dir / "colonies.csv")
     assert [(r["frame"], r["colony_id"], r["merged_with"], r["pre_existing"])
             for r in rows_b] == [
-        ("3", "1", "", "0"), ("3", "2", "", "0"),
-        ("4", "1", "", "0"), ("4", "2", "", "0"),
-        ("5", "1", "2", "0"),  # the merge: colony 2 absorbed
+        ("1", "1", "", "1"),  # first detected at 1 <= N
+        ("3", "1", "", "1"), ("3", "2", "", "0"),
+        ("4", "1", "", "1"), ("4", "2", "", "0"),
+        ("5", "1", "2", "1"),  # the merge: colony 2 absorbed
     ]
     assert read_marker(b_dir) == {
-        "frames": 4, "groups": 1, "colonies": 2, "pre_existing_colonies": 0,
+        "frames": 4, "groups": 1, "colonies": 1, "pre_existing_colonies": 1,
         "merge_events": 1, "forked_segments": 0, "discarded_instances": 0,
     }
 

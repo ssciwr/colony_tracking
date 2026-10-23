@@ -29,8 +29,9 @@ largest extent. One well is processed like this:
    :mod:`colony_tracking.tracking`: touching segments of one group are
    pre-merged, then segments are tracked forward in time with the
    continue / absorb-merge / fork / new-ID rules, and the ``exclude_before``
-   pre-existing filter blanks frames before N and flags colonies first
-   detected at or before N as ``pre_existing=1``.
+   pre-existing filter flags colonies first detected at or before N as
+   ``pre_existing=1`` (frames below N are segmented and tracked like any
+   other — nothing is blanked).
 
 Every model call first restores the decoder foreground's enclosed
 sub-threshold gaps (:func:`fill_enclosed_gaps`) and is drift-gated before
@@ -49,8 +50,8 @@ to the final frame is rejected up front** — the growth mask would be empty.
 
 Outputs, per well, under per-well subdirectories of ``out_dir``:
 ``<frame-stem>__labels.tif`` per input frame (uint32 colony IDs, 1:1 with
-the input frames; all-zero for gate-skipped or ``exclude_before``-blanked
-frames), ``ref__labels.tif`` (the group labels of the final frame),
+the input frames; all-zero for gate-skipped frames), ``ref__labels.tif``
+(the group labels of the final frame),
 ``colonies.csv`` (canonical columns), and the ``_done.txt`` done marker
 with the seven canonical keys — a well with a complete marker is skipped
 on re-run unless ``redo``.
@@ -406,14 +407,14 @@ def _write_outputs(
     io.write_colonies(well_dir / "colonies.csv", rows)
 
 
-def _blanking_log(well: str, frames: Sequence[io.Frame], exclude_before: int) -> None:
-    """Log how many frames ``exclude_before`` blanks for this well."""
-    blanked = sum(1 for fr in frames if fr.frame < exclude_before)
-    if blanked:
+def _exclude_log(well: str, frames: Sequence[io.Frame], exclude_before: int) -> None:
+    """Log how many frames lie below ``exclude_before`` for this well."""
+    below = sum(1 for fr in frames if fr.frame < exclude_before)
+    if below:
         log.info(
-            "[%s] exclude_before %d: blanking %d frames below it "
-            "(their label images are written empty)",
-            well, exclude_before, blanked,
+            "[%s] exclude_before %d: %d frame(s) below it are segmented "
+            "and tracked normally; their colonies are flagged pre-existing",
+            well, exclude_before, below,
         )
 
 
@@ -438,7 +439,7 @@ def _process_well(
     log.info("[%s] %d frames, reference = LO%03d", well, n, last.frame)
     exclude_before = options.exclude_before
     if exclude_before is not None:
-        _blanking_log(well, frames, exclude_before)
+        _exclude_log(well, frames, exclude_before)
 
     # 1. Segment the final frame and build the growth mask.
     t0 = time.monotonic()
@@ -473,14 +474,6 @@ def _process_well(
     disc_total, gate_skips = 0, 0
     for i, frame in enumerate(frames):
         t0 = time.monotonic()
-        if exclude_before is not None and frame.frame < exclude_before:
-            kept.append(np.zeros(raw_last.shape, np.uint32))
-            log.info(
-                "[%s] %d/%d LO%03d: before LO%03d (exclude_before), "
-                "labels dropped",
-                well, i + 1, n, frame.frame, exclude_before,
-            )
-            continue
         if i == n - 1:
             # already segmented above; the decoder is deterministic, so the
             # result is identical and the second model call is saved
@@ -516,7 +509,7 @@ def _process_well(
         )
 
     # 3. Colony IDs: forward tracking within each group (+ pre-existing
-    #    filter); the gate-skipped and blanked frames stay empty, 1:1.
+    #    filter); gate-skipped frames stay empty, 1:1.
     result = track_colonies(
         [(frame.frame, k) for frame, k in zip(frames, kept)],
         groups,
@@ -558,7 +551,7 @@ def _reid_well(
     groups = io.read_label_image(well_dir / "ref__labels.tif")
     exclude_before = options.exclude_before
     if exclude_before is not None:
-        _blanking_log(well, frames, exclude_before)
+        _exclude_log(well, frames, exclude_before)
     if not groups.any():
         io.write_done(well_dir, {
             "frames": len(frames), "groups": 0, "colonies": 0,
@@ -569,9 +562,6 @@ def _reid_well(
         return "skipped"
     kept = []
     for frame in frames:
-        if exclude_before is not None and frame.frame < exclude_before:
-            kept.append(np.zeros(groups.shape, np.uint32))
-            continue
         labels = io.read_label_image(well_dir / f"{frame.stem}__labels.tif")
         local = np.zeros(labels.shape, np.uint32)
         for local_id, segment in enumerate(extract_segments(labels), start=1):

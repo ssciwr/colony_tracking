@@ -300,12 +300,12 @@ def test_premerge_touching_merges_chains_but_not_beyond_dilation():
 # --- the pre-existing filter (exclude_before) --------------------------------
 
 
-def test_exclude_before_blanks_early_frames_and_flags_pre_existing():
+def test_exclude_before_flags_early_colonies_without_blanking():
     groups = one_group()
     frames = [
-        # frame 3: a colony is present but the frame lies below the cutoff
+        # frame 3 (< N): tracked normally, its colony is pre-existing
         (3, box_image({1: (5, 5, 15, 15)})),
-        # frame 5 (= N): colony 1 is first detected here -> pre-existing
+        # frame 5 (= N): colony 2 is first detected here -> pre-existing
         (5, box_image({1: (5, 5, 15, 15), 2: (20, 20, 30, 30)})),
         # frame 7: colony 3 appears -> new growth
         (7, box_image({1: (5, 5, 15, 15), 2: (20, 20, 30, 30),
@@ -313,11 +313,11 @@ def test_exclude_before_blanks_early_frames_and_flags_pre_existing():
     ]
     res = track_colonies(frames, groups, exclude_before=5)
     assert len(res.labels) == 3  # outputs stay 1:1 with the input frames
-    assert not res.labels[0].any()  # frame 3 (< N): empty label image
+    assert (res.labels[0][5:15, 5:15] == 1).all()  # frame 3 is tracked
     assert (res.labels[1][20:30, 20:30] == 2).all()  # frame 5 tracked normally
-    assert [r["frame"] for r in res.rows] == [5, 5, 7, 7, 7]  # no frame-3 rows
-    assert [r["colony_id"] for r in res.rows] == [1, 2, 1, 2, 3]
-    assert [r["pre_existing"] for r in res.rows] == [1, 1, 1, 1, 0]
+    assert [r["frame"] for r in res.rows] == [3, 5, 5, 7, 7, 7]
+    assert [r["colony_id"] for r in res.rows] == [1, 1, 2, 1, 2, 3]
+    assert [r["pre_existing"] for r in res.rows] == [1, 1, 1, 1, 1, 0]
     assert res.counters["pre_existing_colonies"] == 2
     assert res.counters["colonies"] == 1  # distinct IDs minus pre-existing
 
@@ -331,16 +331,15 @@ def test_exclude_before_needs_no_matching_frame():
     # N = 5 is not among the well's frame numbers: compared directly, no
     # warning, no disabling
     res = track_colonies(frames, groups, exclude_before=5)
-    assert [r["frame"] for r in res.rows] == [7, 7]
-    # first detection (7) is after N: flagged as new growth, rows kept
-    assert [r["pre_existing"] for r in res.rows] == [0, 0]
-    assert res.counters["pre_existing_colonies"] == 0
-    assert res.counters["colonies"] == 2
-    assert not res.labels[0].any()
+    assert [r["frame"] for r in res.rows] == [3, 7, 7]
+    # colony 1 is first detected before N: flagged; colony 2 is new growth
+    assert [r["pre_existing"] for r in res.rows] == [1, 1, 0]
+    assert res.counters["pre_existing_colonies"] == 1
+    assert res.counters["colonies"] == 1
+    assert (res.labels[0][5:15, 5:15] == 1).all()  # frame 3 is tracked
 
 
 def test_empty_reference_produces_nothing_but_keeps_the_frame_count():
-    groups = one_group()
     frames = [(1, box_image({1: (5, 5, 15, 15)})), (2, box_image({1: (5, 5, 15, 15)}))]
     for ref in (None, np.zeros((40, 40), np.uint32)):
         res = track_colonies(frames, ref)

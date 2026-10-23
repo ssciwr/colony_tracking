@@ -610,6 +610,62 @@ def test_growth_rates_single_valid_frame_gets_nan(tmp_path):
     assert rate["n_frames"] == 1 and rate["n_frames_valid"] == 1
 
 
+def test_growth_rates_adjacent_two_frame_window_gets_nan(tmp_path):
+    """A two-valid-frame trajectory whose frames are adjacent is a window
+    narrower than the no_growth check's two-image reach — its bare
+    two-point slope cannot be vetted against the growth floor, so all
+    three rate fields come up empty (areas and bounds still kept)."""
+    rows = [_row("-A001", 11, 10 * 3_600_000, 1, 1000),
+            _row("-A001", 12, 11 * 3_600_000, 1, 2400)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    (rate,) = analysis.growth_rates(traj)
+    assert rate["growth_rate_per_h"] is None
+    assert rate["growth_doublings_per_day"] is None
+    assert rate["abs_growth_px_per_h"] is None
+    assert rate["area_first"] == 1000 and rate["area_last"] == 2400
+    assert rate["first_frame"] == 11 and rate["last_frame"] == 12
+    assert rate["n_frames"] == 2 and rate["n_frames_valid"] == 2
+
+
+def test_growth_rates_valid_window_two_apart_fits(tmp_path):
+    """A window exactly two images apart (three frames wide) still fits:
+    two valid frames separated by one missing frame span the minimum the
+    no_growth comparison can vet, so the two-point slope over the gap is
+    kept."""
+    rows = [_row("-A001", 11, 10 * 3_600_000, 1, 1000),
+            _row("-A001", 13, 12 * 3_600_000, 1, 2400)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    (rate,) = analysis.growth_rates(traj)
+    k = np.log(2400 / 1000) / 2  # two-point slope over 2 h
+    assert rate["growth_rate_per_h"] == round(k, 5)
+    assert rate["growth_doublings_per_day"] == round(k * 24 / np.log(2), 3)
+    assert rate["abs_growth_px_per_h"] == round((2400 - 1000) / 2, 1)
+    assert rate["first_frame"] == 11 and rate["last_frame"] == 13
+
+
+def test_growth_rates_valid_window_narrowed_by_rim_exclusion(tmp_path):
+    """Rim exclusion can narrow a colony's valid window below the minimum
+    even though the colony saw many frames: the truncated window (here two
+    adjacent frames) gets no rates either."""
+    well = "-A001"
+    rows = [_row(well, f, (f - 1) * 3_600_000, 1, int(100 * 1.35 ** (f - 3)))
+            for f in range(3, 9)]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    for r in traj:  # simulate exclusion: only frames 4 and 5 stay valid
+        if r["frame"] <= 3 or r["frame"] >= 6:
+            r["rim_excluded"] = 1
+    (rate,) = analysis.growth_rates(traj)
+    assert rate["growth_rate_per_h"] is None
+    assert rate["growth_doublings_per_day"] is None
+    assert rate["abs_growth_px_per_h"] is None
+    assert rate["rim_excluded_frame"] == 3
+    assert rate["first_frame"] == 4 and rate["last_frame"] == 5
+    assert rate["n_frames"] == 6 and rate["n_frames_valid"] == 2
+
+
 def test_growth_rates_uses_valid_frames_only(tmp_path):
     """Rim-excluded frames leave the fit and the area bounds; the first
     rim-excluded frame is reported in rim_excluded_frame."""

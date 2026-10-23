@@ -90,11 +90,16 @@ clearly darker than the well interior (below ``PRE_EXISTING_DARK_FRAC``
 = 0.5× its median) flags the colony pre-existing. Either way the flag marks
 the colony pre-existing on all its rows.
 
-**Growth rates.** Over a colony's valid (not rim-excluded) frames with ≥ 2
-points and positive area: specific rate = least-squares slope of ln(area) vs
-hours (h⁻¹); doublings/day = slope × 24 / ln 2; absolute growth =
-(last − first) valid area over elapsed time (px/h). Colonies with a single
-valid frame get NaN rates (areas stay in the trajectories).
+**Growth rates.** Over a colony's valid (not rim-excluded) frames with
+positive area, and only when the window is at least three frames wide —
+first to last valid frame ≥ 2 images apart, the same window the per-frame
+`no_growth` comparison needs to say anything: specific rate = least-squares
+slope of ln(area) vs hours (h⁻¹); doublings/day = slope × 24 / ln 2;
+absolute growth = (last − first) valid area over elapsed time (px/h).
+Narrower windows — a single valid frame, or two adjacent frames, whose
+bare two-point slope cannot be vetted against the growth floor — get NaN
+rates (areas stay in the trajectories; the rate aggregates and plots skip
+the colony).
 
 **Plots.** Growth curves (individual trajectories, absolute and relative
 time, coloured by ancestor count); mean area per ancestor group (buckets with
@@ -628,14 +633,19 @@ def growth_rates(traj):
     """Per-colony growth statistics over the valid (not rim-excluded) frames.
 
     - specific rate: least-squares slope of ln(area) vs hours over the valid
-      frames with positive area (>= 2 frames, dt > 0), reported as h^-1 and
+      frames with positive area (dt > 0), reported as h^-1 and
       doublings/day;
     - absolute growth: (last - first) valid area per hour, px/h;
     - ``rim_excluded_frame``: first frame with rim_excluded=1, empty if never.
-    Colonies with a single valid frame get NaN rates (they still carry their
-    areas in trajectories.csv). Bad segments and pre-existing segments keep
-    their rows, flagged ``bad``/``bad_reason`` and ``pre_existing``; the
-    aggregates and plots skip both.
+    The rates are computed only over a window at least three frames wide
+    (first to last valid frame >= 2 images apart) — the same window the
+    per-frame ``no_growth`` comparison needs to say anything — and anything
+    narrower (a single valid frame, or two adjacent frames, whose bare
+    two-point slope cannot be vetted against the growth floor) gets NaN
+    rates (the colony still carries its areas in trajectories.csv and is
+    skipped by the aggregates and plots). Bad segments and pre-existing
+    segments keep their rows, flagged ``bad``/``bad_reason`` and
+    ``pre_existing``; the aggregates and plots skip both.
     """
     per_colony = {}
     for r in traj:
@@ -659,7 +669,7 @@ def growth_rates(traj):
             "pre_existing": crows[0]["pre_existing"],
         }
         rate = abs_rate = None
-        if len(valid) >= 2:
+        if len(valid) >= 2 and valid[-1]["frame"] - valid[0]["frame"] >= 2:
             t = np.array([r["t_hours"] for r in valid])
             a = np.array([r["area_px"] for r in valid], dtype=float)
             if t[-1] > t[0] and (a > 0).all():

@@ -118,8 +118,14 @@ any other (nothing is blanked).
 ## Analysis
 
 **growth rate** — The per-colony rates over its valid (not rim-excluded)
-frames: the exponential rate (least-squares slope of ln(area) vs hours, and
-doublings per day) and the absolute growth (px/h).
+frames, computed only when the window is at least three frames wide
+(first to last valid frame ≥ 2 images apart — the same window the
+per-frame `no_growth` comparison needs; a bare two-point slope cannot be
+vetted against the growth floor): the exponential rate (least-squares
+slope of ln(area) vs hours, and doublings per day) and the absolute
+growth (px/h). Narrower-window colonies (single valid frame, two adjacent
+frames) get blank rate cells and are skipped by the pooled aggregates and
+plots.
 
 **pooled** — Cross-well statistics grouped by ancestor count: pooled area
 statistics per (frame, ancestors) and pooled rate statistics per

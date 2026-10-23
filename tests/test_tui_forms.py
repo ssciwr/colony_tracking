@@ -6,9 +6,9 @@ text parses back into the plain draft values (paths as strings, tuples as
 lists, numbers as numbers); blank input means "unset" (the key clears, the
 default applies at resolve time); text that does not parse marks the field
 invalid inline and the draft keeps the key's last valid value. The
-Select/tuple kinds the three pipeline stages don't exercise (their only
-Literal field is pipeline-owned) are covered with a stand-in dataclass
-shaped like a future stage's.
+Select/tuple kinds the forms machinery needs beyond the three stages'
+fields are covered with a stand-in dataclass shaped like a future
+stage's.
 """
 
 import asyncio

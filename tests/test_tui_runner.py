@@ -3,8 +3,11 @@
 Seams under test:
 
 - ``runner.start`` calls the in-process ``run_*`` functions (monkeypatched
-  here — the suite is hermetic, no data/GPU) with the resolved stage
-  options the pipeline's wiring would give them, one run at a time;
+  here — the suite is hermetic, no data/GPU) with each run type's own
+  resolved config — a stage kind the stage's own ``Options`` instance the
+  caller hands it (independent configs: nothing is derived from another
+  run type), the ``pipeline`` kind the chain's ``PipelineConfig`` — and
+  the handle carries that config back, one run at a time;
 - log records route from the package logger to the run's ``on_record``,
   via ``call_from_thread`` onto the UI thread when a textual app drives
   the run, and the handler is detached (exactly what was attached) when
@@ -13,7 +16,8 @@ Seams under test:
   reported through ``on_done`` without killing anything;
 - the app skeleton launches headlessly (textual's ``Pilot``): the home
   screen first, the menu navigates into the registered screens and back,
-  and the planned Train entry is disabled.
+  the app holds one independent draft per run type, and the planned
+  Train entry is disabled.
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` — the suite has no
 async test plugin, and this keeps the tests dependency-free.
@@ -33,17 +37,20 @@ from textual.widgets import Input, OptionList
 import colony_tracking.cli as cli
 import colony_tracking.tui.runner as runner
 from colony_tracking import (
+    AnalysisOptions,
     AnalysisSummary,
+    DifferenceOptions,
     DifferenceSummary,
     PipelineConfig,
     PipelineSummary,
+    SegmentationOptions,
     SegmentationSummary,
     log,
 )
 from colony_tracking.difference import WellResult
 from colony_tracking.tui import _configure_logging, run_tui
 from colony_tracking.tui.app import ColonyTuiApp
-from colony_tracking.tui.draft import ConfigDraft
+from colony_tracking.tui.draft import RUN_TYPES, ConfigDraft
 from colony_tracking.tui.screens.home import HomeScreen
 
 #: How long a test waits for a (fake, fast) run to finish.
@@ -70,21 +77,42 @@ def _config(tmp_path: Path) -> PipelineConfig:
     )
 
 
+def _diff_options(tmp_path: Path) -> DifferenceOptions:
+    """A minimal resolved difference stage config (its own)."""
+    return DifferenceOptions(
+        raw_dir=tmp_path / "raw",
+        out_dir=tmp_path / "out" / "diff",
+    )
+
+
+def _seg_options(tmp_path: Path) -> SegmentationOptions:
+    """A minimal resolved segmentation stage config (its own)."""
+    return SegmentationOptions(out_dir=tmp_path / "out" / "segmentation")
+
+
+def _ana_options(tmp_path: Path) -> AnalysisOptions:
+    """A minimal resolved analysis stage config (its own)."""
+    return AnalysisOptions(
+        seg_dirs=[tmp_path / "out" / "segmentation"],
+        raw_dir=tmp_path / "raw",
+        out_root=tmp_path / "analysis",
+    )
+
+
 def _diff_summary(failed: int = 0) -> DifferenceSummary:
     return DifferenceSummary(wells={}, processed=1, skipped=0, failed=failed)
 
 
-# --- start: kinds and wiring ------------------------------------------------------
+# --- start: kinds and their own configs --------------------------------------------
 
 
 @pytest.mark.parametrize("kind", list(runner.KINDS))
-def test_start_runs_the_kind_on_the_resolved_config(monkeypatch, tmp_path, kind):
-    config = _config(tmp_path)
+def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
     expected_arg = {
-        "difference": config.difference,
-        "segmentation": config.segmentation,
-        "analysis": config.analysis,
-        "pipeline": config,
+        "difference": _diff_options(tmp_path),
+        "segmentation": _seg_options(tmp_path),
+        "analysis": _ana_options(tmp_path),
+        "pipeline": _config(tmp_path),
     }[kind]
     summaries = {
         "difference": _diff_summary(),
@@ -94,19 +122,20 @@ def test_start_runs_the_kind_on_the_resolved_config(monkeypatch, tmp_path, kind)
     }
     calls = []
 
-    def fake(options):
-        calls.append(options)
+    def fake(config):
+        calls.append(config)
         return summaries[kind]
 
     monkeypatch.setattr(runner, _RUN_FUNCTION[kind], fake)
     done = []
-    handle = runner.start(kind, config, on_done=done.append)
+    handle = runner.start(kind, expected_arg, on_done=done.append)
 
     assert handle.done.wait(_TIMEOUT)
     assert calls == [expected_arg]
-    if kind == "segmentation":  # the wiring a pipeline run would use
-        assert expected_arg.input == "diff"
-        assert expected_arg.diff_dir == config.difference.out_dir
+    # Independent configs: each stage kind receives the exact resolved
+    # options the caller handed it — nothing derived from another run
+    # type's config — and the handle carries it for the UI.
+    assert handle.config is expected_arg
     assert handle.summary == summaries[kind]
     assert handle.error is None
     assert not handle.failed
@@ -123,7 +152,7 @@ def test_unknown_kind_is_rejected(tmp_path):
 
 
 def test_second_start_while_a_run_is_active_is_rejected(monkeypatch, tmp_path):
-    config = _config(tmp_path)
+    config = _diff_options(tmp_path)
     release = threading.Event()
 
     def slow(options):
@@ -135,7 +164,7 @@ def test_second_start_while_a_run_is_active_is_rejected(monkeypatch, tmp_path):
 
     assert runner.active() is handle
     with pytest.raises(RuntimeError, match="already active"):
-        runner.start("segmentation", config, on_done=lambda h: None)
+        runner.start("segmentation", _seg_options(tmp_path), on_done=lambda h: None)
 
     release.set()
     assert handle.done.wait(_TIMEOUT)
@@ -155,7 +184,7 @@ def test_a_stage_exception_is_caught_and_reported(monkeypatch, tmp_path, caplog)
 
     monkeypatch.setattr(runner, "run_difference", boom)
     done = []
-    handle = runner.start("difference", _config(tmp_path), on_done=done.append)
+    handle = runner.start("difference", _diff_options(tmp_path), on_done=done.append)
 
     assert handle.done.wait(_TIMEOUT)
     assert isinstance(handle.error, RuntimeError)
@@ -255,7 +284,7 @@ def test_a_failed_summary_is_reported_and_logged_like_the_cli(
     )
     monkeypatch.setattr(runner, "run_difference", lambda options: summary)
     done = []
-    handle = runner.start("difference", _config(tmp_path), on_done=done.append)
+    handle = runner.start("difference", _diff_options(tmp_path), on_done=done.append)
 
     assert handle.done.wait(_TIMEOUT)
     assert handle.error is None
@@ -278,7 +307,7 @@ def test_log_records_are_forwarded_only_while_the_run_is_active(monkeypatch, tmp
     idents = []
     handle = runner.start(
         "difference",
-        _config(tmp_path),
+        _diff_options(tmp_path),
         on_done=lambda h: idents.append(threading.get_ident()),
         on_record=records.append,
     )
@@ -299,7 +328,7 @@ def test_runs_never_stack_handlers(monkeypatch, tmp_path):
     for _ in range(2):
         handle = runner.start(
             "difference",
-            _config(tmp_path),
+            _diff_options(tmp_path),
             on_done=lambda h: None,
         )
         assert handle.done.wait(_TIMEOUT)
@@ -320,7 +349,7 @@ def test_through_a_textual_app_callbacks_arrive_on_the_ui_thread(monkeypatch, tm
         async with app.run_test() as pilot:
             handle = runner.start(
                 "difference",
-                _config(tmp_path),
+                _diff_options(tmp_path),
                 on_done=lambda h: delivered.append(threading.get_ident()),
                 on_record=lambda r: records.append(
                     (threading.get_ident(), r.getMessage())
@@ -352,7 +381,14 @@ def test_the_app_launches_and_navigates():
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test() as pilot:
-            assert isinstance(app.draft, ConfigDraft)
+            # One independent draft per run type: a screen edits its own
+            # run type's entry and nothing else's.
+            assert set(app.drafts) == set(RUN_TYPES)
+            assert all(
+                isinstance(draft, ConfigDraft) for draft in app.drafts.values()
+            )
+            assert app.drafts["pipeline"].run_type == "pipeline"
+            assert app.drafts["difference"].run_type == "difference"
             home = app.screen
             assert isinstance(home, HomeScreen)
             menu = home.query_one(OptionList)

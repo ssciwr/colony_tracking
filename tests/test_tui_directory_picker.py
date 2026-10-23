@@ -6,10 +6,13 @@ and the arrow-key field walk stay field-to-field. The press opens the
 directory-picker modal, textual-fspicker's ``SelectDirectory`` (spec
 addendum decision 6's preferred solution), driven headless here: picking
 a directory writes it into the field's input, and the normal on-change
-flow stores it into the draft — the stage screens' run-level mirrors
-write their ``[pipeline]`` key; cancelling changes nothing.
+flow stores it — on a stage screen into that stage's OWN draft (each run
+type holds an independent config: the chain's ``[pipeline]`` draft is
+untouched, and the stage's pipeline-owned fields pick into the stage's
+own section like every other field); on the config screen and the quick
+start into the chain's pipeline draft. Cancelling changes nothing.
 List-of-path fields (``[analysis].seg_dirs``) keep manual entry, and the
-derived/read-only owned fields render no widgets at all.
+config screen's within-chain owned lines render no widgets at all.
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
 plugin in the dev group; the suite stays dependency-free); assertions run
@@ -40,15 +43,9 @@ from colony_tracking.tui.forms import (
     run_level_specs,
     specs_of,
 )
-from colony_tracking.tui.screens.config import ConfigScreen
+from colony_tracking.tui.screens.config import ConfigScreen, editable_specs
 from colony_tracking.tui.screens.quick_start import QuickStartScreen
-from colony_tracking.tui.screens.stage import (
-    STAGES,
-    StageSpec,
-    StageScreen,
-    editable_specs,
-    mirror_specs,
-)
+from colony_tracking.tui.screens.stage import STAGES, StageSpec, StageScreen
 from textual_fspicker import SelectDirectory
 
 #: How long a test waits for the picker's background directory load.
@@ -137,9 +134,10 @@ async def _pick_subdir(pilot, app: App, target: Path) -> None:
 def test_browse_buttons_follow_the_path_hints_on_every_screen():
     """Every rendered field's browse button matches its hint — single-Path
     hints have one (click-only, labelled like the reset), everything else
-    has none: the config screen's run level and stage sections, the stage
-    screens' mirrors and forms, the quick start's two path fields. The
-    chain-wired owned fields render no widgets, so no button there."""
+    has none: the stage screens' own forms (every field of the dataclass,
+    the pipeline-owned ones included), the config screen's run level and
+    per-stage sections (owned fields excluded — they render as read-only
+    lines, no widgets), and the quick start's two path fields."""
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -166,9 +164,18 @@ def test_browse_buttons_follow_the_path_hints_on_every_screen():
 
             check(config, "pipeline", run_level_specs())
             for stage in STAGES:
+                check(screens[stage], stage, specs_of(STAGES[stage].options))
                 check(config, f"cfg-{stage}", editable_specs(stage))
-                check(screens[stage], f"{stage}-run", mirror_specs(stage))
-                check(screens[stage], stage, editable_specs(stage))
+            # the owned lines show values, not widgets — no browse there
+            for absent in (
+                "#browse-cfg-segmentation-input",
+                "#browse-cfg-segmentation-diff-dir",
+                "#browse-cfg-analysis-raw-dir",
+                "#browse-cfg-difference-raw-dir",
+                "#browse-cfg-difference-reference",
+            ):
+                with pytest.raises(NoMatches):
+                    config.query_one(absent)
             quick = app.screen
             assert isinstance(quick, QuickStartScreen)
             assert isinstance(quick.query_one("#browse-qs-raw-dir"), BrowseButton)
@@ -190,7 +197,7 @@ def test_a_future_stage_gets_browse_buttons_for_its_path_fields(monkeypatch):
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.draft.stages["train"] = {}
+            app.drafts["pipeline"].stages["train"] = {}
             app.push_screen(ConfigScreen())
             await pilot.pause()
             assert isinstance(
@@ -208,7 +215,7 @@ def test_browse_pick_fills_the_input_and_the_draft(tmp_path):
     writes it into the input: the normal change flow stores it in the
     draft and enables the field's reset."""
     (target := tmp_path / "picked").mkdir()
-    draft = ConfigDraft()
+    draft = ConfigDraft("difference")
     draft.set("difference", "out_dir", str(tmp_path))
     form = OptionForm("difference", specs_of(DifferenceOptions), draft)
 
@@ -230,7 +237,7 @@ def test_browse_pick_fills_the_input_and_the_draft(tmp_path):
 def test_browse_cancel_changes_nothing(tmp_path):
     """Escape closes the picker: the input and the draft keep their values,
     no error appears, and the field stays valid."""
-    draft = ConfigDraft()
+    draft = ConfigDraft("difference")
     draft.set("difference", "out_dir", "/kept")
     form = OptionForm("difference", specs_of(DifferenceOptions), draft)
 
@@ -256,15 +263,17 @@ def test_browse_cancel_changes_nothing(tmp_path):
     ("stage", "key"),
     [
         ("difference", "raw_dir"),
-        ("segmentation", "out_root"),
+        ("segmentation", "diff_dir"),
         ("analysis", "raw_dir"),
     ],
 )
-def test_mirror_browse_writes_the_run_level(stage, key, tmp_path):
-    """The stage screens' run-level mirrors browse too: a pick lands in the
-    mirror input and — through the normal change flow — in the
-    ``[pipeline]`` key the mirror names, never in the stage's own
-    section; the picker starts at the mirror's current value."""
+def test_stage_browse_picks_into_the_stages_own_draft(stage, key, tmp_path):
+    """A stage screen's path fields browse into the stage's OWN draft: the
+    pick lands in the field's input and — through the normal change flow —
+    in that run type's section (its pipeline-owned ``diff_dir`` included:
+    on a stage screen everything is ordinary and editable). The picker
+    starts at the field's current value, and the chain's ``[pipeline]``
+    draft stays untouched — each run type holds an independent config."""
     (target := tmp_path / "picked").mkdir()
 
     async def scenario() -> None:
@@ -273,27 +282,28 @@ def test_mirror_browse_writes_the_run_level(stage, key, tmp_path):
             screen = StageScreen(stage)
             app.push_screen(screen)
             await pilot.pause()
-            mirror_id = f"{stage}-run-{kebab(key)}"
-            mirror = screen.mirrors.query_one(f"#{mirror_id}", Input)
-            mirror.value = str(tmp_path)
+            field_id = f"{stage}-{kebab(key)}"
+            field = screen.form.query_one(f"#{field_id}", Input)
+            field.value = str(tmp_path)
             await pilot.pause()
-            await _click(pilot, app, f"#browse-{mirror_id}")
+            await _click(pilot, app, f"#browse-{field_id}")
             assert isinstance(app.screen, SelectDirectory)
             assert app.screen.query_one("DirectoryNavigation").location == tmp_path
             await _pick_subdir(pilot, app, target)
-            assert mirror.value == str(target)
-            assert app.draft.get(RUN_LEVEL, key) == str(target)
-            assert app.draft.stages[stage] == {}
             assert app.screen is screen  # back on the stage screen
+            assert screen.form.query_one(f"#{field_id}", Input).value == str(target)
+            assert app.drafts[stage].get(stage, key) == str(target)
+            # the chain's run level is untouched: the pick went only here
+            assert app.drafts["pipeline"].document() == {"pipeline": {}}
 
     asyncio.run(scenario())
 
 
 def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
     """The quick start's two path fields browse: a pick lands in the input
-    and the draft (the normal change flow), and the gate tracks it —
-    still closed with only the raw directory picked, open once the out
-    root is too; cancelling a later browse changes nothing."""
+    and the chain's pipeline draft (the normal change flow), and the gate
+    tracks it — still closed with only the raw directory picked, open once
+    the out root is too; cancelling a later browse changes nothing."""
     (raw := tmp_path / "raw").mkdir()
     (wells := raw / "wells").mkdir()
 
@@ -312,7 +322,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             quick = app.screen
             assert isinstance(quick, QuickStartScreen)
             assert quick.query_one("#qs-raw-dir", Input).value == str(wells)
-            assert app.draft.get(RUN_LEVEL, "raw_dir") == str(wells)
+            assert app.drafts["pipeline"].get(RUN_LEVEL, "raw_dir") == str(wells)
             assert not quick.gate_open  # the out root is still missing
             # the out root: an empty input starts the picker at the working
             # directory; drive it to the tmp tree and select that
@@ -322,7 +332,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             await pilot.pause()
             assert await pilot.click("#select")
             await pilot.pause()
-            assert app.draft.get(RUN_LEVEL, "out_root") == str(tmp_path)
+            assert app.drafts["pipeline"].get(RUN_LEVEL, "out_root") == str(tmp_path)
             assert quick.gate_open
             # a later browse, cancelled: nothing changes
             await _click(pilot, app, "#browse-qs-out-root")
@@ -330,7 +340,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             await pilot.press("escape")
             await pilot.pause()
             assert isinstance(app.screen, QuickStartScreen)
-            assert app.draft.get(RUN_LEVEL, "out_root") == str(tmp_path)
+            assert app.drafts["pipeline"].get(RUN_LEVEL, "out_root") == str(tmp_path)
 
     asyncio.run(scenario())
 
@@ -352,12 +362,12 @@ def test_browse_buttons_stay_out_of_the_focus_walk():
             assert all(not button.can_focus for button in buttons)
             chain = app.screen.focus_chain
             assert not [w for w in chain if isinstance(w, BrowseButton)]
-            raw_dir = screen.mirrors.query_one("#difference-run-raw-dir", Input)
+            raw_dir = screen.form.query_one("#difference-raw-dir", Input)
             raw_dir.focus()
             await pilot.press("tab")
             await pilot.pause()
-            reference = screen.mirrors.query_one("#difference-run-reference")
-            assert app.focused is reference
+            out_dir = screen.form.query_one("#difference-out-dir", Input)
+            assert app.focused is out_dir
 
     asyncio.run(scenario())
 

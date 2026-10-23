@@ -167,7 +167,7 @@ class LoadConfigDialog(ModalScreen[Path | None]):
 
     def compose(self) -> ComposeResult:
         yield Label(
-            f"Load a {TITLES[self.draft.run_type].lower()} config TOML from:"
+            f"Load the {TITLES[self.draft.run_type].lower()} config TOML from:"
         )
         yield Input(
             placeholder=f"/path/to/{TOML_NAMES[self.draft.run_type]}",

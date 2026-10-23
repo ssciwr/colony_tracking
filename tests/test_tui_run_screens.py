@@ -1,46 +1,53 @@
-"""Tests for the run screens and the full-auto quick start (ticket 03).
+"""Tests for the run screens and the direct-start flows.
 
 Seams under test:
 
-- the quick start's *Run now*: the fields sync into the shared draft, the
-  shared save dialog writes the TOML *before* the run starts (recorded at
-  the mocked ``run_pipeline``'s call time), and the run screen ends with
-  the chain's summaries displayed;
+- the quick start's *Run now* (the whole-chain pipeline flow): the fields
+  sync into the pipeline draft, the shared save dialog writes the
+  ``pipeline.toml`` *before* the run starts (recorded at the mocked
+  ``run_pipeline``'s call time), and the run screen ends with the chain's
+  summaries displayed;
 - the quick start's *Write TOML…*: writes the config, never runs;
 - the quick start's action gate (the stage screens' mechanism): the
   actions stay disabled until the fields sync and the draft resolves —
   the pipeline's exact ``ConfigError`` (or the reference parser's) on the
   status line — and a press on a closed gate writes and runs nothing;
-- the run screen: log records reach the pane while the run is active,
-  the current-stage line comes from the pipeline's structured stage-start
+- the run screen: log records reach the pane while the run is active, the
+  current-stage line comes from the pipeline's structured stage-start
   markers (never parsed log text), the final summary block comes from the
   summary objects, and a failed summary or an exception shows the error
   panel — the app survives every outcome;
-- the direct-start entry points: ``open_stage_run``'s segmentation
-  precondition (the difference tree must exist when the draft has no
-  ``[difference]`` section) and wiring, and the one-run-at-a-time rule
-  reported politely by both layers;
+- the direct-start entry points: ``open_stage_run``'s two checks (the
+  runner's one-at-a-time rule, the stage draft's own ``resolve``), and
+  the absence of every other gate — there is NO cross-run pre-flight: a
+  stage run starts on its independent config as given, and an error the
+  stage itself raises on its inputs surfaces in the run screen's error
+  panel (the config's inputs are the config's own content);
 - one real in-process difference run on a conftest mini plate (the
   un-mocked path), run twice: the re-run resumes via the done marker
   (processed 0, skipped 1).
 
-Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
-plugin in the dev group; the suite stays dependency-free). Assertions on
-widget state run inside the headless session — the screen stack is gone
-once it ends.
+A stage kind's ``RunScreen`` carries the stage's own resolved Options;
+the ``pipeline`` kind the chain's PipelineConfig — the tests pass each
+kind what it runs on. Async ``Pilot`` scenarios run through
+``asyncio.run`` (no async test plugin in the dev group; the suite stays
+dependency-free). Assertions on widget state run inside the headless
+session — the screen stack is gone once it ends.
 """
 
 import asyncio
 import threading
 import time
+import tomllib
 from pathlib import Path
 
 import pytest
 from conftest import DiskSpec, build_mini_plate
-from textual.widgets import Button, Input, RichLog, Static
+from textual.widgets import Button, Input, Static
 
 from colony_tracking import (
     AnalysisSummary,
+    DifferenceOptions,
     DifferenceSummary,
     PipelineConfig,
     PipelineSummary,
@@ -60,9 +67,17 @@ from colony_tracking.tui.screens.run import RunScreen, open_pipeline_run, open_s
 #: How long a test waits for a (fake or small, fast) run to finish.
 _TIMEOUT = 10.0
 
+#: The gate wording each stage draft shows while it is empty (the
+#: ``open_stage_run`` draft check reports these verbatim).
+_MISSING_REQUIRED = {
+    "difference": "missing required key(s): ['raw_dir', 'out_dir']",
+    "segmentation": "missing required key(s): ['out_dir']",
+    "analysis": "missing required key(s): ['seg_dirs', 'raw_dir', 'out_root']",
+}
+
 
 def _config(raw: Path, out: Path) -> PipelineConfig:
-    """A minimal resolved config: the run level only, derived stages."""
+    """A minimal resolved chain config: the run level only, derived stages."""
     return PipelineConfig.from_dict(
         {
             "pipeline": {
@@ -73,12 +88,52 @@ def _config(raw: Path, out: Path) -> PipelineConfig:
     )
 
 
+def _diff_options(raw: Path, out: Path) -> DifferenceOptions:
+    """A stage run's own resolved options: fully explicit, nothing derived."""
+    return DifferenceOptions(raw_dir=raw, out_dir=out)
+
+
 def _draft(raw: Path, out: Path) -> ConfigDraft:
-    """A draft with the run level filled."""
+    """A pipeline draft with the run level filled."""
     draft = ConfigDraft()
     draft.set("pipeline", "raw_dir", raw)
     draft.set("pipeline", "out_root", out)
     return draft
+
+
+def _stage_draft(run_type: str, **values: str) -> ConfigDraft:
+    """A stage draft of ``run_type`` with its own keys filled (the plain
+    strings a form would store)."""
+    draft = ConfigDraft(run_type)
+    for key, value in values.items():
+        draft.set(run_type, key, value)
+    return draft
+
+
+def _mini_plate(raw: Path) -> None:
+    """The one-well mini plate the real difference stage runs on (tiny,
+    deterministic, no ring)."""
+    build_mini_plate(
+        raw,
+        layout="flat",
+        wells=("-A001",),
+        n_frames=2,
+        size=256,
+        noise_sigma=0,
+        rings={"-A001": None},
+        disks={
+            "-A001": [
+                DiskSpec(
+                    "growing",
+                    cy=128.0,
+                    cx=128.0,
+                    r0=20.0,
+                    delta=1024.0,
+                    first_frame=2,
+                )
+            ]
+        },
+    )
 
 
 def _diff_summary() -> DifferenceSummary:
@@ -87,6 +142,8 @@ def _diff_summary() -> DifferenceSummary:
 
 def _log_text(screen: RunScreen) -> str:
     """The run screen's log pane text so far."""
+    from textual.widgets import RichLog
+
     rich_log = screen.query_one("#run-log", RichLog)
     return "\n".join(strip.text for strip in rich_log.lines)
 
@@ -119,7 +176,7 @@ async def _await_done(pilot, screen: RunScreen):
     return handle
 
 
-# --- the quick start: Run now (full-auto) -----------------------------------------
+# --- the quick start: Run now (the chain's full-auto flow) -------------------------
 
 
 def test_quick_start_run_now_writes_the_toml_before_running(monkeypatch, tmp_path):
@@ -322,7 +379,7 @@ def test_quick_start_reports_a_bad_reference(monkeypatch, tmp_path):
                 "number, or LO<nnn>"
             )
             # the other fields kept syncing; the reference key did not
-            assert app.draft.document() == {
+            assert app.drafts["pipeline"].document() == {
                 "pipeline": {"raw_dir": str(tmp_path), "out_root": str(tmp_path)}
             }
             await pilot.click("#qs-run-now")  # disabled: nothing happens
@@ -333,7 +390,7 @@ def test_quick_start_reports_a_bad_reference(monkeypatch, tmp_path):
             screen.query_one("#qs-reference", Input).value = "LO005"
             await pilot.pause()
             assert screen.gate_open
-            assert app.draft.get("pipeline", "reference") == 5
+            assert app.drafts["pipeline"].get("pipeline", "reference") == 5
 
     asyncio.run(scenario())
     assert calls == []
@@ -478,7 +535,8 @@ def test_a_failed_stage_panel_reads_like_the_runners_logged_lines(
 ):
     """Behavior parity: the error panel's failure line is the runner's
     logged ERROR line, verbatim (the shared
-    :func:`~colony_tracking.tui.runner.failed_summary_lines`)."""
+    :func:`~colony_tracking.tui.runner.failed_summary_lines`). A stage
+    run carries the stage's own Options."""
     summary = DifferenceSummary(
         wells={
             "-A001": WellResult(
@@ -499,7 +557,7 @@ def test_a_failed_stage_panel_reads_like_the_runners_logged_lines(
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test() as pilot:
-            app.push_screen(RunScreen("difference", _config(raw, out)))
+            app.push_screen(RunScreen("difference", _diff_options(raw, out)))
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, RunScreen)
@@ -570,7 +628,7 @@ def test_log_records_reach_the_pane_while_the_run_is_active(monkeypatch, tmp_pat
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test() as pilot:
-            app.push_screen(RunScreen("difference", _config(raw, out)))
+            app.push_screen(RunScreen("difference", _diff_options(raw, out)))
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, RunScreen)
@@ -650,32 +708,15 @@ def test_the_status_line_names_the_pipeline_stage_running_now(monkeypatch, tmp_p
 
 def test_single_stage_run_and_restart_resumes_via_done_markers(tmp_path):
     """One real in-process difference run through ``open_stage_run`` (the
-    un-mocked path, on a mini plate), then a restart: the done marker
-    makes the re-run a resume (processed 0, skipped 1)."""
+    un-mocked path, on a mini plate, on the difference draft's own
+    options), then a restart: the done marker makes the re-run a resume
+    (processed 0, skipped 1)."""
     raw = tmp_path / "raw"
-    build_mini_plate(
-        raw,
-        layout="flat",
-        wells=("-A001",),
-        n_frames=2,
-        size=256,
-        noise_sigma=0,
-        rings={"-A001": None},
-        disks={
-            "-A001": [
-                DiskSpec(
-                    "growing",
-                    cy=128.0,
-                    cx=128.0,
-                    r0=20.0,
-                    delta=1024.0,
-                    first_frame=2,
-                )
-            ]
-        },
-    )
-    out = tmp_path / "out"
-    draft = _draft(raw, out)
+    _mini_plate(raw)
+    out_dir = tmp_path / "diff_out"
+    draft = ConfigDraft("difference")
+    draft.set("difference", "raw_dir", raw)
+    draft.set("difference", "out_dir", out_dir)
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -684,6 +725,9 @@ def test_single_stage_run_and_restart_resumes_via_done_markers(tmp_path):
             await pilot.pause()
             dialog = app.screen
             assert isinstance(dialog, SaveConfigDialog)
+            assert dialog.query_one("#toml-path", Input).value == str(
+                tmp_path / "difference.toml"  # <out_dir parent>/difference.toml
+            )
             await pilot.press("enter")
             screen = await _await_run_screen(pilot, app)
             handle = await _await_done(pilot, screen)
@@ -694,15 +738,18 @@ def test_single_stage_run_and_restart_resumes_via_done_markers(tmp_path):
                 0,
                 0,
             )
-            # the wiring run_pipeline would use: the resolved stage options
-            assert handle.config.difference.raw_dir == raw
-            assert handle.config.difference.out_dir == out / "difference"
+            # the stage's own fully-explicit options, exactly as given
+            options = handle.config
+            assert isinstance(options, DifferenceOptions)
+            assert options.raw_dir == raw
+            assert options.out_dir == out_dir
             # the real run's records reached the pane, the TOML round-trips
             assert "-A001" in _log_text(screen)
             assert "finished — ok" in str(
                 screen.query_one("#run-status", Static).render()
             )
-            assert read_config(out / "pipeline.toml") == handle.config
+            with open(tmp_path / "difference.toml", "rb") as file_handle:
+                assert DifferenceOptions.from_dict(tomllib.load(file_handle)) == options
             await pilot.press("escape")
             await pilot.pause()
             # restart: the same draft re-enters the stage as a resume
@@ -721,46 +768,74 @@ def test_single_stage_run_and_restart_resumes_via_done_markers(tmp_path):
     asyncio.run(scenario())
 
 
-def test_segmentation_alone_needs_the_difference_tree(monkeypatch, tmp_path):
-    """Running segmentation from a draft with no [difference] section
-    requires the difference tree to exist — reported before anything is
-    written or started; once it exists, the run goes out with the chain
-    wiring."""
+def test_a_stage_run_starts_on_its_inputs_as_given(monkeypatch, tmp_path):
+    """There is no cross-run pre-flight: a segmentation run with an
+    explicit diff_dir starts whether that directory exists or not — the
+    config's inputs are taken as given. When the stage itself errors on a
+    missing tree, the run screen's error panel shows it and the app
+    survives; with the tree present the same draft runs to its summary.
+    The stage function received exactly the typed options, both times."""
     raw = tmp_path / "raw"
     raw.mkdir()
-    out = tmp_path / "out"
-    draft = _draft(raw, out)
+    diff_dir = tmp_path / "difference"  # does not exist (yet)
+    out_dir = tmp_path / "seg_out"
+    draft = ConfigDraft("segmentation")
+    draft.set("segmentation", "input", "diff")
+    draft.set("segmentation", "diff_dir", diff_dir)
+    draft.set("segmentation", "out_dir", out_dir)
     calls = []
+    outcomes: list[Exception | object] = [FileNotFoundError(
+        "no difference tree at " + str(diff_dir)
+    )]
 
     def fake(options):
         calls.append(options)
-        return SegmentationSummary(wells=1, processed=1, skipped=0, failed=0)
+        outcome = outcomes[0]
+        outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
 
     monkeypatch.setattr(runner, "run_segmentation", fake)
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test() as pilot:
-            message = open_stage_run(app, draft, "segmentation")
-            assert message is not None
-            assert "difference tree" in message
-            await pilot.pause()
-            assert isinstance(app.screen, HomeScreen)  # nothing pushed
-            assert calls == []
-            assert list(tmp_path.rglob("*.toml")) == []
-            # the tree exists now: the run starts, wired like the chain's
-            (out / "difference").mkdir(parents=True)
+            # missing tree: the run still starts (nothing pre-flights it)
             assert open_stage_run(app, draft, "segmentation") is None
             await pilot.pause()
-            assert isinstance(app.screen, SaveConfigDialog)
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            assert dialog.query_one("#toml-path", Input).value == str(
+                tmp_path / "segmentation.toml"  # <out_dir parent>
+            )
             await pilot.press("enter")
             screen = await _await_run_screen(pilot, app)
             handle = await _await_done(pilot, screen)
             (options,) = calls
             assert options.input == "diff"
-            assert options.diff_dir == out / "difference"
-            assert options.out_dir == out / "seg_growth_diff"
-            assert isinstance(handle.summary, SegmentationSummary)
+            assert options.diff_dir == diff_dir  # taken as given
+            assert options.out_dir == out_dir
+            panel = screen.query_one("#run-error", Static)
+            assert panel.display
+            text = str(panel.render())
+            assert "the segmentation run raised FileNotFoundError" in text
+            assert str(diff_dir) in text
+            assert app.screen is screen  # the app survived
+            # the tree exists now: the same draft runs to its summary
+            diff_dir.mkdir()
+            calls.clear()
+            outcomes.append(
+                SegmentationSummary(wells=1, processed=1, skipped=0, failed=0)
+            )
+            assert open_stage_run(app, draft, "segmentation") is None
+            await pilot.pause()
+            await pilot.press("enter")
+            screen = await _await_run_screen(pilot, app)
+            handle = await _await_done(pilot, screen)
+            (options,) = calls
+            assert options.diff_dir == diff_dir
+            assert not screen.query_one("#run-error", Static).display
             assert "processed 1" in str(
                 screen.query_one("#run-summary", Static).render()
             )
@@ -768,10 +843,72 @@ def test_segmentation_alone_needs_the_difference_tree(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
+def test_open_stage_run_reports_the_stages_own_invalid_draft(stage):
+    """The only config check ``open_stage_run`` makes is the draft's own
+    ``resolve``: an empty stage draft reports that run type's exact
+    ConfigError (its required keys, declaration order) — reported in the
+    UI too, and nothing is pushed or written."""
+    raw = tmp_paths()
+    out = tmp_paths()
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test() as pilot:
+            message = open_stage_run(app, ConfigDraft(stage), stage)
+            assert message == _MISSING_REQUIRED[stage]
+            await pilot.pause()
+            assert isinstance(app.screen, HomeScreen)  # nothing pushed
+            assert runner.active() is None
+
+    asyncio.run(scenario())
+    assert list(out.rglob("*.toml")) == []
+
+
+def tmp_paths() -> Path:
+    """A fresh throwaway Path (the wording tests write nothing anywhere)."""
+    import tempfile
+
+    return Path(tempfile.mkdtemp())
+
+
+def test_open_stage_run_declines_while_a_run_is_active(monkeypatch, tmp_path):
+    """The runner's one-at-a-time rule at the stage entry point: with a
+    difference run active, ``open_stage_run`` for segmentation declines —
+    the busy message, reported in the UI, nothing pushed."""
+    raw = tmp_path / "raw"
+    out = tmp_path / "out"
+    release = threading.Event()
+
+    def slow(options):
+        release.wait(_TIMEOUT)
+        return _diff_summary()
+
+    monkeypatch.setattr(runner, "run_difference", slow)
+    first = runner.start("difference", _diff_options(raw, out), on_done=lambda h: None)
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test() as pilot:
+            message = open_stage_run(
+                app, _stage_draft("segmentation", out_dir=str(out / "seg")), "segmentation"
+            )
+            assert message is not None
+            assert "already active" in message
+            await pilot.pause()
+            assert isinstance(app.screen, HomeScreen)  # nothing pushed
+            assert runner.active() is not None
+            assert isinstance(runner.active().config, DifferenceOptions)
+
+    asyncio.run(scenario())
+    release.set()
+    assert first.done.wait(_TIMEOUT)
+
+
 def test_a_second_run_cannot_start_while_one_is_active(monkeypatch, tmp_path):
-    """One run at a time, reported politely at both layers: the entry
-    point declines (nothing pushed, nothing written) and a run screen
-    pushed anyway shows the problem instead of starting."""
+    """One run at a time, reported politely at both layers: the pipeline
+    entry point declines (nothing pushed, nothing written) and a run
+    screen pushed anyway shows the problem instead of starting."""
     raw = tmp_path / "raw"
     raw.mkdir()
     out = tmp_path / "out"
@@ -783,7 +920,7 @@ def test_a_second_run_cannot_start_while_one_is_active(monkeypatch, tmp_path):
         return _diff_summary()
 
     monkeypatch.setattr(runner, "run_difference", slow)
-    first = runner.start("difference", config, on_done=lambda handle: None)
+    first = runner.start("difference", _diff_options(raw, out), on_done=lambda h: None)
 
     async def scenario() -> None:
         app = ColonyTuiApp()

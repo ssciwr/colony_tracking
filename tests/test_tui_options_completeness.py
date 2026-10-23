@@ -1,55 +1,55 @@
-"""Tests for ticket 06: the stage screens' run-level mirrors and the full
-config editor with per-field reset (spec addendum decisions 2 and 5).
+"""Tests for the completeness story: every option visible, editable on
+its own run type (the independent-configs redesign; spec story 36 and
+§2 of the brief).
 
-The mirror split: a stage screen's pipeline-owned fields come in two
-kinds — the run-level mirrors (``[difference].raw_dir``/``reference``,
-``[analysis].raw_dir``, plus ``out_root`` on every stage screen) are
-editable inputs that write the ``[pipeline]`` key they mirror, while the
-chain-wired fields (``[segmentation].input``/``diff_dir``) stay read-only
-derived — so a difference run is startable entirely from its stage
-screen. The config screen shows every option of every section (the run
-level plus each stage's non-owned fields; the owned fields per the mirror
-split), every field with an individual reset-to-default button — enabled
-only while its key is set — and the live effective-TOML preview, all
-registry-driven.
+A run type's config is fully explicit, so its stage screen shows EVERY
+field of its options dataclass as its ordinary widget (a parameterized
+check, nothing excluded). The pipeline chain keeps its sectioned document
+and its config screen: the ``[pipeline]`` run level, one form per stage
+section with the stage's non-owned fields as widgets (each with its own
+reset button — enabled only while its key is set), and the pipeline-owned
+fields shown read-only on the ``wired within the chain:`` lines, every
+entry marked ``(derived)`` — the within-run wiring a chain run is, no
+longer styled as run-level links. The fields that default to a derived
+name still grey that default in their empty inputs (the chain's own
+within-run wiring).
+
+The headline: a difference run starts from its stage screen alone — its
+own raw_dir and out_dir typed, *Run this stage*, the run type's own
+``difference.toml`` suggested and written, the stage's resolved options
+driving the run and nothing derived. Also the config-file doors both
+ways: a written stage TOML loads back into the stage screen's form (and a
+written ``pipeline.toml`` into the config screen's run-level form).
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
 plugin in the dev group; the suite stays dependency-free). Assertions run
 inside the headless session — the app's screen stack is gone once it
-ends. Reset buttons may sit below the test viewport's fold (the config
-screen's sections scroll), so the clicks go through a helper that scrolls
-the button into view first.
+ends. Buttons may sit below the test viewport's fold (the config
+screen's sections scroll), so those clicks go through a helper that
+scrolls the widget into view first.
 """
 
 import asyncio
 import time
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, get_origin
 
 import pytest
 from textual.css.query import NoMatches
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Input, Static
 
 from colony_tracking import DifferenceSummary
-from colony_tracking._options import Options, _union_members
+from colony_tracking._options import DifferenceOptions, Options, _union_members
 from colony_tracking.pipeline import _OWNED, read_config
 from colony_tracking.tui import runner
 from colony_tracking.tui.app import ColonyTuiApp
-from colony_tracking.tui.draft import RUN_LEVEL
 from colony_tracking.tui.forms import kebab, run_level_specs, specs_of
-from colony_tracking.tui.screens._save import SaveConfigDialog
-from colony_tracking.tui.screens.config import ConfigScreen
+from colony_tracking.tui.screens._save import LoadConfigDialog, SaveConfigDialog
+from colony_tracking.tui.screens.config import ConfigScreen, editable_specs
 from colony_tracking.tui.screens.run import RunScreen
-from colony_tracking.tui.screens.stage import (
-    STAGES,
-    StageSpec,
-    StageScreen,
-    editable_specs,
-    mirror_keys,
-    mirror_specs,
-    owned_entries,
-)
+from colony_tracking.tui.screens.stage import STAGES, StageSpec, StageScreen
 
 #: How long a test waits for a (fake) run to finish.
 _TIMEOUT = 10.0
@@ -57,8 +57,7 @@ _TIMEOUT = 10.0
 
 @dataclass(kw_only=True)
 class FutureStageOptions(Options):
-    """A future stage's options (the shape the registry must accommodate):
-    a Literal select and a tuple among the usual kinds."""
+    """A future stage's options (the shape the registry must accommodate)."""
 
     mode: Literal["a", "b"] = field(default="a", metadata={"help": "Mode."})
     shape: tuple[int, int] = field(default=(4, 4), metadata={"help": "Shape."})
@@ -74,6 +73,8 @@ def _expected_widget(hint) -> type:
     if hint is bool:
         return Checkbox
     if get_origin(hint) is Literal:
+        from textual.widgets import Select
+
         return Select
     return Input
 
@@ -116,63 +117,15 @@ async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
     await pilot.pause()
 
 
-# --- the mirror split (registry-driven) ---------------------------------------------
-
-
-def test_mirror_keys_follow_the_owned_run_level_split():
-    """The mirrors are a stage's owned keys that name a run-level field,
-    plus out_root on every stage; the chain-wired fields are the rest."""
-    assert mirror_keys("difference") == ("raw_dir", "reference", "out_root")
-    assert mirror_keys("segmentation") == ("out_root",)
-    assert mirror_keys("analysis") == ("raw_dir", "out_root")
-
-
-def test_mirror_specs_write_the_run_level_and_say_so():
-    """Each mirror spec keeps the run-level field's hint, help, and
-    default (one source with the config screen's run-level form), labels
-    itself ``run-level: ...``, and names its ``[pipeline]`` write target."""
-    specs = mirror_specs("difference")
-    assert [spec.key for spec in specs] == ["raw_dir", "reference", "out_root"]
-    assert [spec.label for spec in specs] == [
-        "run-level: raw dir",
-        "run-level: reference",
-        "run-level: out root",
-    ]
-    assert [spec.writes for spec in specs] == [
-        (RUN_LEVEL, "raw_dir"),
-        (RUN_LEVEL, "reference"),
-        (RUN_LEVEL, "out_root"),
-    ]
-    run_specs = {spec.key: spec for spec in run_level_specs()}
-    for spec in specs:
-        assert spec.hint == run_specs[spec.key].hint, spec.key
-        assert spec.help == run_specs[spec.key].help, spec.key
-
-
-def test_editable_specs_exclude_the_owned_fields():
-    """A stage's editable specs are exactly its non-owned fields — for
-    every registry entry (the chain-wired owned fields are not among
-    them)."""
-    for stage, entry in STAGES.items():
-        keys = [spec.key for spec in editable_specs(stage)]
-        assert not set(keys) & set(_OWNED[stage]), stage
-        expected = [
-            spec.key
-            for spec in specs_of(entry.options)
-            if spec.key not in _OWNED[stage]
-        ]
-        assert keys == expected, stage
-
-
-# --- the stage screens' mirror group -------------------------------------------------
+# --- the stage screens: every field, nothing excluded ---------------------------------
 
 
 @pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
-def test_every_stage_screen_shows_its_mirror_group(stage):
-    """The mirror group sits in the owned/derived section, visually its
-    own: one editable input per mirror key, the group's heading present,
-    and the chain-wired owned fields stay read-only in the derived line
-    (never widgets)."""
+def test_the_stage_screens_show_every_field_of_their_dataclass(stage):
+    """One widget per field of the stage's options dataclass, in
+    declaration order, on the stage's own screen — no owned exclusions, a
+    stage run type's config is fully explicit."""
+    hints = {spec.key: spec.hint for spec in specs_of(STAGES[stage].options)}
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -180,201 +133,13 @@ def test_every_stage_screen_shows_its_mirror_group(stage):
             screen = StageScreen(stage)
             app.push_screen(screen)
             await pilot.pause()
-            assert "run level" in str(
-                app.screen.query_one("#mirror-title", Static).render()
-            )
-            for key in mirror_keys(stage):
-                widget = screen.mirrors.query_one(f"#{stage}-run-{kebab(key)}")
-                assert isinstance(widget, Input), key
-                assert widget.value == ""  # the empty draft mirrors nothing
-            labels = [str(label.render()) for label in screen.mirrors.query(Label)]
-            assert any(label.startswith("run-level: ") for label in labels)
-            mirrors = set(mirror_keys(stage))
-            owned_text = str(app.screen.query_one("#owned-values", Static).render())
-            shown = [
-                key
-                for key, _label, _value in owned_entries(app.draft, stage)
-                if key not in mirrors
-            ]
-            for key in shown:
-                assert kebab(key) in owned_text, key
-                with pytest.raises(NoMatches):
-                    app.screen.query_one(f"#{stage}-{kebab(key)}")
-            if not shown:
-                assert "none" in owned_text
-
-    asyncio.run(scenario())
-
-
-def test_mirror_edits_write_the_run_level_only():
-    """Typing into the difference screen's mirrors updates the
-    ``[pipeline]`` keys — and nothing of the stage section; the reference
-    mirror takes the CLI's LO<nnn> form; invalid mirror text closes the
-    gate and keeps the last valid value."""
-
-    async def scenario() -> None:
-        app = ColonyTuiApp()
-        async with app.run_test(size=(100, 44)) as pilot:
-            screen = StageScreen("difference")
-            app.push_screen(screen)
-            await pilot.pause()
-            raw = screen.mirrors.query_one("#difference-run-raw-dir", Input)
-            out = screen.mirrors.query_one("#difference-run-out-root", Input)
-            reference = screen.mirrors.query_one("#difference-run-reference", Input)
-            raw.focus()
-            await pilot.press(*"/data/raw")
-            out.focus()
-            await pilot.press(*"/data/out")
-            await pilot.pause()
-            assert app.draft.document() == {
-                "pipeline": {"raw_dir": "/data/raw", "out_root": "/data/out"},
-            }
-            assert app.draft.stages["difference"] == {}
-            assert screen.gate_open
-            reference.focus()
-            await pilot.press(*"LO003")
-            await pilot.pause()
-            assert app.draft.get(RUN_LEVEL, "reference") == 3
-            reference.value = "abc"
-            await pilot.pause()
-            assert not screen.gate_open
-            assert (
-                str(app.screen.query_one("#resolve-status", Static).render())
-                == "Fix the marked fields to enable the actions."
-            )
-            assert app.draft.get(RUN_LEVEL, "reference") == 3  # last valid kept
-            reference.value = "2"
-            await pilot.pause()
-            assert screen.gate_open
-            assert app.draft.get(RUN_LEVEL, "reference") == 2
-
-    asyncio.run(scenario())
-
-
-def test_gate_opens_with_only_mirrors_and_the_derived_tracks_them(tmp_path):
-    """The gate opens with only the mirrors filled (they are the
-    pipeline's required run level), and the derived values track mirror
-    edits: the out_dir placeholder here, the segment screen's diff-dir
-    line there."""
-    out = tmp_path / "out"
-
-    async def scenario() -> None:
-        app = ColonyTuiApp()
-        async with app.run_test(size=(100, 44)) as pilot:
-            screen = StageScreen("difference")
-            app.push_screen(screen)
-            await pilot.pause()
-            assert not screen.gate_open
-            mirrors = screen.mirrors
-            mirrors.query_one("#difference-run-raw-dir", Input).value = str(
-                tmp_path / "raw"
-            )
-            await pilot.pause()
-            assert not screen.gate_open  # out_root still missing
-            mirrors.query_one("#difference-run-out-root", Input).value = str(out)
-            await pilot.pause()
-            assert screen.gate_open
-            assert screen.form.query_one(
-                "#difference-out-dir", Input
-            ).placeholder == str(out / "difference")
-            mirrors.query_one("#difference-run-reference", Input).value = "2"
-            await pilot.pause()
-            assert screen.form.query_one(
-                "#difference-out-dir", Input
-            ).placeholder == str(out / "difference_LO002")
-            # the segment screen's derived line tracks the same run level,
-            # and its own out-root mirror moves it
-            segment = StageScreen("segmentation")
-            app.push_screen(segment)
-            await pilot.pause()
-            owned = str(app.screen.query_one("#owned-values", Static).render())
-            assert f"diff-dir = {out / 'difference_LO002'}" in owned
-            segment.mirrors.query_one("#segmentation-run-out-root", Input).value = str(
-                tmp_path / "elsewhere"
-            )
-            await pilot.pause()
-            owned = str(app.screen.query_one("#owned-values", Static).render())
-            assert f"diff-dir = {tmp_path / 'elsewhere' / 'difference_LO002'}" in owned
-
-    asyncio.run(scenario())
-
-
-def test_a_difference_run_starts_from_its_stage_screen_alone(monkeypatch, tmp_path):
-    """The headline: a fresh app, the difference screen only — the mirrors
-    fill the run level, *Run this stage* writes the TOML and runs the
-    stage with the chain's wiring. No other screen is visited."""
-    raw = tmp_path / "raw"
-    raw.mkdir()
-    out = tmp_path / "out"
-    calls: list = []
-
-    def fake_difference(options):
-        calls.append(options)
-        return DifferenceSummary(wells={}, processed=1, skipped=0, failed=0)
-
-    monkeypatch.setattr(runner, "run_difference", fake_difference)
-
-    async def scenario() -> None:
-        app = ColonyTuiApp()
-        async with app.run_test(size=(100, 44)) as pilot:
-            screen = StageScreen("difference")
-            app.push_screen(screen)
-            await pilot.pause()
-            screen.mirrors.query_one("#difference-run-raw-dir", Input).value = str(raw)
-            screen.mirrors.query_one("#difference-run-out-root", Input).value = str(out)
-            await pilot.pause()
-            assert screen.gate_open
-            await pilot.click("#run-stage")
-            await pilot.pause()
-            assert isinstance(app.screen, SaveConfigDialog)
-            await pilot.press("enter")  # the suggested <out_root>/pipeline.toml
-            run_screen = await _await_run_screen(pilot, app)
-            handle = await _await_done(pilot, run_screen)
-            (options,) = calls
-            assert options.raw_dir == raw
-            assert options.out_dir == out / "difference"
-            assert options.reference == "first"
-            assert "finished — ok" in str(
-                run_screen.query_one("#run-status", Static).render()
-            )
-            assert read_config(out / "pipeline.toml") == handle.config
-
-    asyncio.run(scenario())
-
-
-def test_mirrors_prefill_from_the_run_level_and_track_its_edits(tmp_path):
-    """A mirror input shows the run level's current value on entry, and a
-    run-level edit made on the config screen shows up when the stage
-    screen is re-entered."""
-
-    async def scenario() -> None:
-        app = ColonyTuiApp()
-        async with app.run_test(size=(100, 44)) as pilot:
-            app.draft.set(RUN_LEVEL, "raw_dir", "/data/raw")
-            app.draft.set(RUN_LEVEL, "out_root", "/data/out")
-            analysis = StageScreen("analysis")
-            app.push_screen(analysis)
-            await pilot.pause()
-            assert (
-                analysis.mirrors.query_one("#analysis-run-raw-dir", Input).value
-                == "/data/raw"
-            )
-            assert (
-                analysis.mirrors.query_one("#analysis-run-out-root", Input).value
-                == "/data/out"
-            )
-            # the run level edited on the config screen shows on re-entry
-            app.push_screen(ConfigScreen())
-            await pilot.pause()
-            app.screen.query_one("#pipeline-raw-dir", Input).value = "/elsewhere/raw"
-            await pilot.pause()
-            await pilot.click("#back")
-            await pilot.pause()
-            assert app.screen is analysis
-            assert (
-                analysis.mirrors.query_one("#analysis-run-raw-dir", Input).value
-                == "/elsewhere/raw"
-            )
+            shown = {widget.id: type(widget) for widget in screen.form.query(
+                "Input, Select, Checkbox"
+            )}
+            assert shown, stage  # the form rendered
+            assert set(shown) == {f"{stage}-{kebab(key)}" for key in hints}, stage
+            for key, hint in hints.items():
+                assert shown[f"{stage}-{kebab(key)}"] is _expected_widget(hint), key
 
     asyncio.run(scenario())
 
@@ -384,9 +149,9 @@ def test_mirrors_prefill_from_the_run_level_and_track_its_edits(tmp_path):
 
 def test_the_config_screen_renders_every_field_of_every_section():
     """Every option is on screen: the run level's four inputs; per stage
-    section its editable fields as widgets (each with its reset button)
-    and its owned fields in the derived line — mirrors marked run-level,
-    chain-wired marked derived."""
+    section its non-owned fields as widgets (each with its reset button)
+    and its owned fields in the ``wired within the chain:`` line — every
+    entry marked ``(derived)`` (no run-level markers any more)."""
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -397,34 +162,179 @@ def test_the_config_screen_renders_every_field_of_every_section():
             for key in ("raw_dir", "out_root", "reference", "wells"):
                 assert isinstance(
                     screen.form.query_one(f"#pipeline-{kebab(key)}"), Input
-                )
+                ), key
                 assert app.screen.query_one(f"#reset-pipeline-{kebab(key)}", Button)
             for stage, entry in STAGES.items():
                 assert app.screen.query_one(f"#{stage}-section-title", Static)
                 owned_text = str(
                     app.screen.query_one(f"#owned-{stage}", Static).render()
                 )
+                assert owned_text.startswith("wired within the chain:")
                 form = screen.stage_forms[stage]
-                mirrors = set(mirror_keys(stage))
                 for spec in specs_of(entry.options):
                     reset_id = f"#reset-cfg-{stage}-{kebab(spec.key)}"
                     if spec.key in _OWNED[stage]:
-                        marker = "run-level" if spec.key in mirrors else "derived"
-                        assert f"{kebab(spec.key)} ({marker})" in owned_text, (
+                        assert f"{kebab(spec.key)} (derived)" in owned_text, (
                             stage,
                             spec.key,
                         )
+                        # read-only on this screen: no widget of its own
+                        with pytest.raises(NoMatches):
+                            form.query_one(f"#cfg-{stage}-{kebab(spec.key)}")
                     else:
-                        widget_id = f"#cfg-{stage}-{kebab(spec.key)}"
-                        widget = form.query_one(widget_id)
+                        widget = form.query_one(f"#cfg-{stage}-{kebab(spec.key)}")
                         assert type(widget) is _expected_widget(spec.hint), spec.key
                         assert app.screen.query_one(reset_id, Button)
-                label_texts = [str(label.render()) for label in form.query(Label)]
+                label_texts = [str(label.render()) for label in form.query(Static)]
                 for spec in editable_specs(stage):
                     if spec.hint is not bool:  # a checkbox labels itself
                         assert kebab(spec.key) in label_texts, (stage, spec.key)
 
     asyncio.run(scenario())
+
+
+def test_the_owned_lines_derive_from_the_pipeline_draft_alone():
+    """The owned lines' values are the chain's derivation from the
+    pipeline draft's run level and the chain wiring — read-only, marked
+    ``(derived)``, never widget-editable on this screen; nothing is taken
+    from another run type's configuration or outputs."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        draft = app.drafts["pipeline"]
+        draft.set("pipeline", "raw_dir", "/data/raw")
+        draft.set("pipeline", "out_root", "/data/out")
+        draft.set("pipeline", "reference", 3)
+        draft.set("difference", "out_dir", "/data/out/diff_tree")
+        async with app.run_test(size=(100, 60)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            lines = {
+                stage: str(app.screen.query_one(f"#owned-{stage}", Static).render())
+                for stage in STAGES
+            }
+            assert (
+                "raw-dir (derived) = /data/raw  reference (derived) = 3"
+                in lines["difference"]
+            )
+            assert (
+                "input (derived) = diff  diff-dir (derived) = /data/out/diff_tree"
+            ) in lines["segmentation"]
+            assert "raw-dir (derived) = /data/raw" in lines["analysis"]
+            for text in lines.values():
+                assert "(run-level)" not in text  # the old marker is gone
+            preview = str(app.screen.query_one("#toml-preview", Static).render())
+            assert "[pipeline]" in preview
+            assert 'raw_dir = "/data/raw"' in preview
+
+    asyncio.run(scenario())
+
+
+def test_derived_defaults_show_as_placeholders(tmp_path):
+    """The config screen's fields that default to a derived name grey the
+    derived default in their empty input — the chain's tree names for the
+    out root. The stage screens show no such greys (a stage run type
+    derives nothing)."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        draft = app.drafts["pipeline"]
+        draft.set("pipeline", "raw_dir", tmp_path / "raw")
+        draft.set("pipeline", "out_root", tmp_path / "out")
+        draft.set("pipeline", "reference", 2)
+        async with app.run_test(size=(100, 60)) as pilot:
+            app.push_screen(ConfigScreen())
+            await pilot.pause()
+            screen = app.screen
+            out_root = tmp_path / "out"
+            assert (
+                screen.stage_forms["difference"]
+                .query_one("#cfg-difference-out-dir", Input)
+                .placeholder
+                == f"{out_root}/difference_LO002"
+            )
+            assert (
+                screen.stage_forms["segmentation"]
+                .query_one("#cfg-segmentation-out-dir", Input)
+                .placeholder
+                == f"{out_root}/seg_growth_diff_LO002"
+            )
+            assert (
+                screen.stage_forms["analysis"]
+                .query_one("#cfg-analysis-seg-dir", Input)
+                .placeholder
+                == f"{out_root}/seg_growth_diff_LO002"
+            )
+            assert (
+                screen.stage_forms["analysis"]
+                .query_one("#cfg-analysis-out-root", Input)
+                .placeholder
+                == f"{out_root}/analysis"
+            )
+
+    asyncio.run(scenario())
+
+
+def test_editable_specs_exclude_the_owned_fields():
+    """The config screen's stage forms are exactly each stage's non-owned
+    fields — for every registry entry (the chain-wired owned fields are
+    not among them; the stage screens do keep them, see the stage-screen
+    module's rendering tests)."""
+    for stage, entry in STAGES.items():
+        keys = [spec.key for spec in editable_specs(stage)]
+        assert not set(keys) & set(_OWNED[stage]), stage
+        expected = [
+            spec.key for spec in specs_of(entry.options) if spec.key not in _OWNED[stage]
+        ]
+        assert keys == expected, stage
+
+
+def test_config_screen_writes_a_config_the_cli_accepts(tmp_path):
+    """Type the whole run level; the preview shows the draft's effective
+    TOML (markup-safe — the section header shows as typed); *Write TOML…*
+    through the dialog writes a file read_config accepts unchanged."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press(*"/raw")  # raw_dir (auto-focused)
+            await pilot.press("tab")
+            await pilot.press(*"/out")  # out_root
+            await pilot.press("tab")
+            await pilot.press(*"2")  # reference
+            await pilot.press("tab")
+            await pilot.press(*"-A001,-B002")  # wells
+            await pilot.pause()
+            draft = app.drafts["pipeline"]
+            assert draft.get("pipeline", "raw_dir") == "/raw"
+            assert draft.get("pipeline", "out_root") == "/out"
+            assert draft.get("pipeline", "reference") == 2
+            assert draft.get("pipeline", "wells") == ["-A001", "-B002"]
+            preview = str(app.screen.query_one("#toml-preview", Static).render())
+            assert "[pipeline]" in preview
+            assert 'raw_dir = "/raw"' in preview
+            assert "reference = 2" in preview
+            assert screen.gate_open
+            path = tmp_path / "run.toml"
+            await pilot.click("#write-toml")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            dialog.query_one("#toml-path", Input).value = str(path)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert path.exists()
+            assert read_config(path) == draft.resolve()
+
+    asyncio.run(scenario())
+
+
+# --- reset buttons (per-field, the config screen's forms) -----------------------------
 
 
 def test_reset_clears_exactly_its_key_and_updates_the_preview():
@@ -436,10 +346,11 @@ def test_reset_clears_exactly_its_key_and_updates_the_preview():
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.draft.set(RUN_LEVEL, "raw_dir", "/data/raw")
-            app.draft.set(RUN_LEVEL, "reference", 2)
-            app.draft.set("difference", "display_percentile", 97.5)
-            app.draft.set("analysis", "rim_width_px", 90)
+            draft = app.drafts["pipeline"]
+            draft.set("pipeline", "raw_dir", "/data/raw")
+            draft.set("pipeline", "reference", 2)
+            draft.set("difference", "display_percentile", 97.5)
+            draft.set("analysis", "rim_width_px", 90)
             screen = ConfigScreen()
             app.push_screen(screen)
             await pilot.pause()
@@ -448,7 +359,7 @@ def test_reset_clears_exactly_its_key_and_updates_the_preview():
             assert "display_percentile = 97.5" in preview
             assert "rim_width_px = 90" in preview
             await _click(pilot, app, "#reset-cfg-analysis-rim-width-px")
-            assert app.draft.document() == {
+            assert draft.document() == {
                 "pipeline": {"raw_dir": "/data/raw", "reference": 2},
                 "difference": {"display_percentile": 97.5},
             }
@@ -463,7 +374,7 @@ def test_reset_clears_exactly_its_key_and_updates_the_preview():
             assert "display_percentile = 97.5" in preview
             # the run-level form resets the same way
             await _click(pilot, app, "#reset-pipeline-reference")
-            assert app.draft.document() == {
+            assert draft.document() == {
                 "pipeline": {"raw_dir": "/data/raw"},
                 "difference": {"display_percentile": 97.5},
             }
@@ -516,7 +427,7 @@ def test_reset_enabled_only_for_set_fields():
             ).disabled
             # a reset returns the field to default and disables its button
             await _click(pilot, app, "#reset-pipeline-raw-dir")
-            assert app.draft.get(RUN_LEVEL, "raw_dir") is None
+            assert app.drafts["pipeline"].get("pipeline", "raw_dir") is None
             assert app.screen.query_one("#reset-pipeline-raw-dir", Button).disabled
 
     asyncio.run(scenario())
@@ -533,21 +444,203 @@ def test_a_future_stage_slots_into_the_config_screen(monkeypatch):
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.draft.stages["train"] = {}
+            app.drafts["pipeline"].stages["train"] = {}
             screen = ConfigScreen()
             app.push_screen(screen)
             await pilot.pause()
             assert app.screen.query_one("#train-section-title", Static)
             form = screen.stage_forms["train"]
-            assert isinstance(form.query_one("#cfg-train-mode"), Select)
+            assert isinstance(form.query_one("#cfg-train-mode"), _expected_widget(
+                FutureStageOptions.__annotations__["mode"]
+            ))
             assert isinstance(form.query_one("#cfg-train-shape"), Input)
             assert isinstance(form.query_one("#cfg-train-label-dir"), Input)
             assert app.screen.query_one("#reset-cfg-train-mode", Button)
             assert "none" in str(app.screen.query_one("#owned-train", Static).render())
-            form.query_one("#cfg-train-mode", Select).value = "b"
+            form.query_one("#cfg-train-mode").value = "b"
             await pilot.pause()
-            assert app.draft.get("train", "mode") == "b"
+            assert app.drafts["pipeline"].get("train", "mode") == "b"
             await _click(pilot, app, "#reset-cfg-train-mode")
-            assert app.draft.get("train", "mode") is None
+            assert app.drafts["pipeline"].get("train", "mode") is None
+
+    asyncio.run(scenario())
+
+
+# --- the headline: a difference run from its stage screen alone ------------------------
+
+
+def test_a_difference_run_starts_from_its_stage_screen_alone(monkeypatch, tmp_path):
+    """The headline: a fresh app, the difference screen only — its OWN
+    raw_dir and out_dir typed (no mirrors, no run level), *Run this
+    stage* writes the draft's own ``difference.toml`` (the save dialog
+    suggests ``<out_dir parent>/difference.toml``) and runs the stage
+    with exactly what was typed. The written file is a difference config
+    (loads through ``DifferenceOptions.from_dict``), not a pipeline.toml;
+    the pipeline draft is untouched."""
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    out_dir = tmp_path / "out" / "difference"
+    calls: list = []
+
+    def fake_difference(options):
+        calls.append(options)
+        return DifferenceSummary(wells={}, processed=1, skipped=0, failed=0)
+
+    monkeypatch.setattr(runner, "run_difference", fake_difference)
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StageScreen("difference")
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.form.query_one("#difference-raw-dir", Input).value = str(raw)
+            screen.form.query_one("#difference-out-dir", Input).value = str(out_dir)
+            await pilot.pause()
+            assert screen.gate_open
+            await pilot.click("#run-stage")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            assert dialog.query_one("#toml-path", Input).value == str(
+                tmp_path / "out" / "difference.toml"
+            )
+            await pilot.press("enter")  # accept the suggested path
+            run_screen = await _await_run_screen(pilot, app)
+            handle = await _await_done(pilot, run_screen)
+            (options,) = calls
+            assert options.raw_dir == raw
+            assert options.out_dir == out_dir
+            assert options.reference == "first"  # nothing derived
+            assert "finished — ok" in str(
+                run_screen.query_one("#run-status", Static).render()
+            )
+            # the written TOML is a flat difference config, not a pipeline one
+            toml_path = tmp_path / "out" / "difference.toml"
+            assert run_screen.toml_path == toml_path
+            with open(toml_path, "rb") as file_handle:
+                file_doc = tomllib.load(file_handle)
+            assert "pipeline" not in file_doc
+            assert "difference" not in file_doc  # flat: fields at the top level
+            assert DifferenceOptions.from_dict(file_doc) == handle.config
+            assert run_screen.config is options  # the dialog's resolved Options
+            # no other run type was touched: the pipeline draft stayed empty
+            assert app.drafts["pipeline"].document() == {"pipeline": {}}
+
+    asyncio.run(scenario())
+
+
+# --- the config-file doors: write, then load back into the forms ------------------------
+
+
+def test_load_toml_restores_a_written_stage_config_into_the_form(tmp_path):
+    """A written stage TOML loads back: *Write TOML…* writes the
+    difference config, an edit moves the form away from it, *Load
+    TOML…* (never gated) replaces the draft with the file's content and
+    the form shows the file's values again."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            draft = app.drafts["difference"]
+            draft.set("difference", "raw_dir", str(tmp_path / "raw"))
+            draft.set("difference", "out_dir", str(tmp_path / "diff"))
+            stage = StageScreen("difference")
+            app.push_screen(stage)
+            await pilot.pause()
+            path = tmp_path / "difference.toml"
+            await pilot.click("#write-toml")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            assert dialog.query_one("#toml-path", Input).value == str(path)
+            await pilot.press("enter")  # write the suggested path
+            await pilot.pause()
+            assert path.exists()
+            assert app.screen is stage
+            # the form moves away from the file: reference 2 while the
+            # file carries the draft's default "first"
+            stage.form.query_one("#difference-reference", Input).value = "2"
+            await pilot.pause()
+            assert draft.get("difference", "reference") == 2
+            with open(path, "rb") as file_handle:
+                file_doc = tomllib.load(file_handle)
+            assert file_doc["reference"] == "first"
+            # *Load TOML…* replaces the draft with the file's content
+            await pilot.click("#load-toml")
+            await pilot.pause()
+            loader = app.screen
+            assert isinstance(loader, LoadConfigDialog)
+            assert loader.query_one("#toml-path", Input).placeholder == (
+                "/path/to/difference.toml"
+            )
+            loader.query_one("#toml-path", Input).value = str(path)
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is stage  # the dialog dismissed back to it
+            assert draft.document() == file_doc  # a load resets, never merges
+            assert stage.form.query_one("#difference-reference", Input).value == (
+                "first"
+            )
+            assert stage.gate_open  # the loaded file was self-contained
+
+    asyncio.run(scenario())
+
+
+def test_load_toml_restores_a_written_pipeline_config_into_the_run_level(tmp_path):
+    """The config screen's load door with the pipeline's own file: the
+    run level written via the save dialog, one field blanked, *Load
+    TOML…* refills the run-level form from the file (the draft resets to
+    the file's content)."""
+    path = tmp_path / "pipeline.toml"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 60)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.form.query_one("#pipeline-raw-dir", Input).value = str(
+                tmp_path / "raw"
+            )
+            screen.form.query_one("#pipeline-out-root", Input).value = str(
+                tmp_path / "out"
+            )
+            await pilot.pause()
+            await _click(pilot, app, "#write-toml")
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            dialog.query_one("#toml-path", Input).value = str(path)
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert path.exists()
+            assert app.screen is screen
+            # blank a field (the gate closes), then load the file back
+            screen.form.query_one("#pipeline-raw-dir", Input).value = ""
+            await pilot.pause()
+            assert not screen.gate_open
+            await _click(pilot, app, "#load-toml")  # loading is never gated
+            loader = app.screen
+            assert isinstance(loader, LoadConfigDialog)
+            assert loader.query_one("#toml-path", Input).placeholder == (
+                "/path/to/pipeline.toml"
+            )
+            loader.query_one("#toml-path", Input).value = str(path)
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is screen
+            assert screen.form.query_one(
+                "#pipeline-raw-dir", Input
+            ).value == str(tmp_path / "raw")
+            assert screen.gate_open  # the file's run level is complete again
+            draft = app.drafts["pipeline"]
+            assert draft.get("pipeline", "raw_dir") == str(tmp_path / "raw")
+            with open(path, "rb") as file_handle:
+                file_doc = tomllib.load(file_handle)
+            assert draft.get("pipeline", "out_root") == file_doc["pipeline"]["out_root"]
 
     asyncio.run(scenario())

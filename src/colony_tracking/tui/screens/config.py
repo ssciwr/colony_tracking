@@ -78,8 +78,19 @@ def _shown(value: object) -> str:
 def owned_entries(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str, str], ...]:
     """The owned fields of ``stage`` with the values the chain derives
     for them, as ``(key, kebab label, value text)`` triples in the
-    options dataclass's declaration order (see :func:`owned_values` for
-    what the derivation is)."""
+    options dataclass's declaration order — this screen shows every
+    entry read-only; the stage screens need none of it.
+
+    The values are the derivation ``PipelineConfig.resolve_stages``
+    performs for one chain run: the raw dir and the reference from
+    ``[pipeline]``, the segment input forced to ``diff``, and the
+    difference tree behind the segment stage's ``diff_dir`` (the
+    difference section's own ``out_dir`` when set, else the derived
+    tree name). A value that cannot be derived yet shows as ``—``. The
+    owned keys come from the registry entry's dataclass and
+    :data:`~colony_tracking.pipeline._OWNED` — a future stage without
+    owned fields contributes nothing.
+    """
     owned = _OWNED.get(stage, frozenset())
     keys = [spec.key for spec in specs_of(STAGES[stage].options) if spec.key in owned]
     raw = draft.get(RUN_LEVEL, "raw_dir")
@@ -99,25 +110,6 @@ def owned_entries(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str, str],
         ("analysis", "raw_dir"): _shown(raw),
     }
     return tuple((key, kebab(key), shown.get((stage, key), "—")) for key in keys)
-
-
-def owned_values(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str], ...]:
-    """Every owned field of ``stage`` with the value the chain derives
-    for it, as ``(kebab label, value text)`` pairs in the options
-    dataclass's declaration order — this screen shows every entry
-    read-only; the stage screens need none of it.
-
-    The values are the derivation ``PipelineConfig.resolve_stages``
-    performs for one chain run: the raw dir and the reference from
-    ``[pipeline]``, the segment input forced to ``diff``, and the
-    difference tree behind the segment stage's ``diff_dir`` (the
-    difference section's own ``out_dir`` when set, else the derived tree
-    name). A value that cannot be derived yet shows as ``—``. The owned
-    keys come from the registry entry's dataclass and
-    :data:`~colony_tracking.pipeline._OWNED` — a future stage without
-    owned fields contributes nothing.
-    """
-    return tuple((label, value) for _key, label, value in owned_entries(draft, stage))
 
 
 def editable_specs(stage: str) -> tuple[FieldSpec, ...]:

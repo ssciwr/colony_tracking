@@ -264,8 +264,9 @@ choice lands in the field like typed text.
 Each run type is a decision point: after its options are filled, either
 *Write TOML…* or a direct start — and a direct start writes that run
 type's own TOML first, so every run is reproducible from its config
-file. A stage screen suggests its config beside the stage's own output
-directory (`<out-dir>/difference.toml`); the chain suggests
+file. A stage screen suggests its config beside the stage's output
+tree (`<out-dir's parent>/difference.toml`; analysis, which writes into
+an out root, suggests `<out-root>/analysis.toml`); the chain suggests
 `<out-root>/pipeline.toml`. *Load TOML…* reads a run type's config back
 into its screens (a load resets, it never merges). Config-only mode is
 the same flow without a run: fill what you need, *Write TOML…*, quit,

@@ -94,7 +94,12 @@ from textual.widgets import (
 )
 from textual_fspicker import SelectDirectory
 
-from .._options import Reference, _union_members, parse_reference
+from .._options import (
+    Options,
+    Reference,
+    _union_members,
+    parse_reference,
+)
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
 from .draft import ConfigDraft
 from .screens._save import SaveConfigDialog
@@ -918,7 +923,7 @@ class FormScreen(Screen[None]):
         (wrapping; :func:`focus_field` rules)."""
         focus_field(self._field_widgets(), False)
 
-    def _resolved_or_report(self) -> PipelineConfig | None:
+    def _resolved_or_report(self) -> PipelineConfig | Options | None:
         """The draft's resolved config, or ``None`` after showing why not
         (a defensive re-check at press time; the gate normally guarantees
         this succeeds)."""

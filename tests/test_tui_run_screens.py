@@ -844,13 +844,12 @@ def test_a_stage_run_starts_on_its_inputs_as_given(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
-def test_open_stage_run_reports_the_stages_own_invalid_draft(stage):
+def test_open_stage_run_reports_the_stages_own_invalid_draft(stage, tmp_path):
     """The only config check ``open_stage_run`` makes is the draft's own
     ``resolve``: an empty stage draft reports that run type's exact
     ConfigError (its required keys, declaration order) — reported in the
     UI too, and nothing is pushed or written."""
-    raw = tmp_paths()
-    out = tmp_paths()
+    out = tmp_path / "out"
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -862,14 +861,9 @@ def test_open_stage_run_reports_the_stages_own_invalid_draft(stage):
             assert runner.active() is None
 
     asyncio.run(scenario())
-    assert list(out.rglob("*.toml")) == []
-
-
-def tmp_paths() -> Path:
-    """A fresh throwaway Path (the wording tests write nothing anywhere)."""
-    import tempfile
-
-    return Path(tempfile.mkdtemp())
+    assert not (out / "pipeline.toml").exists()
+    assert not (out / f"{stage}.toml").exists()
+    assert list(tmp_path.rglob("*.toml")) == []
 
 
 def test_open_stage_run_declines_while_a_run_is_active(monkeypatch, tmp_path):

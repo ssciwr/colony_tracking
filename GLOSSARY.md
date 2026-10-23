@@ -95,8 +95,9 @@ in `well_geometry.csv`), the anchor of rim exclusion.
 colonies only grow into the rim.
 
 **bad segment** — A colony flagged `from_start` (first valid frame within
-`start_frames` of the series start) or `no_growth` (every exact 2-frame
-window grows by less than `1 + min_growth_2step`).
+`start_frames` of the series start) or `no_growth` (any valid frame,
+compared to the earliest valid frame ≥ 2 images ahead, growing by
+`min_growth_per_frame` or less per image).
 
 **bad well** — A well with ≥ `max_bad_segments` distinct bad colonies;
 excluded from aggregates and plots unless `keep_bad_wells`.

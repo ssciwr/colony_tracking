@@ -204,7 +204,9 @@ def test_rim_exclusion_monotone_from_right_frame(tmp_path):
 
 def test_bad_flags(tmp_path):
     """from_start (first valid frame at the series start) and no_growth
-    (every 2-frame window grows < 1.3) are flagged; a clean grower is not."""
+    (any per-image comparison of a valid frame to the earliest valid frame
+    >= 2 images ahead at or below min_growth_per_frame) are flagged; a
+    clean grower is not."""
     well = "-A001"
     rows = []
     # colony 1: present from frame 1 (series start), growing 1.25/frame
@@ -249,6 +251,75 @@ def test_pre_existing_colonies_are_never_bad(tmp_path):
         by_cid.setdefault(r["colony_id"], []).append(r)
     assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[1])
     assert all(r["pre_existing"] == 1 for r in by_cid[1])
+    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
+
+
+def test_no_growth_per_frame_comparisons(tmp_path):
+    """The per-frame no_growth criterion: each valid frame is compared once,
+    to the earliest valid frame at least 2 images ahead, and any comparison
+    growing by min_growth_per_frame (0.1) or less per image flags the
+    colony."""
+    well = "-A001"
+    rows = []
+    # colony 1: sparse partial detections far apart and shrinking (the
+    # -B001-style artifact): 4784 px at frame 12 -> 2400 px at frame 19;
+    # per image ((2400 - 4784) / 4784) / 7 < 0 -> no_growth
+    rows.append(_row(well, 12, 11 * 3_600_000, 1, 4784))
+    rows.append(_row(well, 19, 18 * 3_600_000, 1, 2400))
+    # colony 2: the same shrink across two adjacent frames -> nothing to
+    # compare (span < 2 images), exempt
+    rows.append(_row(well, 12, 11 * 3_600_000, 2, 4784))
+    rows.append(_row(well, 13, 12 * 3_600_000, 2, 2400))
+    # colony 3: sparse slow grower, 10% over 5 images -> 0.02 per image,
+    # below the minimum
+    rows.append(_row(well, 5, 4 * 3_600_000, 3, 1000))
+    rows.append(_row(well, 10, 9 * 3_600_000, 3, 1100))
+    # colony 4: fast then plateau: the plateau pair (frame 5 -> 7) grows
+    # (620 - 529) / 529 / 2 ~ 0.086 per image, below the minimum; the early
+    # pairs alone would pass (old rule: at least one window passes)
+    for f, area in ((3, 100), (4, 230), (5, 529), (6, 550), (7, 620)):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 4, area))
+    # colony 5: healthy exponential grower, 1.35 per frame: every
+    # comparison grows (1.35^2 - 1) / 2 ~ 0.41 per image
+    for f in range(3, 9):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 5,
+                         int(100 * 1.35 ** (f - 3))))
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    by_cid = {}
+    for r in traj:
+        by_cid.setdefault(r["colony_id"], []).append(r)
+    assert {r["bad_reason"] for r in by_cid[1]} == {"no_growth"}
+    assert all(r["bad"] == 1 for r in by_cid[1])
+    assert {r["bad_reason"] for r in by_cid[2]} == {""}
+    assert all(r["bad"] == 0 for r in by_cid[2])
+    assert {r["bad_reason"] for r in by_cid[3]} == {"no_growth"}
+    assert {r["bad_reason"] for r in by_cid[4]} == {"no_growth"}
+    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[5])
+
+
+def test_no_growth_gap_span_normalized(tmp_path):
+    """A gap-spanning comparison is normalized by the image count: the same
+    jump spread over more images lowers the per-image demand, so a colony
+    that grew only during the gap is not flagged on its absolute jump."""
+    well = "-A001"
+    rows = [
+        # colony 1: 2x growth from frame 3 to 8 -> 0.2 per image, above the
+        # 0.1 minimum despite the gap
+        _row(well, 3, 2 * 3_600_000, 1, 1000),
+        _row(well, 8, 7 * 3_600_000, 1, 2000),
+        # colony 2: the same 2x growth, but reached *within* 2 images and
+        # stationary since -> the later comparison sees 0 per image
+        _row(well, 3, 2 * 3_600_000, 2, 1000),
+        _row(well, 5, 4 * 3_600_000, 2, 2000),
+        _row(well, 8, 7 * 3_600_000, 2, 2000),
+    ]
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    by_cid = {}
+    for r in traj:
+        by_cid.setdefault(r["colony_id"], []).append(r)
+    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[1])
     assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
 
 

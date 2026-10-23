@@ -64,9 +64,13 @@ at 3; unmerged = 1). The prototype computed the same quantity as
 
 **Bad segments.** ``from_start`` — first valid frame within ``start_frames``
 (1) of the series start (anchored at the earliest label image); ``no_growth``
-— every exact 2-frame window among the valid frames grows by less than
-``1 + min_growth_2step`` (1.3; needs ≥ 3 valid frames). A well with ≥
-``max_bad_segments`` (2) distinct bad colonies is excluded from
+— each valid frame compared to the earliest valid frame at least 2 images
+ahead (the second-next image when valid, else the next valid frame after
+it) sustains at most ``(a2/a1 − 1) / (l2 − l1)`` relative growth per image
+(``min_growth_per_frame``, 0.1); any such comparison failing — a shrink
+between compared frames among them — flags the colony, and a trajectory
+with nothing to compare (single-frame, adjacent-two-frame) never flags. A
+well with ≥ ``max_bad_segments`` (2) distinct bad colonies is excluded from
 aggregates/plots (``keep_bad_wells`` overrides); bad segments and bad wells
 are always reported in the log and ``bad_segments.csv`` (the rows stay in the
 CSVs, flagged). Pre-existing colonies are never bad-flagged — they are
@@ -346,12 +350,14 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
       frame — undefined if the colony was excluded from birth;
     - ``bad`` flags segments to exclude from the analysis: present from the
       beginning of the well's series (first valid frame within
-      ``start_frames`` of ``series_start_frame``), or not growing (every
-      exact 2-frame window among the valid frames grows by less than
-      ``1 + min_growth_2step``; needs >= 3 valid frames). ``bad_reason``
-      holds the triggered criteria. Pre-existing colonies are never
-      bad-flagged (they are excluded from the analysis anyway, and must not
-      exclude their well).
+      ``start_frames`` of ``series_start_frame``), or not growing (any
+      valid frame, compared to the earliest valid frame >= 2 images ahead,
+      grows by ``min_growth_per_frame`` or less per image — a shrink
+      between compared frames fails too; single-frame and
+      adjacent-two-frame trajectories have nothing to compare).
+      ``bad_reason`` holds the triggered criteria. Pre-existing colonies
+      are never bad-flagged (they are excluded from the analysis anyway,
+      and must not exclude their well).
     - ``pre_existing`` is the pipeline's flag, possibly OR-ed with the
       base-image probe result for difference roots (see
       :func:`probe_pre_existing`). Colonies flagged pre_existing are
@@ -412,11 +418,24 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
             if base and series_start_frame is not None \
                     and base[0] < series_start_frame + options.start_frames:
                 reasons.append("from_start")
-            if len(valid) >= 3:
-                windows = [a2 / a1 for i, (l1, a1) in enumerate(valid)
-                           for l2, a2 in valid[i + 1:] if l2 - l1 == 2]
-                if windows and max(windows) < 1.0 + options.min_growth_2step:
-                    reasons.append("no_growth")
+            # no_growth: each valid frame is compared once, to the earliest
+            # valid frame at least 2 images ahead (the second-next image
+            # when valid, else the next valid frame after it); the jump is
+            # normalized by the image count, so gaps average out fairly. A
+            # comparison at or below min_growth_per_frame flags the colony
+            # (a shrink between compared frames fails too); nothing to
+            # compare — single-frame and adjacent-two-frame trajectories —
+            # never flags.
+            per_image = []
+            for i, (l1, a1) in enumerate(valid):
+                for l2, a2 in valid[i + 1:]:
+                    if l2 - l1 >= 2:
+                        if a1 > 0:
+                            per_image.append(
+                                ((a2 - a1) / a1) / (l2 - l1))
+                        break
+            if per_image and min(per_image) <= options.min_growth_per_frame:
+                reasons.append("no_growth")
         for r in crows:
             r["bad"] = int(bool(reasons))
             r["bad_reason"] = ";".join(reasons)

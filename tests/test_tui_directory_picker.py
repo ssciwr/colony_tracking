@@ -1,18 +1,18 @@
-"""Tests for ticket 07: the path fields' browse buttons and the picker.
+"""Tests for the path fields' browse buttons and the picker.
 
 Every single-``Path`` field renders with a *browse* button in its field
 row — the reset button's click-only precedent (``can_focus`` off), so tab
 and the arrow-key field walk stay field-to-field. The press opens the
-directory-picker modal, textual-fspicker's ``SelectDirectory`` (spec
-addendum decision 6's preferred solution), driven headless here: picking
-a directory writes it into the field's input, and the normal on-change
-flow stores it — on a stage screen into that stage's OWN draft (each run
-type holds an independent config: the chain's ``[pipeline]`` draft is
-untouched, and the stage's pipeline-owned fields pick into the stage's
-own section like every other field); on the config screen and the quick
-start into the chain's pipeline draft. Cancelling changes nothing.
-List-of-path fields (``[analysis].seg_dirs``) keep manual entry, and the
-config screen's within-chain owned lines render no widgets at all.
+directory-picker modal, textual-fspicker's ``SelectDirectory``, driven
+headless here: picking a directory writes it into the field's input, and
+the normal on-change flow stores it — on a stage screen into that
+stage's OWN draft (each run type holds an independent config: the
+chain's ``[pipeline]`` draft is untouched, and the stage's
+pipeline-owned fields pick into the stage's own section like every other
+field); on the config screen and the quick start into the chain's
+pipeline draft. Cancelling changes nothing. List-of-path fields
+(``[analysis].seg_dirs``) keep manual entry, and the config screen's
+within-chain owned lines render no widgets at all.
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
 plugin in the dev group; the suite stays dependency-free); assertions run
@@ -53,9 +53,9 @@ _TIMEOUT = 10.0
 
 
 def _is_single_path(hint) -> bool:
-    """The test's own copy of the browse predicate — pinning the forms
-    module to the spec (the completeness tests' idiom): exactly the
-    single-``Path`` hints (``Path``, ``Path | None``) get a button."""
+    """The test's own copy of the browse predicate (the completeness
+    tests' idiom): exactly the single-``Path`` hints (``Path``,
+    ``Path | None``) get a button."""
     members = _union_members(hint)
     if members is not None:
         if len(members) != 1:  # e.g. Reference: "first" | int
@@ -66,8 +66,8 @@ def _is_single_path(hint) -> bool:
 
 @dataclass(kw_only=True)
 class FutureStageOptions(Options):
-    """A future stage's options (the completeness tests' shape): one path
-    field and one non-path field, nothing registry-specific."""
+    """A stand-in stage's options: one path field and one non-path
+    field, nothing registry-specific."""
 
     mode: Literal["a", "b"] = field(default="a", metadata={"help": "Mode."})
     label_dir: Path = field(metadata={"help": "Ground-truth labels."})
@@ -187,7 +187,9 @@ def test_browse_buttons_follow_the_path_hints_on_every_screen():
     asyncio.run(scenario())
 
 
-def test_a_future_stage_gets_browse_buttons_for_its_path_fields(monkeypatch):
+def test_a_new_registry_entry_gets_browse_buttons_for_its_path_fields(
+    monkeypatch,
+):
     """One registry entry adds the whole section — its Path field's browse
     button included (none on the non-path field)."""
     monkeypatch.setitem(

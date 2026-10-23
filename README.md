@@ -263,7 +263,7 @@ live into the run screen. The home menu offers:
   settings, the per-stage sections (the fields the chain wiring derives
   within one run shown read-only), and the effective TOML preview;
   *Write TOML…* / *Load TOML…* for `pipeline.toml`.
-- **Train** — planned; the stage registry leaves the slot.
+- **Train** — shown disabled (no training screen).
 
 Path fields (the raw directory, the out root, output directories, and
 similar) carry a *browse* button that opens a directory picker; the
@@ -284,9 +284,9 @@ and run the CLI later — the chain via
 A run opens on its own screen: the live log, the stage status line, and
 the final per-stage summaries (from the summary objects, never from the
 log text); a stage failure — an exception or failed wells — becomes an
-error panel and the app stays alive. There is no cancellation in v1:
-quitting (Ctrl-Q) mid-run is safe, the stages are crash-safe via their
-done markers, and the next start resumes where the run left off.
+error panel and the app stays alive. There is no cancellation: quitting
+(Ctrl-Q) mid-run is safe, the stages are crash-safe via their done
+markers, and the next start resumes where the run left off.
 
 ## Python API
 

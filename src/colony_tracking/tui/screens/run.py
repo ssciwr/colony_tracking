@@ -1,27 +1,27 @@
 """The run screen: one run's live log, summary-driven status, and errors.
 
 :class:`RunScreen` shows one run from start to finish: the streamed log
-(a :class:`~textual.widgets.RichLog` fed by the ticket-01 log routing), a
-live status line, the final summary block, and an error panel when the
-run fails — an exception, or a summary that reports failed work (the
-CLI's exit-1 semantics). Every outcome stays in the UI: the app survives
-any run failure.
+(a :class:`~textual.widgets.RichLog` fed by the runner's log
+forwarding), a live status line, the final summary block, and an error
+panel when the run fails — an exception, or a summary that reports
+failed work (the CLI's exit-1 semantics). Every outcome stays in the
+UI: the app survives any run failure.
 
 The screen starts its own run on mount — ``runner.start`` with the
 screen's app — so the log handler attaches before the worker thread
 spawns and no record is lost. Status comes from the summary objects
-alone (spec story 40: log text is never parsed for status); the single
-exception is the current-stage hint during a pipeline run, which
-recognizes the exact structured marker ``run_pipeline`` emits as it
-starts a chain stage (a match on the record's template and arguments,
-never on formatted text) — the log pane itself tells the full story
-meanwhile. While a run is active the status line also records the
-no-cancellation decision: quitting the TUI (Ctrl-Q) mid-run is safe, the
-stages are crash-safe via their per-well done markers, and the next
-start resumes where the run left off.
+alone (log text is never parsed for status); the single exception is
+the current-stage hint during a pipeline run, which recognizes the
+exact structured marker ``run_pipeline`` emits as it starts a chain
+stage (a match on the record's template and arguments, never on
+formatted text) — the log pane itself tells the full story meanwhile.
+While a run is active the status line also notes there is no
+cancellation: quitting the TUI (Ctrl-Q) mid-run is safe, the stages are
+crash-safe via their per-well done markers, and the next start resumes
+where the run left off.
 
-Direct runs are written first (spec requirement 5): the entry points
-below resolve the caller's draft, then write the TOML through the shared
+Direct runs write their config first: the entry points below resolve
+the caller's draft, then write the TOML through the shared
 :class:`~colony_tracking.tui.screens._save.SaveConfigDialog` (each run
 type's own suggested path), then push the run screen with the dialog's
 resolved config:
@@ -73,7 +73,7 @@ from ._save import SaveConfigDialog
 #: ``run_pipeline`` logs ``"pipeline: <label> → <target>"`` as it starts
 #: each chain stage. Matching the record's *template* — the structured
 #: marker, never its formatted text — drives the status line's
-#: current-stage hint without parsing log text (spec story 40).
+#: current-stage hint without parsing log text.
 _STAGE_START_TEMPLATE = "pipeline: %s → %s"
 
 #: Rich style per log level for the pane's records (INFO stays plain).
@@ -124,7 +124,7 @@ def _failed_names(summary: Any) -> list[str]:
 def _stage_detail(summary: Any) -> str:
     """One stage summary as a status-line detail: the totals, and the
     failed work named when the stage failed — from the summary object
-    alone (spec story 40)."""
+    alone."""
     if isinstance(summary, AnalysisSummary):
         detail = (
             f"roots {len(summary.roots)} · colonies "
@@ -162,7 +162,7 @@ def _pipeline_summary_lines(summary: PipelineSummary) -> list[str]:
 
 def _summary_lines(kind: str, summary: object) -> list[str]:
     """The summary block's lines for a finished run — per-stage status
-    lines driven by the summary objects (spec story 40)."""
+    lines driven by the summary objects."""
     if isinstance(summary, PipelineSummary):
         return _pipeline_summary_lines(summary)
     return [f"{kind:<13}{_stage_detail(summary)}"]
@@ -321,7 +321,7 @@ class RunScreen(Screen[None]):
         stage the markers say is running now."""
         running = (
             f"running {self.kind} (started {self._started_at}) — no "
-            "cancellation in v1: quitting (Ctrl-Q) is safe, the next "
+            "cancellation: quitting (Ctrl-Q) is safe, the next "
             "start resumes via done markers"
         )
         lines = [running]
@@ -389,13 +389,13 @@ def open_pipeline_run(app: App[Any], draft: ConfigDraft) -> str | None:
 
 
 def open_stage_run(app: App[Any], draft: ConfigDraft, stage: str) -> str | None:
-    """Start one stage on its own — the stage screens' action (the
-    ticket-04 wiring calls this): a standalone run of ``stage`` on ``draft``,
-    that stage type's own independent, fully-explicit config, its own
-    TOML written first (see the module docstring). The run takes its
-    config's inputs as given — no other run type's state is consulted
-    (a stage's ``resolve`` is the only gate on the config itself).
-    Re-running a stage re-enters it (a resume via the done markers).
+    """Start one stage on its own — the stage screens' action: a
+    standalone run of ``stage`` on ``draft``, that stage type's own
+    independent, fully-explicit config, its own TOML written first
+    (see the module docstring). The run takes its config's inputs as
+    given — no other run type's state is consulted (a stage's
+    ``resolve`` is the only gate on the config itself). Re-running a
+    stage re-enters it (a resume via the done markers).
 
     Returns the problem message when a check failed (also reported in
     the UI), None once the flow is underway.

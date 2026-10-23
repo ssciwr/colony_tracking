@@ -1,6 +1,5 @@
-"""Tests for the completeness story: every option visible, editable on
-its own run type (the independent-configs redesign; spec story 36 and
-§2 of the brief).
+"""Tests for completeness: every option visible and editable on its own
+run type.
 
 A run type's config is fully explicit, so its stage screen shows EVERY
 field of its options dataclass as its ordinary widget (a parameterized
@@ -9,10 +8,9 @@ and its config screen: the ``[pipeline]`` run level, one form per stage
 section with the stage's non-owned fields as widgets (each with its own
 reset button — enabled only while its key is set), and the pipeline-owned
 fields shown read-only on the ``wired within the chain:`` lines, every
-entry marked ``(derived)`` — the within-run wiring a chain run is, no
-longer styled as run-level links. The fields that default to a derived
-name still grey that default in their empty inputs (the chain's own
-within-run wiring).
+entry marked ``(derived)``. The fields that default to a derived name
+grey that default in their empty inputs (the chain's own within-run
+wiring).
 
 The headline: a difference run starts from its stage screen alone — its
 own raw_dir and out_dir typed, *Run this stage*, the run type's own
@@ -57,7 +55,7 @@ _TIMEOUT = 10.0
 
 @dataclass(kw_only=True)
 class FutureStageOptions(Options):
-    """A future stage's options (the shape the registry must accommodate)."""
+    """A stand-in stage's options, the shape the registry accommodates."""
 
     mode: Literal["a", "b"] = field(default="a", metadata={"help": "Mode."})
     shape: tuple[int, int] = field(default=(4, 4), metadata={"help": "Shape."})
@@ -65,8 +63,8 @@ class FutureStageOptions(Options):
 
 
 def _expected_widget(hint) -> type:
-    """The spec table's widget for a hint — the test's own copy of the
-    mapping, pinning the forms module to the spec."""
+    """The widget kind for a hint — the test's own copy of the forms
+    module's mapping."""
     members = _union_members(hint)
     if members is not None and len(members) == 1:
         return _expected_widget(members[0])
@@ -433,7 +431,7 @@ def test_reset_enabled_only_for_set_fields():
     asyncio.run(scenario())
 
 
-def test_a_future_stage_slots_into_the_config_screen(monkeypatch):
+def test_a_new_registry_entry_slots_into_the_config_screen(monkeypatch):
     """One registry entry (plus the draft section) adds the config
     screen's whole train section: its form, its owned line, its reset
     buttons — no config-screen code per stage."""

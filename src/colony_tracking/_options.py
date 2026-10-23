@@ -38,9 +38,8 @@ def parse_reference(text: str) -> Reference:
     The one parser for user-typed reference text: the TUI's forms and
     quick start parse through it, so they accept exactly what the CLI's
     ``--reference`` flag accepts and reject the rest with the same
-    message (cli.py carries its own argparse-facing copy until a
-    follow-up wires it here). Raises ValueError otherwise; blank text is
-    the caller's "unset" and never reaches this parser.
+    message. Raises ValueError otherwise; blank text is the caller's
+    "unset" and never reaches this parser.
     """
     lowered = text.strip().lower()
     if lowered == "first":

@@ -1,22 +1,18 @@
 """The save- and load-config dialogs: the TUI's config-file doors.
 
-Every screen that can write its draft's config file — the stage screens'
-*Write TOML…*, the pipeline-config screen, the quick start's *Write
-TOML…* and *Run now* (which writes first so the run is reproducible) —
-opens :class:`SaveConfigDialog` instead of owning its own path prompt.
-The dialog does the whole write itself: it asks for the path, resolves
-the draft, writes the file through
+Every screen that can write its draft's config file opens
+:class:`SaveConfigDialog` instead of owning its own path prompt. The
+dialog does the whole write itself: it asks for the path, resolves the
+draft, writes the file through
 :meth:`~colony_tracking.tui.draft.ConfigDraft.write`, and dismisses with
 ``(path, config)`` on success or ``None`` on cancel. An invalid draft
-(:class:`~colony_tracking.pipeline.ConfigError`) or an unwritable path is
-reported inside the dialog — the message stays on screen, nothing is
-written, and the dialog stays open for correction.
-
-Each run type saves to its own file name
+(:class:`~colony_tracking.pipeline.ConfigError`) or an unwritable path
+is reported inside the dialog — the message stays on screen, nothing is
+written, and the dialog stays open for correction. The suggested path
+(:func:`default_toml_path`) is the run type's own file name
 (:data:`~colony_tracking.tui.draft.TOML_NAMES`) next to its own output
-setting and nothing else's (see :func:`default_toml_path`), so a run
-started right after saving keeps its config next to its outputs — and
-the four run types' config files never collide.
+setting, so a run started right after saving keeps its config beside its
+outputs.
 
 :class:`LoadConfigDialog` is the read door: it asks for a path and loads
 the file into the caller's draft through

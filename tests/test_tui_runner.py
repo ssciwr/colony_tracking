@@ -1,4 +1,4 @@
-"""Tests for the TUI's ``StageRunner`` and app skeleton (ticket 01).
+"""Tests for the TUI's ``StageRunner`` and app skeleton.
 
 Seams under test:
 
@@ -16,8 +16,8 @@ Seams under test:
   reported through ``on_done`` without killing anything;
 - the app skeleton launches headlessly (textual's ``Pilot``): the home
   screen first, the menu navigates into the registered screens and back,
-  the app holds one independent draft per run type, and the planned
-  Train entry is disabled.
+  the app holds one independent draft per run type, and the Train entry
+  is disabled.
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` — the suite has no
 async test plugin, and this keeps the tests dependency-free.
@@ -392,7 +392,7 @@ def test_the_app_launches_and_navigates():
             home = app.screen
             assert isinstance(home, HomeScreen)
             menu = home.query_one(OptionList)
-            # The planned train entry is disabled (spec requirement 3)…
+            # The Train entry is disabled…
             assert menu.get_option("train").disabled
             # …the real entries are not.
             assert not menu.get_option("quick_start").disabled

@@ -1,4 +1,4 @@
-"""Tests for the dataclass-driven option forms (ticket 02, spec story 36).
+"""Tests for the dataclass-driven option forms.
 
 The form machinery under test: an options dataclass (its type hints +
 ``metadata["help"]`` — the CLI's single source) maps to widgets; typed
@@ -7,8 +7,8 @@ lists, numbers as numbers); blank input means "unset" (the key clears, the
 default applies at resolve time); text that does not parse marks the field
 invalid inline and the draft keeps the key's last valid value. The
 Select/tuple kinds the forms machinery needs beyond the three stages'
-fields are covered with a stand-in dataclass shaped like a future
-stage's.
+fields are covered with a stand-in dataclass exercising exactly those
+kinds.
 """
 
 import asyncio
@@ -36,9 +36,9 @@ from colony_tracking.tui.forms import (
 
 @dataclass(kw_only=True)
 class DemoOptions(Options):
-    """A stand-in for a future stage's options: the hint kinds the three
-    pipeline stages don't exercise (a Literal select, fixed and open
-    tuples, an optional int, a default-True checkbox)."""
+    """A stand-in options dataclass: the hint kinds the three pipeline
+    stages don't exercise (a Literal select, fixed and open tuples, an
+    optional int, a default-True checkbox)."""
 
     mode: Literal["raw", "diff"] = field(
         default="raw", metadata={"help": "Input mode."}
@@ -82,8 +82,8 @@ def _run_form(form: OptionForm, observe) -> None:
 
 
 def _demo_draft() -> ConfigDraft:
-    """A draft with a ``demo`` section — the shape a future stage gets
-    (``draft.stages`` gains the section; ``set`` accepts it)."""
+    """A draft with a ``demo`` section (``draft.stages`` gains the
+    section; ``set`` accepts it)."""
     draft = ConfigDraft()
     draft.stages["demo"] = {}
     return draft

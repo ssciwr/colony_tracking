@@ -1,14 +1,13 @@
 """The pipeline-config screen: the whole chain's config in one place,
 plus the effective TOML.
 
-The full editor of the pipeline run type's draft (spec addendum decision
-5): the run-level form (``raw_dir``, ``out_root``, ``reference``,
-``wells`` — the ``[pipeline]`` section, generated from
+The full editor of the pipeline run type's draft: the run-level form
+(``raw_dir``, ``out_root``, ``reference``, ``wells`` — the
+``[pipeline]`` section, generated from
 :class:`~colony_tracking.pipeline.PipelineConfig`'s own fields through
 :mod:`colony_tracking.tui.forms`), then one form per registered stage
 with that stage's non-owned fields. The sections come from the stage
-registry (:data:`~colony_tracking.tui.screens.stage.STAGES`), so a
-future stage slots in with its registry entry alone.
+registry (:data:`~colony_tracking.tui.screens.stage.STAGES`).
 
 This screen edits the *chain's* draft (the app's ``drafts["pipeline"]``
 entry), and a pipeline run is the chain: the within-run wiring stays.
@@ -88,8 +87,7 @@ def owned_entries(draft: ConfigDraft, stage: str) -> tuple[tuple[str, str, str],
     difference section's own ``out_dir`` when set, else the derived
     tree name). A value that cannot be derived yet shows as ``—``. The
     owned keys come from the registry entry's dataclass and
-    :data:`~colony_tracking.pipeline._OWNED` — a future stage without
-    owned fields contributes nothing.
+    :data:`~colony_tracking.pipeline._OWNED`.
     """
     owned = _OWNED.get(stage, frozenset())
     keys = [spec.key for spec in specs_of(STAGES[stage].options) if spec.key in owned]
@@ -126,10 +124,10 @@ def editable_specs(stage: str) -> tuple[FieldSpec, ...]:
 def placeholders(draft: ConfigDraft, stage: str) -> dict[str, str]:
     """The derived default each free field of ``stage`` falls back to when
     left blank — greyed in the empty input so the user sees what the
-    chain run would pick. Stages without such fields (a future train
-    stage) get an empty mapping. These greys are the chain's own
-    within-run wiring — tree names built from the run level on the same
-    draft, never from another run type's configuration."""
+    chain run would pick; stages without such fields get an empty
+    mapping. These greys are the chain's own within-run wiring — tree
+    names built from the run level on the same draft, never from another
+    run type's configuration."""
     out_root = draft.get(RUN_LEVEL, "out_root")
     if out_root is None:
         return {}
@@ -260,13 +258,9 @@ class ConfigScreen(FormScreen):
         yield Button("Back", id="back")
 
     def action_load_toml(self) -> None:
-        """*Load TOML…*: open the shared load-config dialog — it asks for
-        the path and replaces the draft with the file's content (a load
-        resets, it never merges); errors stay inside it, open for
-        correction, and this screen refreshes its forms from the draft on
-        resume. Loading is never gated: it works on an incomplete draft,
-        and anything wrong in the file surfaces verbatim at the next
-        resolve."""
+        """*Load TOML…*: open the shared load-config dialog (see
+        :class:`~colony_tracking.tui.screens._save.LoadConfigDialog`);
+        loading is never gated."""
         self.app.push_screen(LoadConfigDialog(self.draft))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

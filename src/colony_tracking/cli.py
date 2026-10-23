@@ -362,7 +362,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "config, and run stages or the whole chain in-process.",
         description="The terminal user interface: quick start, per-stage "
         "option forms, config writing, and in-process runs with a live "
-        "log pane. Takes no flags in v1.",
+        "log pane. Takes no flags.",
     )
     return parser
 

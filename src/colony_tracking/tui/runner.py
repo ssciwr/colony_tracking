@@ -1,43 +1,35 @@
-"""StageRunner: run the stages in-process from the TUI (spec story 37).
+"""StageRunner: run the stages in-process from the TUI.
 
 :func:`start` runs one of ``run_difference`` / ``run_segmentation`` /
 ``run_analysis`` / ``run_pipeline`` on its kind's resolved config in a
-thread — the stage functions themselves are called unchanged, so a TUI
-run behaves exactly like a CLI run of the same config (resume via done
-markers included). One run at a time: starting a second run while one is
-active is an error the UI reports (no cancellation in v1 — stopping
-means quitting the TUI with Ctrl-Q; the stages' done markers make the
-next start a resume).
+thread — the stage functions are called unchanged, so a TUI run behaves
+exactly like a CLI run of the same config (resume via done markers
+included). One run at a time: starting a second run while one is active
+is an error the UI reports, and there is no cancellation — stopping
+means quitting the TUI with Ctrl-Q, and the stages' done markers make
+the next start a resume.
 
 Each run kind carries its run type's own resolved config: a stage kind
 (:data:`KINDS` minus ``pipeline``) receives that stage's own
-:class:`~colony_tracking._options.Options` — exactly what the stage's
-independent, fully-explicit config resolves to, nothing derived from
-another stage or run type — and the ``pipeline`` kind still receives the
-chain's :class:`~colony_tracking.pipeline.PipelineConfig` (the chain's
-within-run wiring applies there, see
-:mod:`colony_tracking.pipeline`).
+:class:`~colony_tracking._options.Options`, the ``pipeline`` kind the
+chain's :class:`~colony_tracking.pipeline.PipelineConfig`.
 
-Log routing: while a run is active, a :class:`logging.Handler` attached to
-the package logger :data:`colony_tracking.log` forwards every record to the
-UI. With a running textual ``App`` (the normal TUI case) records and the
-completion callback are marshalled onto the UI thread via
-``App.call_from_thread``; without one (tests, scripts) the callbacks run
-directly on the worker thread. The handler is attached on start and
-detached on completion — exactly what was attached, so repeated runs
-cannot stack handlers. The package logger's level is set to INFO like the
-CLI's logging setup does (that module is the precedent; it is mirrored
-here, not imported).
+Log routing: while a run is active, a :class:`logging.Handler` attached
+to the package logger :data:`colony_tracking.log` forwards every record
+to the UI. With a running textual ``App`` (the normal TUI case) records
+and the completion callback are marshalled onto the UI thread via
+``App.call_from_thread``; without one (tests, scripts) they run directly
+on the worker thread. The handler is attached on start and detached on
+completion — exactly what was attached, so repeated runs cannot stack
+handlers.
 
-Failures are never fatal: an exception escaping a stage is caught, stored
-on the :class:`RunHandle`, logged, and reported through ``on_done`` — the
-app must survive any stage failure. A summary that reports failed work
-(failed wells, the analyze stage's failures, a failed pipeline status)
-surfaces the same way the CLI's exit code 1 does: as an error panel in the
-UI, worded exactly like the runner's logged ERROR lines
+Failures are never fatal: an exception escaping a stage is caught,
+stored on the :class:`RunHandle`, logged, and reported through
+``on_done``. A summary that reports failed work (failed wells, the
+analyze stage's failures, a failed pipeline status) is reported through
+the same lines the CLI logs for an exit-1 run
 (:func:`failed_summary_lines` is the single source). Run handles also
-carry the run's ``config`` so the UI can show what is running without
-extra plumbing.
+carry the run's ``config`` so the UI can show what is running.
 """
 
 from __future__ import annotations
@@ -61,7 +53,7 @@ from ..segmentation import SegmentationSummary, run_segmentation
 KINDS: tuple[str, ...] = ("difference", "segmentation", "analysis", "pipeline")
 
 #: The runner's table: kind -> the run to make on the kind's resolved
-#: config — a stage kind takes that stage's own resolved
+#: config — a stage kind takes that stage's own
 #: :class:`~colony_tracking._options.Options`, the ``pipeline`` kind the
 #: chain's :class:`~colony_tracking.pipeline.PipelineConfig`. The
 #: lambdas resolve the ``run_*`` globals at call time, so tests can
@@ -79,7 +71,7 @@ _LOCK = threading.Lock()
 
 #: The one-run-at-a-time message, formatted with the active run's kind:
 #: :func:`start` raises it as its :class:`RuntimeError` and the run
-#: screens report the same text — one wording.
+#: screens report the same text.
 ACTIVE_MESSAGE = (
     "a {kind} run is already active — the runner runs one at a time and "
     "cannot cancel: wait for it to finish, or quit the TUI (the next "
@@ -89,11 +81,7 @@ ACTIVE_MESSAGE = (
 
 def summary_failed(summary: object) -> bool:
     """Whether a stage/pipeline summary reports failed work — the CLI's
-    exit-code-1 semantics, which the TUI surfaces as an error panel.
-
-    Failed wells for the difference/segment stages, failures or failed
-    wells for the analyze stage, a ``failed`` status for the pipeline.
-    """
+    exit-code-1 semantics, which the TUI surfaces as an error panel."""
     if isinstance(summary, PipelineSummary):
         return summary.status == "failed"
     if isinstance(summary, (DifferenceSummary, SegmentationSummary)):
@@ -104,11 +92,10 @@ def summary_failed(summary: object) -> bool:
 
 
 def failed_summary_lines(kind: str, summary: Any) -> list[str]:
-    """The failed-work lines of one finished run of ``kind``, in the CLI's
-    wording (the same ERROR lines ``cli._dispatch`` writes for an exit-1
-    run) — the single source the runner logs and the run screen's error
-    panel shows, so the panel reads exactly like the logged lines. Empty
-    when the summary reports no failed work of that kind."""
+    """The failed-work lines of one finished run of ``kind``, in the
+    CLI's ERROR-line wording — the single source the runner logs and the
+    run screen's error panel shows. Empty when the summary reports no
+    failed work of that kind."""
     if kind == "difference":
         failed = [
             (result.well, result.error)
@@ -147,10 +134,8 @@ def failed_summary_lines(kind: str, summary: Any) -> list[str]:
 
 
 def _log_failed_summary(kind: str, summary: Any) -> None:
-    """Log a failed summary with the CLI's wording (the same ERROR lines
-    ``cli._dispatch`` writes for an exit-1 run), so the log pane carries
-    the context the CLI user would see — :func:`failed_summary_lines` is
-    the single source the run screen's error panel shares."""
+    """Log a failed summary with the CLI's ERROR-line wording
+    (:func:`failed_summary_lines`)."""
     for line in failed_summary_lines(kind, summary):
         log.error("%s", line)
 
@@ -159,13 +144,12 @@ def _log_failed_summary(kind: str, summary: Any) -> None:
 class RunHandle:
     """One started run: its kind, config, outcome, and completion signal.
 
-    ``summary`` is set when the run returned one (a summary may still
-    report failed work — :attr:`failed` covers that); ``error`` is set when
+    ``summary`` is set when the run returned one; ``error`` is set when
     the stage raised. ``done`` is set last, after the handler is detached
     and the runner is free for the next run. UI code learns completion
     through ``on_done`` — never block the UI thread on ``done``
-    (``call_from_thread`` would deadlock); ``done`` is for non-UI waiters
-    such as tests and scripts.
+    (``call_from_thread`` would deadlock); ``done`` is for non-UI
+    waiters such as tests and scripts.
     """
 
     kind: str
@@ -196,13 +180,10 @@ def active() -> RunHandle | None:
 
 
 class _ForwardHandler(logging.Handler):
-    """The per-run log forwarder (see the module docstring).
-
-    ``emit`` hands the record itself to the deliver callback — not
-    formatted text, so the pane chooses its own rendering (level colours,
-    markup). A delivery failure is never fatal: ``handleError`` reports it
-    and the run goes on.
-    """
+    """The per-run log forwarder: ``emit`` hands the record itself to the
+    deliver callback — not formatted text, so the pane chooses its own
+    rendering. A delivery failure is never fatal: ``handleError``
+    reports it and the run goes on."""
 
     def __init__(
         self,
@@ -225,8 +206,7 @@ def _deliverer(
     app: App[Any] | None,
 ) -> Callable[..., None]:
     """The post-to-UI-thread wrapper for one run: ``app.call_from_thread``
-    when a textual App is given (callbacks must run on the UI thread), a
-    direct call otherwise (tests, scripts)."""
+    when a textual App is given, a direct call otherwise."""
     if app is None:
         return lambda callback, *args: callback(*args)
     return lambda callback, *args: app.call_from_thread(callback, *args)
@@ -239,16 +219,15 @@ def _run(
     on_done: Callable[[RunHandle], None],
 ) -> None:
     """The thread body of one run: attach the forwarder, run the stage,
-    capture the outcome (never fatal), detach, and report.
+    capture the outcome, detach, and report.
 
     Ordering matters at the end: the handler is detached and the runner
     freed *before* ``done`` is set and ``on_done`` fires, so a completion
-    callback that immediately starts the next run can never stack handlers
-    or trip the one-run-at-a-time check.
+    callback that immediately starts the next run can never stack
+    handlers or trip the one-run-at-a-time check.
     """
     handler = _ForwardHandler(deliver, on_record)
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
-    # Mirror the CLI's logging precedent: the package logger at INFO.
     log.setLevel(logging.INFO)
     log.addHandler(handler)
     try:
@@ -288,21 +267,20 @@ def start(
 
     ``kind`` is one of :data:`KINDS`; the run happens in a thread — via
     ``app.run_worker(..., thread=True)`` when the running textual ``app``
-    is given, on a plain daemon thread otherwise — calling the kind's
-    run function unchanged with the resolved config: a stage kind
-    receives that stage's own
-    :class:`~colony_tracking._options.Options` (nothing derived — the
-    stage's config is fully explicit), the ``pipeline`` kind the chain's
+    is given, on a plain daemon thread otherwise — calling the kind's run
+    function unchanged with the resolved config: a stage kind receives
+    that stage's own :class:`~colony_tracking._options.Options`, the
+    ``pipeline`` kind the chain's
     :class:`~colony_tracking.pipeline.PipelineConfig`.
 
-    ``on_done(handle)`` fires when the run is finished (success, failed
-    summary, or exception); ``on_record`` optionally receives every log
-    record of the run live. With ``app`` set, both are marshalled onto the
-    UI thread via ``app.call_from_thread``.
+    ``on_done(handle)`` fires when the run is finished; ``on_record``
+    optionally receives every log record of the run live. With ``app``
+    set, both are marshalled onto the UI thread via
+    ``app.call_from_thread``.
 
     Starting a second run while one is active raises :class:`RuntimeError`
-    (the UI reports it; there is no cancellation in v1 — stopping means
-    quitting the TUI, and the next start resumes via done markers).
+    (the UI reports it; there is no cancellation — quitting and
+    re-starting resumes via done markers).
     """
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
     if kind not in _RUNNERS:

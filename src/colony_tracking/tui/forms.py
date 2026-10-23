@@ -1,18 +1,16 @@
-"""Dataclass-driven option forms: widgets from field type hints (spec
-story 36).
+"""Dataclass-driven option forms: widgets from field type hints.
 
 An options dataclass — every field carrying ``metadata={"help": ...}``, the
 same single source the CLI's flags come from — becomes a form: one widget
-per field, chosen from the field's type hint alone, so a future stage's
-dataclass needs no form code of its own:
+per field, chosen from the field's type hint alone:
 
 - ``Path`` — an ``Input`` (the path string);
 - ``bool`` — a ``Checkbox``;
 - ``int`` / ``float`` — an ``Input`` with numeric validation;
 - ``Literal[...]`` — a ``Select`` of the literal values;
 - ``Reference`` (``"first" | int``) — an ``Input`` parsed by the shared
-  :func:`~colony_tracking._options.parse_reference` (``first``, a frame
-  number, or the ``LO<nnn>`` file-name form — the CLI's spellings);
+  :func:`~colony_tracking._options.parse_reference` (the CLI's
+  spellings);
 - ``list[str] | None`` — an ``Input``, comma-separated;
 - ``tuple[int, ...]`` (and fixed ``tuple[int, int]``) — an ``Input``,
   comma- or space-separated;
@@ -20,8 +18,6 @@ dataclass needs no form code of its own:
 
 ``str`` falls to ``Input``. Field labels are the CLI flag names
 (kebab-case); the help metadata is the description line under the widget.
-Parsing turns typed text into the plain (TOML-friendly) values the draft
-stores — the same shapes the config file uses.
 
 Value flow — on change
 ----------------------
@@ -29,42 +25,33 @@ Values flow into the screen's :class:`~colony_tracking.tui.draft.ConfigDraft`
 on every change, not on submit: each edit parses immediately and writes
 through ``ConfigDraft.set``, and an emptied field clears its key, so the
 draft always matches the form and a screen's actions gate on exactly what
-is shown (and a TOML preview stays live). The flip side is mid-edit
-states, handled like this:
+is shown. Mid-edit states:
 
 - text that does not parse marks the field invalid (red border plus an
-  inline message under it) and the draft keeps the key's last valid value;
-  the owning screen keeps its actions disabled until every field parses
-  again and the whole draft resolves;
-- a checkbox fires when it is initialized too (its checked state comes
-  from the draft or the dataclass default); a checkbox whose value equals
-  the unset key's default therefore stores nothing — ``resolve`` applies
-  the default anyway, so the document stays free of no-op keys.
+  inline message under it) and the draft keeps the key's last valid
+  value; the owning screen keeps its actions disabled until every field
+  parses again and the whole draft resolves;
+- a checkbox fires when it is initialized too; one whose value equals the
+  unset key's default stores nothing — ``resolve`` applies the default
+  anyway, so the document stays free of no-op keys.
 
 Reset
 -----
 Every field also carries a small *reset* button next to its widget: it
-clears exactly that field's draft key (``ConfigDraft.clear``) — back to
-the default — and stays enabled only while the key is set, so the
-set-vs-at-default state is visible at a glance.
+clears exactly that field's draft key (``ConfigDraft.clear``) and stays
+enabled only while the key is set, so the set-vs-at-default state is
+visible at a glance.
 
 Browse
 ------
-A single-``Path`` field — a ``Path`` or ``Path | None`` hint, the fields
-that take one directory — also carries a *browse* button in its field
-row, next to the reset button: pressing it opens the directory-picker
-modal, textualize's ``textual-fspicker`` package —
-:class:`~textual_fspicker.SelectDirectory`, spec addendum decision 6's
-preferred solution, verified against the pinned textual 8.x, which the
-package's ``textual>=1.0.0`` floor admits but does not prove; its
-OptionList-based navigation ran clean here, so the hand-rolled
-``DirectoryTree`` fallback stays unneeded. The picker starts at the
-field's current value's nearest existing directory
-(:func:`picker_location`), and the picked directory lands in the input
-as if typed — the normal on-change flow parses and stores it; cancelling
-closes the picker and changes nothing. A list-of-path field
-(``seg_dirs``) keeps manual entry — the picker picks one directory, the
-field wants a list.
+A single-``Path`` field also carries a *browse* button in its field row:
+pressing it opens the directory-picker modal, textualize's
+``textual-fspicker`` package (:class:`~textual_fspicker.SelectDirectory`).
+The picker starts at the field's current value's nearest existing
+directory (:func:`picker_location`), and the picked directory lands in
+the input as if typed — the normal on-change flow parses and stores it;
+cancelling closes the picker and changes nothing. A list-of-path field
+(``seg_dirs``) keeps manual entry.
 """
 
 from __future__ import annotations
@@ -104,9 +91,8 @@ from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hi
 from .draft import ConfigDraft
 from .screens._save import SaveConfigDialog
 
-#: Field-name → label spelling, mirroring the CLI's ``_RENAMES`` (the CLI
-#: module is the precedent; it is mirrored here, not imported) so a field's
-#: label matches its CLI flag.
+#: Field-name → label spelling, mirroring the CLI's ``_RENAMES``, so a
+#: field's label matches its CLI flag.
 RENAMES: Final[dict[str, str]] = {"seg_dirs": "seg-dir"}
 
 
@@ -116,14 +102,9 @@ def kebab(name: str) -> str:
 
 
 def focus_field(widgets: Sequence[Widget], forward: bool) -> None:
-    """Move the focus one field along ``widgets`` (DOM order): to the next
-    one for ``forward=True``, the previous one otherwise, wrapping at the
-    ends. When the currently focused widget is not among ``widgets`` the
-    focus enters at the near end — the first field for ``forward=True``,
-    the last one otherwise. A no-op when none of ``widgets`` can take the
-    focus. Tab/shift-tab keep the wider course, and a focused widget's own
-    bindings (an expanded Select's overlay) take precedence before any
-    screen-level arrow binding anyway."""
+    """Move the focus one field along ``widgets`` (DOM order), wrapping at
+    the ends; when the focused widget is not among ``widgets``, enter at
+    the near end. A no-op when none of ``widgets`` is focusable."""
     fields = [widget for widget in widgets if widget.focusable]
     if not fields:
         return
@@ -144,29 +125,24 @@ class FieldError(ValueError):
 
 
 class _Unset:
-    """The sentinel :func:`parse_field` returns for blank input (the key
-    goes back to its default)."""
+    """The sentinel :func:`parse_field` returns for blank input."""
 
     def __repr__(self) -> str:
         return "UNSET"
 
 
-#: Returned by :func:`parse_field` for blank text: the field is unset and
-#: ``ConfigDraft.clear`` applies (the default applies at resolve time).
+#: Returned by :func:`parse_field` for blank text: the key is unset and
+#: ``ConfigDraft.clear`` applies.
 UNSET: Final[_Unset] = _Unset()
 
 
 def parse_field(text: str, hint: Any) -> Any:
     """Parse one field's typed text into its plain draft value.
 
-    Blank (or blank-after-strip) text returns :data:`UNSET`; text that does
-    not parse as the declared type raises :class:`FieldError` with a short
-    human message (the wording follows the pipeline's own ``_human_hint``,
-    except the reference field's, which is the shared
-    :func:`~colony_tracking._options.parse_reference` message — the CLI's).
-    Anything else comes back as the plain value the draft stores — paths
-    and strings as ``str``, numbers as ``int`` / ``float``, sequences as
-    ``list`` / ``tuple``.
+    Blank text returns :data:`UNSET`; a parse failure raises
+    :class:`FieldError` with a short human message (the pipeline's
+    ``_human_hint`` wording, except the reference field's, which is the
+    shared :func:`~colony_tracking._options.parse_reference` message).
     """
     text = text.strip()
     if not text:
@@ -230,8 +206,8 @@ def parse_field(text: str, hint: Any) -> Any:
 
 def format_field(value: Any) -> str:
     """The text an ``Input`` shows for a plain draft ``value`` — the
-    inverse of :func:`parse_field` for every value the draft can hold
-    (``None``/unset becomes empty text; sequences render comma-separated)."""
+    inverse of :func:`parse_field` (``None`` becomes empty text;
+    sequences render comma-separated)."""
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -243,22 +219,21 @@ def format_field(value: Any) -> str:
 
 class _NoDefault:
     """The marker for "this field has no dataclass default" in a
-    :class:`FieldSpec` — ``dataclasses.MISSING`` itself cannot play the
-    role: a dataclass attribute defaulting to ``MISSING`` reads as
-    required."""
+    :class:`FieldSpec` — ``dataclasses.MISSING`` cannot play the role: a
+    dataclass attribute defaulting to it reads as required."""
 
     def __repr__(self) -> str:
         return "NO_DEFAULT"
 
 
-#: FieldSpec.default's marker for a required field (no dataclass default).
+#: FieldSpec.default's marker for a required field.
 NO_DEFAULT: Final[_NoDefault] = _NoDefault()
 
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """One option field of a form: the draft key plus the declared type and
-    the ``help`` metadata (the same source the CLI flags come from)."""
+    """One option field of a form: the draft key plus the declared type
+    and the ``help`` metadata."""
 
     #: The dataclass field name — the draft key.
     key: str
@@ -266,8 +241,8 @@ class FieldSpec:
     hint: Any
     #: The field's help text (the description line under the widget).
     help: str = ""
-    #: The dataclass default (:data:`NO_DEFAULT` when required); a checkbox
-    #: shows it while the key is unset.
+    #: The dataclass default (:data:`NO_DEFAULT` when required); a
+    #: checkbox shows it while the key is unset.
     default: Any = NO_DEFAULT
     #: Greyed hint text for an empty ``Input`` (a derived default).
     placeholder: str = ""
@@ -277,11 +252,7 @@ class FieldSpec:
 
 def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec, ...]:
     """The form specs of a dataclass: one :class:`FieldSpec` per field in
-    declaration order, restricted to ``keys`` when given.
-
-    ``cls`` is an :class:`~colony_tracking._options.Options` subclass — a
-    stage's options, or ``PipelineConfig`` for the run level.
-    """
+    declaration order, restricted to ``keys`` when given."""
     hints = get_type_hints(cls)
     out = []
     for f in fields(cls):
@@ -335,9 +306,7 @@ def _widget_kind(spec: FieldSpec) -> str:
 
 def _is_path_field(spec: FieldSpec) -> bool:
     """Whether ``spec`` is a single-path field (a ``Path`` or
-    ``Path | None`` hint — the fields that take one directory, and so the
-    ones that get a browse button; see the module docstring's Browse
-    section)."""
+    ``Path | None`` hint — the ones that get a browse button)."""
     return _optional_member(spec.hint) is Path
 
 
@@ -346,25 +315,22 @@ BROWSE_LABEL: Final[str] = "browse"
 
 
 class BrowseButton(Button):
-    """A path field's *browse* button: it opens the directory-picker modal
-    for its field (see :func:`open_directory_picker`; the form's
-    :meth:`OptionForm.on_button_pressed` and the quick start wire the
-    press). Click-only — ``can_focus`` is off, like the reset buttons —
-    so tab and the arrow-key field walk stay field-to-field.
-
-    The look comes from the hosting container (``.field-browse`` rules —
-    the reset button's approach: a ``Button``'s own type rules outrank a
-    bare type selector here, so the containers restyle the instance)."""
+    """A path field's *browse* button: it opens the directory-picker
+    modal for its field (the hosting screen wires the press; see
+    :func:`open_directory_picker`). Click-only — ``can_focus`` is off,
+    like the reset buttons — so tab and the arrow-key field walk stay
+    field-to-field; styled through its container's ``.field-browse``
+    rules, because a ``Button``'s own type rules outrank a bare type
+    selector."""
 
     can_focus = False
 
 
 def picker_location(value: str) -> Path:
     """The directory a picker opens at for a path field showing ``value``:
-    the value's nearest existing directory — the path itself when it
-    exists as a directory, else the first existing directory on the way
-    up — or the working directory (an empty value, or a path with no
-    existing ancestor: the picker needs a real start)."""
+    the value's nearest existing directory (the path itself, else the
+    first existing ancestor), or the working directory when nothing
+    exists yet."""
     stripped = value.strip()
     if not stripped:
         return Path.cwd()
@@ -382,17 +348,14 @@ def open_directory_picker(
 ) -> None:
     """Open the directory-picker modal — textual-fspicker's
     :class:`~textual_fspicker.SelectDirectory`, starting at ``location``.
-    Picking a directory hands it to ``accept`` (the caller writes it into
-    the field's input, which fires the normal change flow); cancelling —
-    escape or the dialog's Cancel — closes the picker and calls
-    nothing.
+    Picking a directory hands it to ``accept``; cancelling (escape or the
+    dialog's *Cancel*) calls nothing.
 
     The hand-off waits for the dismissed screen's reveal to settle
     (``call_after_refresh``): the pop resumes the screen behind the
     picker, whose entry refresh re-shows the draft's values — a write
     racing that refresh would be re-set from the draft before its change
-    event landed (the draft update is a queued event, not a synchronous
-    one), and the pick would be lost."""
+    event landed, losing the pick."""
 
     def picked(path: Path | None) -> None:
         if path is not None:
@@ -406,14 +369,12 @@ class OptionForm(VerticalScroll):
 
     The form owns the draft-writing behavior: every change parses and
     writes immediately (``ConfigDraft.set`` / ``clear``), invalid text
-    marks the field inline and writes nothing, and :attr:`valid` tells the
-    owning screen whether every field currently parses. ``draft`` must be
-    set before the first change — a screen's ``compose`` runs under the
-    running app, so the screens pass the draft of their run type (the
-    app's ``drafts`` entry) at construction. Every field carries its reset
-    button, and every single-``Path`` field a browse button that opens
-    the directory picker (the module docstring's Browse section): every
-    field reads and writes the form's own section and key.
+    marks the field inline and writes nothing, and :attr:`valid` tells
+    the owning screen whether every field currently parses. ``draft``
+    must be set before the first change — screens pass it at
+    construction. Every field carries its reset button, every
+    single-``Path`` field a browse button; every field reads and writes
+    the form's own section and key.
     """
 
     DEFAULT_CSS = """
@@ -472,14 +433,10 @@ class OptionForm(VerticalScroll):
     }
     """
 
-    #: Up/down step the field focus (spec addendum decision 4) instead of
-    #: the scroll-container scrolling the base class binds them to — the
-    #: subclass bindings replace the inherited ones for those keys. A
-    #: focused widget's own bindings keep precedence: an expanded Select's
-    #: overlay navigates with the arrows and a collapsed Select opens with
-    #: them, and the Inputs' inherited scroll actions skip (a one-row
-    #: input cannot scroll), handing the key on to the screen's
-    #: field-stepping action. Left/right stay inside the focused input.
+    #: Up/down step the field focus instead of the scroll-container
+    #: scrolling the base class binds them to. A focused widget's own
+    #: bindings keep precedence (an expanded Select's overlay navigates
+    #: with the arrows), and left/right stay inside the focused input.
     BINDINGS = [
         Binding("up", "screen.previous_field", "Previous field", show=False),
         Binding("down", "screen.next_field", "Next field", show=False),
@@ -497,9 +454,7 @@ class OptionForm(VerticalScroll):
         super().__init__()
         #: The draft section the form edits (``pipeline`` for the run level).
         self.section = section
-        #: The run type's draft the form writes into (the app's
-        #: ``drafts`` entry for the screen's run type, or the screen's
-        #: explicit one).
+        #: The draft the form writes into.
         self.draft = draft
         self._specs = tuple(specs)
         self._on_change = on_change
@@ -598,9 +553,8 @@ class OptionForm(VerticalScroll):
         """Set every widget's value from the draft again.
 
         A screen is mounted once but entered many times, and another
-        screen may have edited the same draft meanwhile. Idempotent: widgets
-        already showing the draft's value emit no change events. The reset
-        buttons' enabled states follow along.
+        screen may have edited the same draft meanwhile. Idempotent:
+        widgets already showing the draft's value emit no change events.
         """
         for spec in self._specs:
             self._refresh_one(spec)
@@ -628,11 +582,10 @@ class OptionForm(VerticalScroll):
             self._apply_text(spec, event.value)
 
     def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        """A checkbox changed: store the explicit value — unless it equals
-        the field's default, which resolve applies to an unset key anyway
-        (the document only carries non-default values; a checkbox fires on
-        initialization too, so this also keeps mount-time events from
-        writing defaults into the draft)."""
+        """A checkbox changed: store the explicit value, unless it equals
+        the field's default — which ``resolve`` applies to an unset key
+        anyway. (A checkbox fires on initialization too; this keeps
+        mount-time events from writing defaults into the draft.)"""
         spec = self._ids.get(event.checkbox.id)
         if spec is None:
             return
@@ -658,9 +611,8 @@ class OptionForm(VerticalScroll):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         """A field's browse button opens the directory picker for that
-        field; a field's reset button pressed: clear exactly that field's
-        draft key — back to the default — and re-show the field (the
-        button disables itself: the key is no longer set)."""
+        field; a field's reset button clears exactly that field's draft
+        key and re-shows the field."""
         browse = self._browses.get(event.button.id)
         if browse is not None:
             self._open_picker(browse)
@@ -675,10 +627,8 @@ class OptionForm(VerticalScroll):
 
     def _open_picker(self, spec: FieldSpec) -> None:
         """Open the directory picker for ``spec``, starting at the input's
-        current value's nearest existing directory
-        (:func:`picker_location`): the picked directory lands in the
-        input, and the normal change flow does the rest — the parse, the
-        draft write, the reset button's state, the owning screen's gate."""
+        current value's nearest existing directory; the picked directory
+        lands in the input, and the normal change flow does the rest."""
         widget = self.query_one(f"#{self._field_id(spec.key)}", Input)
 
         def accept(path: Path) -> None:
@@ -713,7 +663,7 @@ class OptionForm(VerticalScroll):
         button.disabled = not self._is_set(spec)
 
     def _refresh_resets(self) -> None:
-        """Sync every reset button (the entry refresh's pass)."""
+        """Sync every reset button."""
         for spec in self._specs:
             self._refresh_reset(spec)
 
@@ -740,16 +690,14 @@ class FormScreen(Screen[None]):
 
     The screen resolves its draft (the constructor's explicit one, else
     the running app's ``ColonyTuiApp.drafts`` entry for the screen's
-    :attr:`run_type`), refreshes the form from it on every entry (a screen
-    is mounted once but entered many times), and owns the action gate: the
-    buttons named in :attr:`gated_actions` stay disabled until every field
-    parses and the whole draft resolves — while the status line shows the
-    draft's exact ``ConfigError`` message otherwise (verbatim, the
-    machinery's own wording). Subclasses provide :meth:`compose_body`
-    (which must set ``self._form``), their action buttons, and
-    :meth:`refresh_extras`. A screen may edit several draft sections:
-    :attr:`forms` lists them all, and the entry refresh and the gate cover
-    every one.
+    :attr:`run_type`), refreshes the form from it on every entry, and
+    owns the action gate: the buttons named in :attr:`gated_actions`
+    stay disabled until every field parses and the whole draft resolves;
+    otherwise the status line shows the draft's exact ``ConfigError``
+    message. Subclasses provide :meth:`compose_body` (which must set
+    ``self._form``), their action buttons, and :meth:`refresh_extras`. A
+    screen may edit several draft sections: :attr:`forms` lists them
+    all, and the entry refresh and the gate cover every one.
     """
 
     #: The button ids the action gate enables and disables.
@@ -759,18 +707,14 @@ class FormScreen(Screen[None]):
     _form: OptionForm
 
     #: The first form input takes the focus on entry (the form's scroll
-    #: container is focusable too and would win a plain ``*``); on re-entry
-    #: textual restores the previous focus and this stays out of the way.
+    #: container is focusable too and would win a plain ``*``); on
+    #: re-entry textual restores the previous focus.
     AUTO_FOCUS = "OptionForm Input"
 
-    #: Screen-level arrow-key field navigation (spec addendum decision 4):
-    #: down/up land the focus in the form's fields when it is elsewhere
-    #: (e.g. on the action buttons); inside the form the OptionForm's own
-    #: bindings route the same keys here. The focused widget's own
-    #: bindings keep precedence — an expanded Select's overlay navigates
-    #: with the arrows, a collapsed Select opens with them — and
-    #: left/right stay inside the focused input (the Input's cursor
-    #: bindings).
+    #: Screen-level arrow-key field navigation: down/up land the focus in
+    #: the form's fields when it is elsewhere (e.g. on the action
+    #: buttons); inside the form the OptionForm's own bindings route the
+    #: same keys here. Left/right stay inside the focused input.
     BINDINGS = [
         Binding("down", "next_field", "Next field", show=False),
         Binding("up", "previous_field", "Previous field", show=False),
@@ -907,10 +851,8 @@ class FormScreen(Screen[None]):
             self.app.pop_screen()
 
     def _field_widgets(self) -> list[Widget]:
-        """The screen's field widgets in DOM order — every form's fields
-        (the declaration order of each form's specs, the DOM order the
-        entry auto-focus and tab follow): one Input, Select, or Checkbox
-        per field."""
+        """The screen's field widgets in DOM order (one Input, Select, or
+        Checkbox per field)."""
         return list(self.query("Input, Select, Checkbox"))
 
     def action_next_field(self) -> None:
@@ -925,8 +867,7 @@ class FormScreen(Screen[None]):
 
     def _resolved_or_report(self) -> PipelineConfig | Options | None:
         """The draft's resolved config, or ``None`` after showing why not
-        (a defensive re-check at press time; the gate normally guarantees
-        this succeeds)."""
+        (a defensive re-check at press time)."""
         try:
             return self.draft.resolve()
         except ConfigError as err:
@@ -934,10 +875,9 @@ class FormScreen(Screen[None]):
             return None
 
     def _on_form_change(self) -> None:
-        """The form changed the draft: refresh the extras and the gate —
+        """The form changed the draft: refresh the extras and the gate,
         never the form's own widgets (mid-typing text must not be
-        clobbered). Skipped while the screen is still mounting (the form's
-        initialization events fire before the buttons exist)."""
+        clobbered). Skipped while the screen is still mounting."""
         if not self.is_mounted:
             return
         self.refresh_extras()

@@ -1,4 +1,4 @@
-"""Unit tests for the TUI's ``ConfigDraft`` (ticket 01).
+"""Unit tests for the TUI's ``ConfigDraft``.
 
 Seams under test: one draft per run type. The pipeline draft keeps the
 sectioned chain document (``[pipeline]`` run level plus one stage section

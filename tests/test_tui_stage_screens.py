@@ -1,5 +1,4 @@
-"""Tests for the stage screens: each stage's own independent draft (the
-independent-configs redesign, spec story 36 and §2 of the addendum brief).
+"""Tests for the stage screens: each stage's own independent draft.
 
 Screens under test: the per-stage :class:`StageScreen` — generated from
 the stage registry (``STAGES``), rendering ONE form with every field of
@@ -59,8 +58,8 @@ _MISSING_REQUIRED = {
     "analysis": "missing required key(s): ['seg_dirs', 'raw_dir', 'out_root']",
 }
 
-#: The fields that used to be pipeline-owned (read-only everywhere); the
-#: redesign makes them ordinary editable widgets on their stage's screen.
+#: The fields the chain derives within a run; on a stage screen they are
+#: ordinary editable widgets like every other field.
 _FORMERLY_OWNED = {
     "difference": ("raw_dir", "reference"),
     "segmentation": ("input", "diff_dir"),
@@ -70,9 +69,9 @@ _FORMERLY_OWNED = {
 
 @dataclass(kw_only=True)
 class FutureStageOptions(Options):
-    """A future stage's options (the shape the registry must accommodate):
-    a Literal select and a tuple among the usual kinds — the kinds the
-    three pipeline stages' fields don't all exercise."""
+    """A stand-in stage's options: a Literal select and a tuple among the
+    usual kinds — the kinds the three pipeline stages' fields don't all
+    exercise."""
 
     mode: Literal["a", "b"] = field(default="a", metadata={"help": "Mode."})
     shape: tuple[int, int] = field(default=(4, 4), metadata={"help": "Shape."})
@@ -80,8 +79,8 @@ class FutureStageOptions(Options):
 
 
 def _expected_widget(hint) -> type:
-    """The spec table's widget for a hint — the test's own copy of the
-    mapping, pinning the forms module to the spec."""
+    """The widget kind for a hint — the test's own copy of the forms
+    module's mapping."""
     members = _union_members(hint)
     if members is not None and len(members) == 1:
         return _expected_widget(members[0])
@@ -111,8 +110,8 @@ def test_registry_covers_the_pipeline_stages():
     assert STAGES["analysis"].options is AnalysisOptions
 
 
-def test_future_stage_slots_into_the_registry(monkeypatch):
-    """Adding one registry entry (plus a draft section) is all a future
+def test_a_new_registry_entry_slots_in(monkeypatch):
+    """Adding one registry entry (plus a draft section) is all a new
     stage needs: the same screen class renders its form, including the
     select/tuple kinds."""
     monkeypatch.setitem(
@@ -142,9 +141,9 @@ def test_future_stage_slots_into_the_registry(monkeypatch):
 
 @pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
 def test_every_option_field_renders_as_its_widget(stage):
-    """EVERY field of the stage's dataclass renders as the spec table's
-    widget on its screen — the formerly pipeline-owned ones as ordinary
-    editable widgets now, exactly like the rest; no excluding split."""
+    """EVERY field of the stage's dataclass renders as the widget kind
+    the forms module maps it to — the chain-derived ones as ordinary
+    editable widgets, exactly like the rest; no excluding split."""
     hints = get_type_hints(STAGES[stage].options)
 
     async def scenario() -> None:
@@ -166,12 +165,11 @@ def test_every_option_field_renders_as_its_widget(stage):
 def test_formerly_owned_fields_are_editable_widgets_and_nothing_owned_remains(
     stage,
 ):
-    """The fields the old chain wired read-only (difference raw_dir and
-    reference, segmentation input/diff_dir, analysis raw_dir) render as
-    ordinary widgets on the stage's own form: the segmentation ``input``
-    is a Select, every other one an Input with a browse button where a
-    path hint asks for one. The old mirror/owned machinery is gone from
-    the screen: no mirror form, no ``#owned-values`` line, no
+    """The chain-derived fields (difference raw_dir and reference,
+    segmentation input/diff_dir, analysis raw_dir) render as ordinary
+    widgets on the stage's own form: the segmentation ``input`` is a
+    Select, every other one an Input with a browse button where a path
+    hint asks for one. No mirror form, no ``#owned-values`` line, no
     ``run-level:`` labels anywhere."""
     from colony_tracking.tui.forms import BrowseButton
 
@@ -194,7 +192,7 @@ def test_formerly_owned_fields_are_editable_widgets_and_nothing_owned_remains(
                             f"#browse-{stage}-{kebab(key)}", BrowseButton
                         )
                         assert not browse.can_focus, key
-            # nothing of the old screen remains
+            # no read-only mirror machinery anywhere
             for absent in ("#mirror-title", "#owned-values"):
                 with pytest.raises(NoMatches, match=absent):
                     app.screen.query_one(absent)
@@ -446,7 +444,7 @@ def test_gate_blocks_on_an_unparseable_field(tmp_path):
 
 
 def test_edit_field_and_write_toml_round_trips(tmp_path):
-    """The spec's per-stage decision point: edit a stage field (real
+    """The per-stage decision point: edit a stage field (real
     keystrokes), then *Write TOML…* opens the shared dialog — which
     suggests ``<out_dir parent>/difference.toml`` (the run type's own
     file name, next to its own out setting), writes on Enter, and the

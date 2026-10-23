@@ -1,4 +1,4 @@
-"""The quick-start screen: the full-auto flow (spec requirement 1).
+"""The quick-start screen: the full-auto flow.
 
 Four run-level fields — the raw directory and the out root (both
 required, matching the pipeline's contract), plus the optional reference
@@ -7,11 +7,10 @@ frame and wells filter — and two gated actions:
 - *Write TOML…* writes the draft through the shared
   :class:`~colony_tracking.tui.screens._save.SaveConfigDialog` — a valid
   :class:`~colony_tracking.pipeline.PipelineConfig` document the CLI's
-  ``pipeline --config`` accepts unchanged (config-only mode, spec
-  requirement 4);
+  ``pipeline --config`` accepts unchanged (config-only mode);
 - *Run now* is the full-auto chain: the same shared dialog writes the
-  TOML first (reproducibility, spec requirement 5 — the suggested path
-  is ``<out_root>/pipeline.toml``), then the whole chain runs on the
+  TOML first (reproducibility — the suggested path is
+  ``<out_root>/pipeline.toml``), then the whole chain runs on the
   resolved config with every stage option at its default, on the shared
   :class:`~colony_tracking.tui.screens.run.RunScreen`.
 
@@ -27,8 +26,8 @@ parser rejects keeps its last valid value and shows its error on the
 status line, everything else shows the pipeline's exact
 :class:`~colony_tracking.pipeline.ConfigError` message verbatim (the
 same text the CLI reports). Nothing is written or run while the gate is
-closed; the dialog reports deeper config errors the same way the spec
-asks for (exact problem, nothing written).
+closed; the dialog reports deeper config errors (exact problem, nothing
+written).
 
 The two path fields (raw directory, out root) carry the forms' browse
 button (see :mod:`colony_tracking.tui.forms`): it opens the directory
@@ -61,9 +60,9 @@ from ..forms import (
 from ._save import SaveConfigDialog
 from .run import open_pipeline_run
 
-#: The run-level fields the quick start shows, in the spec's order. The
-#: labels pull their help text from the config dataclass's metadata —
-#: the single source, like the CLI's flag help.
+#: The run-level fields the quick start shows. The labels pull their
+#: help text from the config dataclass's metadata — the single source,
+#: like the CLI's flag help.
 _FIELDS: tuple[str, ...] = ("raw_dir", "out_root", "reference", "wells")
 
 #: The fields that get a browse button: the run level's single-Path
@@ -152,10 +151,9 @@ class QuickStartScreen(Screen[None]):
     #: screens' gate: disabled until the draft resolves).
     GATED_ACTIONS: ClassVar[tuple[str, ...]] = ("qs-write", "qs-run-now")
 
-    #: Screen-level arrow-key field navigation (spec addendum decision 4,
-    #: the form screens' bindings): down/up step between the run-level
-    #: fields, wrapping; the inputs' own cursor bindings keep left/right
-    #: in-field.
+    #: Screen-level arrow-key field navigation (the form screens'
+    #: bindings): down/up step between the run-level fields, wrapping;
+    #: the inputs' own cursor bindings keep left/right in-field.
     BINDINGS = [
         Binding("down", "next_field", "Next field", show=False),
         Binding("up", "previous_field", "Previous field", show=False),

@@ -1,4 +1,4 @@
-"""End-to-end: the wired app (ticket 04).
+"""End-to-end: the wired app.
 
 The registry-driven flows, launched as the real app would be: the home
 menu opens the quick start and the three stage screens (through the app's
@@ -63,8 +63,8 @@ _MISSING_REQUIRED = {
 
 
 def _mini_plate(raw: Path) -> None:
-    """The one-well mini plate the real difference stage runs on (the
-    recipe ticket 03's un-mocked test uses: tiny, deterministic, no ring)."""
+    """The one-well mini plate the real difference stage runs on (tiny,
+    deterministic, no ring)."""
     build_mini_plate(
         raw,
         layout="flat",

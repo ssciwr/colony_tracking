@@ -1,48 +1,31 @@
-"""ConfigDraft: the TUI's one config document per run type.
+"""ConfigDraft: the TUI's config document per run type.
 
-The TUI never edits a partially-resolved config object; each run type
-edits a plain, TOML-shaped document of its own. The four run types
-(:data:`RUN_TYPES`) — the full pipeline chain, and each of the three
-stages on its own — carry one :class:`ConfigDraft` and write and read one
-independent config TOML (:data:`TOML_NAMES`): nothing a draft stores,
-resolves, or suggests comes from any other run type's configuration or
-outputs.
+Each run type (:data:`RUN_TYPES` — the pipeline chain and one per stage)
+edits a plain, TOML-shaped document of its own and writes and reads its
+own config TOML (:data:`TOML_NAMES`); nothing a draft stores, resolves,
+or suggests comes from another run type's configuration or outputs.
 
-Independence boundary
----------------------
-The pipeline draft is the chain. Its document keeps the sectioned shape a
-``pipeline.toml`` always had — the ``[pipeline]`` run level plus one
-optional section per stage, plain values only (paths as strings, tuples
-as lists) so a TOML round-trip is exact — resolves through
-``PipelineConfig.from_dict``, and keeps the within-chain wiring: the
-pipeline-owned fields (:data:`colony_tracking.pipeline._OWNED`) are still
-refused at ``set`` with the pipeline's own reason, because *within one
-chain run* they are derived from the run level and the chain wiring, not
-from another run. See the module docstring of
-:mod:`colony_tracking.pipeline` for what the chain derives and why.
+The pipeline draft keeps the sectioned ``pipeline.toml`` shape — the
+``[pipeline]`` run level plus one optional section per stage, plain
+values only (paths as strings, tuples as lists) so a TOML round-trip is
+exact — resolves through ``PipelineConfig.from_dict``, and keeps the
+within-chain wiring: the pipeline-owned fields
+(:data:`colony_tracking.pipeline._OWNED`) are refused at ``set``
+(:meth:`~colony_tracking.pipeline.PipelineConfig`'s module docstring for
+what the chain derives and why).
 
-A stage run type's draft (``difference``, ``segmentation``, ``analysis``)
-is flat and fully explicit: its document is one table — a detached copy
-of its own section — where every field of the stage's options dataclass
-(:mod:`colony_tracking._options`) is an ordinary key. ``input`` /
-``diff_dir`` (segmentation), ``raw_dir`` / ``reference`` (difference) and
-``raw_dir`` (analysis) are stored like any other key, nothing falls back
-to a run level or to a sibling stage's settings, and there is no
-cross-run pre-flight: a standalone run's config is self-contained.
+A stage draft is flat and fully explicit: its document is one table — a
+detached copy of its own section — where every field of the stage's
+options dataclass (:mod:`colony_tracking._options`) is an ordinary key;
+a standalone run's config derives nothing.
 
-Validation and loading
-----------------------
 :meth:`ConfigDraft.resolve` is where a draft's values are fully
-validated — unknown keys, missing required keys, and mistyped values
-raise :class:`~colony_tracking.pipeline.ConfigError` with the machinery's
-exact wordings, logged through :data:`colony_tracking.log` (nothing ever
-prints) and shown verbatim by a screen's action gate.
-:meth:`ConfigDraft.load` is the inverse: reading a config TOML of its run
-type *replaces* the draft (a load resets, it never merges) and validates
-structure only — unknown sections/keys are refused so a typo cannot sit
-in the draft unnoticed — while owned keys, missing requireds, and
-mistyped values pass and surface verbatim the next time the gate
-resolves.
+validated, raising :class:`~colony_tracking.pipeline.ConfigError` with
+the machinery's exact wordings (logged through :data:`colony_tracking.log`,
+shown verbatim by a screen's action gate). :meth:`ConfigDraft.load`
+replaces the draft with a config TOML of its run type and validates
+structure only; owned keys, missing requireds, and mistyped values pass
+and surface verbatim at the next resolve.
 """
 
 from __future__ import annotations
@@ -78,15 +61,15 @@ from ..pipeline import (
 )
 
 #: The run types the TUI edits — one :class:`ConfigDraft` (and one config
-#: TOML) per type: the full chain, and every stage run on its own.
+#: TOML) per type.
 RUN_TYPES: tuple[str, ...] = ("pipeline", "difference", "segmentation", "analysis")
 
 #: The stage sections of a pipeline document (the config's stage names,
 #: also the standalone stage run types).
 STAGES: tuple[str, ...] = _STAGES
 
-#: Each stage run type's options dataclass — the dataclass a stage draft's
-#: flat document is fully explicit about.
+#: Each stage run type's options dataclass — what a stage draft's flat
+#: document is explicit about.
 _STAGE_OPTIONS: dict[str, type[Options]] = {
     "difference": DifferenceOptions,
     "segmentation": SegmentationOptions,
@@ -101,7 +84,7 @@ TITLES: dict[str, str] = {
     "analysis": "Analyze",
 }
 
-#: Each run type's own config file name — the four independent config TOMLs.
+#: Each run type's own config file name.
 TOML_NAMES: dict[str, str] = {
     "pipeline": "pipeline.toml",
     "difference": "difference.toml",
@@ -120,8 +103,7 @@ def _copy_value(value: Any) -> Any:
 
 
 def _unknown_run_type(run_type: str) -> ConfigError:
-    """The config error for a run type no registry knows (logged; see
-    :data:`RUN_TYPES`)."""
+    """The config error for a run type no registry knows."""
     message = f"unknown run type {run_type!r} — expected one of {list(RUN_TYPES)}"
     log.error("tui draft: %s", message)
     return ConfigError(message)
@@ -136,11 +118,10 @@ def _stage_config_error(run_type: str, message: str) -> ConfigError:
 
 
 def _check_pipeline_sections(doc: dict[str, Any]) -> None:
-    """Structural validation of a pipeline document (a load's only check):
-    known sections, known keys inside each one — with the exact wordings
-    ``PipelineConfig.from_dict`` raises for them. Owned keys, missing
-    required keys, and mistyped values pass: they sit in the draft and
-    the gate reports them verbatim at ``resolve``."""
+    """Structural validation of a pipeline document (a load's only
+    check): known sections, known keys inside each one — ``PipelineConfig.from_dict``'s
+    exact wordings. Owned keys, missing requireds, and mistyped values
+    pass; the gate reports them verbatim at ``resolve``."""
     unknown_sections = sorted(set(doc) - set(_KNOWN_SECTIONS))
     if unknown_sections:
         raise _config_error(
@@ -174,16 +155,15 @@ def _check_pipeline_sections(doc: dict[str, Any]) -> None:
 def resolve_stage_document(run_type: str, doc: dict[str, Any]) -> Options:
     """Validate and build one stage's options from its flat document.
 
-    The checkpoints mirror ``PipelineConfig.from_dict``'s, restated for a
-    stage's own table — in this order, each raising (logged with the
-    run-type prefix) :class:`ConfigError`: the document must be a mapping;
-    its keys must be exactly the dataclass's field names; every field
-    without a default must be present (in the dataclass's declaration
-    order); every present value must be compatible with its declared type.
-    Values coerce through :func:`~colony_tracking._options._from_plain`
-    exactly as a read-back TOML value would; omitted keys take their
-    dataclass defaults. Every field is ordinary here — there is no
-    owned-key refusal and nothing is derived.
+    Mirroring ``PipelineConfig.from_dict``'s checkpoints, in this order,
+    each raising (logged with the run-type prefix) :class:`ConfigError`:
+    the document must be a mapping; its keys must be exactly the
+    dataclass's field names; every field without a default must be
+    present; every present value must match its declared type. Values
+    coerce through :func:`~colony_tracking._options._from_plain` exactly
+    as a read-back TOML value would; omitted keys take their dataclass
+    defaults. Every field is ordinary — no owned-key refusal, nothing
+    derived.
     """
     options = _STAGE_OPTIONS.get(run_type)
     if options is None:
@@ -226,8 +206,8 @@ def write_stage_config(run_type: str, options: Options, path: Path | str) -> Pat
     The effective document — the options'
     :meth:`~colony_tracking._options.Options.to_dict` minus the ``None``
     values — is written whole, defaults included, so the file is
-    self-contained and round-trips through the dataclass's ``from_dict``
-    unchanged. Parent directories are created. Returns the path.
+    self-contained and round-trips through the dataclass's ``from_dict``.
+    Parent directories are created. Returns the path.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -239,26 +219,22 @@ def write_stage_config(run_type: str, options: Options, path: Path | str) -> Pat
 
 
 class ConfigDraft:
-    """One run type's in-progress config document (see the module docstring).
+    """One run type's in-progress config document (see the module
+    docstring).
 
-    The run type is fixed at construction: the draft holds exactly one
-    run's document, and the app keys its four drafts by
-    :data:`RUN_TYPES`. A draft is its run type's config state: the screens
-    edit it, and every action (write the TOML, run) goes through
-    :meth:`resolve` / :meth:`write`. A key that is not set takes its
-    dataclass default at ``resolve`` time, exactly like an omitted key in
-    the TOML config file.
+    The run type is fixed at construction. A key that is not set takes
+    its dataclass default at ``resolve`` time, exactly like an omitted
+    key in the TOML config file.
     """
 
     def __init__(self, run_type: str = "pipeline") -> None:
         if run_type not in RUN_TYPES:
             raise _unknown_run_type(run_type)
-        #: This draft's run type: which of :data:`RUN_TYPES` it is — and
+        #: This draft's run type: which of :data:`RUN_TYPES` it is, and
         #: which config TOML (:data:`TOML_NAMES`) it writes and reads.
         self.run_type: str = run_type
         #: The run-level (``[pipeline]``) section: plain values only. Only
-        #: the pipeline draft carries values here — a stage run derives
-        #: nothing from a run level.
+        #: the pipeline draft carries values here.
         self.run_level: dict[str, Any] = {}
         #: The stage sections held: stage name -> plain values (may be
         #: empty). The pipeline draft carries one per stage (an empty one
@@ -300,18 +276,14 @@ class ConfigDraft:
         setting on the pipeline draft) to the plain value ``value``.
 
         ``Path`` values are stored as strings and tuples as lists, so the
-        document stays TOML-shaped and round-trips exactly. On the
-        pipeline draft an owned key
+        document stays TOML-shaped. On the pipeline draft an owned key
         (:data:`colony_tracking.pipeline._OWNED`) is refused with the
         pipeline's own reason — within one chain run those fields are
-        derived, never stored. A stage draft stores every key of its
-        dataclass — a standalone run's config is fully explicit,
-        ``input``/``diff_dir``/``raw_dir``/``reference`` included. An
+        derived. A stage draft stores every key of its dataclass. An
         unknown section raises :class:`ConfigError`.
         """
         section = self._section(stage)
-        # A section added after construction (a future stage's) owns
-        # nothing yet; _OWNED only knows the pipeline's own stages.
+        # _OWNED only covers the pipeline's registered stages.
         if (
             self.is_pipeline
             and stage != RUN_LEVEL
@@ -325,25 +297,21 @@ class ConfigDraft:
 
     def get(self, stage: str, key: str, default: Any = None) -> Any:
         """The value of ``key`` in section ``stage``, or ``default`` when
-        the key is unset (the stage default then applies at ``resolve``)."""
+        the key is unset."""
         return self._section(stage).get(key, default)
 
     def clear(self, stage: str, key: str) -> None:
-        """Drop ``key`` from section ``stage`` — back to the stage default
-        (dropping an unset key is a no-op)."""
+        """Drop ``key`` from section ``stage`` — back to the stage
+        default (an unset key is a no-op)."""
         self._section(stage).pop(key, None)
 
     def document(self) -> dict[str, Any]:
         """A TOML-shaped copy of the draft as it stands right now.
 
         The pipeline draft's document is sectioned: the ``[pipeline]``
-        section plus the non-empty stage sections — the shape a
-        ``pipeline.toml`` has. A stage draft's document is flat: a
-        detached copy of its own section's plain values, every key an
-        ordinary field of the stage's dataclass. The copy is detached
-        from the draft (editing it cannot corrupt the draft), which makes
-        it safe to hand to config resolution, TOML preview, and tests
-        alike.
+        section plus the non-empty stage sections. A stage draft's
+        document is flat: a detached copy of its own section's plain
+        values. Editing the copy cannot corrupt the draft.
         """
         if not self.is_pipeline:
             section = self.stages[self.run_type]
@@ -359,15 +327,12 @@ class ConfigDraft:
         return doc
 
     def resolve(self) -> PipelineConfig | Options:
-        """The resolved config for the draft as it stands right now.
-
-        The pipeline draft goes through ``PipelineConfig.from_dict``:
-        owned fields are derived from the run level and the chain wiring,
-        defaults fill every unset key, and every invalid draft raises
-        :class:`ConfigError` with the pipeline's own message. A stage
-        draft goes through :func:`resolve_stage_document` — the stage's
-        own options, fully explicit, that machinery's missing/mistyped
-        wordings included (a screen's gate reports them verbatim).
+        """The resolved config for the draft as it stands right now: a
+        :class:`~colony_tracking.pipeline.PipelineConfig` from
+        ``PipelineConfig.from_dict`` for the chain, the stage's own
+        :class:`~colony_tracking._options.Options` from
+        :func:`resolve_stage_document` otherwise; invalid drafts raise
+        :class:`ConfigError` with the machinery's own message.
         """
         if self.is_pipeline:
             return PipelineConfig.from_dict(self.document())
@@ -376,10 +341,7 @@ class ConfigDraft:
     def write(self, path: Path | str) -> PipelineConfig | Options:
         """Resolve the draft and write it as its run type's TOML config
         file (a run started from the draft writes the same file first, so
-        the run is reproducible). Returns the resolved config — a
-        :class:`~colony_tracking.pipeline.PipelineConfig` for the chain,
-        the stage's own :class:`~colony_tracking._options.Options`
-        otherwise."""
+        the run is reproducible). Returns the resolved config."""
         config = self.resolve()
         if self.is_pipeline:
             write_config(config, path)
@@ -391,10 +353,9 @@ class ConfigDraft:
         """Read a config TOML of this run type into the draft, replacing
         the draft's content with the file's (a load resets, it never
         merges). Structural validation only: unknown sections/keys are
-        refused with the resolvers' wordings, so a typo cannot sit in the
-        draft unnoticed — while owned keys, missing requireds, and
-        mistyped values pass and surface verbatim the next time
-        :meth:`resolve` runs. Returns the path.
+        refused with the resolvers' wordings; owned keys, missing
+        requireds, and mistyped values surface verbatim at the next
+        :meth:`resolve`. Returns the path.
         """
         path = Path(path)
         try:

@@ -1,12 +1,11 @@
 """The per-stage screens: one :class:`StageScreen` per stage, generated
-from the stage registry (spec story 36, requirement 2).
+from the stage registry.
 
 The registry (:data:`STAGES`) maps a draft section name to its options
 dataclass and user-visible title (the titles are
 :data:`~colony_tracking.tui.draft.TITLES` — the same names the config
 file's stage sections and the home menu use). There is exactly one
-reusable screen class, instantiated per stage: a future train stage
-slots in by adding a registry entry, with no per-stage class anywhere.
+reusable screen class, instantiated per stage.
 
 Every field of the stage's options dataclass renders as a form field,
 generated from the type hints and help metadata alone through
@@ -21,9 +20,8 @@ stands for (:attr:`run_type`): the app's
 ``drafts`` entry for that run type — and writes and reads that run
 type's own independent config TOML.
 
-The actions are the spec's per-stage decision point (requirement 5):
-*Run this stage*, *Write TOML…* and *Load TOML…* (the shared
-save/load dialogs in
+The actions are the stage-level decision points: *Run this stage*,
+*Write TOML…* and *Load TOML…* (the shared save/load dialogs in
 :mod:`~colony_tracking.tui.screens._save`), and *Back*. The run/write
 actions stay disabled until the screen's draft resolves with the values
 on screen; a failing resolve shows the draft's exact
@@ -70,9 +68,7 @@ class StageSpec:
 
 #: The stage registry: draft section name → spec. The titles come from
 #: :data:`~colony_tracking.tui.draft.TITLES` — the same wording the save
-#: and load dialogs show. A future stage (train) slots in by adding an
-#: entry — the screens are one class, generated from the entry's
-#: dataclass.
+#: and load dialogs show.
 STAGES: dict[str, StageSpec] = {
     "difference": StageSpec(
         "difference", TITLES["difference"], DifferenceOptions
@@ -86,13 +82,12 @@ STAGES: dict[str, StageSpec] = {
 
 class StageScreen(FormScreen):
     """The screen for one stage: all of the stage's options as one form,
-    and the spec's four actions.
+    and the four actions.
 
     Instantiated per stage from the registry: ``StageScreen("difference")``
-    renders the difference stage's options — a future stage needs only a
-    :data:`STAGES` entry. The run/write actions gate on the draft (see
-    :class:`~colony_tracking.tui.forms.FormScreen`); a passing press hands
-    the resolved options to :meth:`start_run`.
+    renders the difference stage's options. The run/write actions gate on
+    the draft (see :class:`~colony_tracking.tui.forms.FormScreen`); a
+    passing press hands the resolved options to :meth:`start_run`.
     """
 
     gated_actions: ClassVar[tuple[str, ...]] = ("run-stage", "write-toml")
@@ -172,13 +167,9 @@ class StageScreen(FormScreen):
             self.action_back()
 
     def action_load_toml(self) -> None:
-        """*Load TOML…*: open the shared load-config dialog — it asks for
-        the path and replaces the draft with the file's content (a load
-        resets, it never merges); errors stay inside it, open for
-        correction, and the screen refreshes its form from the draft on
-        resume. Loading is never gated: it works on an incomplete draft,
-        and anything wrong in the file surfaces verbatim at the next
-        resolve."""
+        """*Load TOML…*: open the shared load-config dialog (see
+        :class:`~colony_tracking.tui.screens._save.LoadConfigDialog`);
+        loading is never gated."""
         self.app.push_screen(LoadConfigDialog(self.draft))
 
     def action_run_stage(self) -> None:
@@ -198,12 +189,12 @@ class StageScreen(FormScreen):
         resolved :class:`~colony_tracking._options.Options` for it. The
         shipped default dispatches to the run screens' entry point
         :func:`~colony_tracking.tui.screens.run.open_stage_run`, which
-        writes the stage's own config TOML first (reproducibility, spec
-        requirement 5) and pushes the run screen; the entry point
-        resolves the draft itself, so the config handed over here is the
-        gate's confirmation. Tests can pass a ``start_run`` callable to
-        the constructor to observe the hand-off without the dialog and
-        the runner, leaving the form machinery unchanged.
+        writes the stage's own config TOML first (reproducibility) and
+        pushes the run screen; the entry point resolves the draft
+        itself, so the config handed over here is the gate's
+        confirmation. Tests can pass a ``start_run`` callable to the
+        constructor to observe the hand-off without the dialog and the
+        runner, leaving the form machinery unchanged.
         """
         if self._start_run is not None:
             self._start_run(stage, config)

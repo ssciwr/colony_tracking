@@ -94,7 +94,7 @@ without the model.
 | `--mask-margin` | `15` | Dilation (px) of the final-frame groups forming the growth mask. |
 | `--min-overlap` | `0.5` | Minimum fraction of an instance's pixels that must lie inside the growth mask and inside a single group. |
 | `--max-fg-ratio` | `1.5` | Drift gate: skip frames whose elevated-foreground fraction exceeds this multiple of the reference frame's (0 disables the gate). |
-| `--exclude-before` | `none` | Blank frames before this frame number and flag colonies first detected at or before it as pre-existing. |
+| `--exclude-before` | `none` | Flag colonies first detected at or before this frame number as pre-existing (excluded from the analysis); frames below it are still segmented and tracked. |
 | `--no-merge-touching` | `unset` | Pre-merge touching segments of one group (disable with --no-merge-touching). |
 | `--redo` | `unset` | Reprocess wells even when their done marker is present. |
 | `--reid-only` | `unset` | Re-derive segments from the saved label images and re-track without the model (no GPU). |
@@ -119,9 +119,9 @@ trees.
 | `--max-bad-segments` | `2` | A well with at least this many distinct bad colonies is a bad well. |
 | `--keep-bad-wells` | `unset` | Include bad wells in aggregates and plots. |
 | `--keep-pre-existing` | `unset` | Include pre-existing colonies in aggregates and plots. |
-| `--raw-seg-dir` | `none` | Raw-root segmentation tree probed to flag pre-existing colonies of difference roots. |
-| `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start). |
-| `--min-growth-2step` | `0.3` | A colony whose every exact 2-frame window grows by less than 1 + this factor is bad (no_growth). |
+| `--raw-seg-dir` | `none` | Raw-root segmentation tree probed to flag pre-existing colonies of difference roots; without it the raw reference frame itself is probed (dark centroid window). |
+| `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start); pre-existing colonies are exempt. |
+| `--min-growth-2step` | `0.3` | A colony whose every exact 2-frame window grows by less than 1 + this factor is bad (no_growth); pre-existing colonies are exempt. |
 | `--refresh-geometry` | `unset` | Re-fit the well circles instead of using the cached well_geometry.csv. |
 | `--plots-only` | `unset` | Re-render the plots from the existing trajectories CSV without image IO. |
 | `--no-plots` | `unset` | Skip the plots. |

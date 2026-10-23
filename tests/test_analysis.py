@@ -107,12 +107,13 @@ def test_circle_fit_rejects_broken_ring(tmp_path):
 # --- time, ancestors, rim exclusion, bad flags ---------------------------------
 
 
-def _row(well, frame, t_seconds, colony_id, area, group_id=None, merged=""):
+def _row(well, frame, t_seconds, colony_id, area, group_id=None, merged="",
+         pre=0):
     """A synthetic colonies.csv row (canonical columns)."""
     return {
         "well": well, "frame": frame, "t_seconds": t_seconds,
         "colony_id": colony_id, "group_id": group_id if group_id is not None else colony_id,
-        "merged_with": merged, "pre_existing": 0, "area_px": area,
+        "merged_with": merged, "pre_existing": pre, "area_px": area,
     }
 
 
@@ -227,6 +228,28 @@ def test_bad_flags(tmp_path):
     assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
     assert all(r["bad"] == 1 for r in by_cid[2])
     assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[3])
+
+
+def test_pre_existing_colonies_are_never_bad(tmp_path):
+    """A pre-existing colony gets no bad flags (from_start/no_growth): it is
+    excluded from the analysis anyway and must not exclude its well."""
+    well = "-A001"
+    rows = []
+    # colony 1: present from frame 1, stationary -> would be from_start +
+    # no_growth, but it is pre-existing
+    for f in range(1, 6):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 1, 500, pre=1))
+    # colony 2: appears at frame 2, stationary debris -> no_growth applies
+    for f in range(2, 7):
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 2, 500))
+    traj = analysis.build_trajectories(
+        rows, {}, _options(tmp_path), series_start_frame=1)
+    by_cid = {}
+    for r in traj:
+        by_cid.setdefault(r["colony_id"], []).append(r)
+    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[1])
+    assert all(r["pre_existing"] == 1 for r in by_cid[1])
+    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
 
 
 # --- bad-well split ------------------------------------------------------------
@@ -361,9 +384,10 @@ def test_probe_noop_for_raw_root(tmp_path):
     assert rows[0]["pre_existing"] == "0"
 
 
-def test_probe_missing_label_image_warns_and_noops(tmp_path, caplog):
-    """Without the reference frame's label image in the raw root the probe
-    skips with a warning and flags nothing."""
+def test_probe_falls_back_when_raw_root_label_missing(tmp_path, caplog):
+    """A raw_seg_dir without the reference frame's label image falls back to
+    the raw-frame probe (warned); here the raw dir is absent too, so the
+    fallback also skips (no well circle) and flags nothing."""
     seg_root, raw_seg, well = _probe_setup(tmp_path)
     for p in (raw_seg / well).glob("*--LO005--*__labels.tif"):
         p.unlink()
@@ -371,7 +395,100 @@ def test_probe_missing_label_image_warns_and_noops(tmp_path, caplog):
     analysis.probe_pre_existing(
         well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg))
     assert rows[0]["pre_existing"] == "0"
-    assert any("pre-existing probe skipped" in m for m in caplog.messages)
+    assert any("falling back" in m for m in caplog.messages)
+    assert any("raw-frame pre-existing probe skipped" in m
+               for m in caplog.messages)
+
+
+def _fallback_plate(tmp_path, well="-A001", n_frames=6):
+    """A noise-free raw plate with a ring, a static dark disk present from
+    frame 1 at (1200, 1200) (pre-existing material the difference stream
+    cannot see) and plain agar at (400, 400)."""
+    return build_mini_plate(
+        tmp_path / "raw",
+        layout="flat",
+        wells=(well,),
+        n_frames=n_frames,
+        rings={well: RingSpec()},
+        disks={well: [DiskSpec("damage", cy=1200.0, cx=1200.0, r0=60.0,
+                               delta=4000.0)]},
+        noise_sigma=0.0,
+    )
+
+
+def test_probe_falls_back_to_raw_frame_and_flags_dark_centroid(tmp_path):
+    """Without raw_seg_dir the raw reference frame itself is probed: a colony
+    whose first-detection centroid sits in a clearly dark window (below
+    PRE_EXISTING_DARK_FRAC of the well interior's median) is flagged
+    pre-existing on all its rows; a colony on agar is untouched, and an
+    existing flag is never cleared."""
+    well = "-A001"
+    plate = _fallback_plate(tmp_path)
+    seg_root = tmp_path / "seg" / "seg_growth_diff_LO005"
+    seg_root.mkdir(parents=True)
+    paths = [tmp_path / "raw" / name for name in plate.wells[well]]
+    geo = analysis.fit_well_circle(paths)
+    assert geo is not None
+    rows = [
+        # colony 1: first detected at frame 6 on the dark disk -> flagged
+        _crow(well, 6, 1, 1200.0, 1200.0),
+        _crow(well, 7, 1, 1210.0, 1205.0),
+        # colony 2: on agar (as bright as the background) -> untouched
+        _crow(well, 6, 2, 400.0, 400.0),
+        # colony 3: already flagged by the pipeline -> stays 1
+        _crow(well, 6, 3, 400.0, 400.0, pre="1"),
+    ]
+    analysis.probe_pre_existing(well, rows, seg_root, _options(tmp_path), geo)
+    by = {(int(r["frame"]), int(r["colony_id"])): r["pre_existing"] for r in rows}
+    assert by[(6, 1)] == 1
+    assert by[(7, 1)] == 1
+    assert by[(6, 2)] == "0"
+    assert by[(6, 3)] == "1"
+
+
+def test_probe_fallback_also_runs_with_a_raw_seg_dir(tmp_path):
+    """The raw-frame probe is the fallback, not an alternative: with
+    raw_seg_dir set but its label image missing, a dark first-detection
+    centroid in the raw plate is still flagged."""
+    seg_root, raw_seg, well = _probe_setup(tmp_path)
+    for p in (raw_seg / well).glob("*--LO005--*__labels.tif"):
+        p.unlink()
+    plate = _fallback_plate(tmp_path)
+    paths = [tmp_path / "raw" / name for name in plate.wells[well]]
+    geo = analysis.fit_well_circle(paths)
+    rows = [_crow(well, 6, 1, 1200.0, 1200.0)]
+    analysis.probe_pre_existing(
+        well, rows, seg_root, _options(tmp_path, raw_seg_dir=raw_seg), geo)
+    assert rows[0]["pre_existing"] == 1
+
+
+def test_probe_fallback_skips_without_well_circle(tmp_path, caplog):
+    """Without the fitted well circle there is no background anchor: the
+    raw-frame probe skips with a warning and flags nothing."""
+    well = "-A001"
+    _fallback_plate(tmp_path)
+    seg_root = tmp_path / "seg" / "seg_growth_diff_LO005"
+    seg_root.mkdir(parents=True)
+    rows = [_crow(well, 6, 1, 1200.0, 1200.0)]
+    analysis.probe_pre_existing(well, rows, seg_root, _options(tmp_path), None)
+    assert rows[0]["pre_existing"] == "0"
+    assert any("no well circle; raw-frame pre-existing probe skipped" in m
+               for m in caplog.messages)
+
+
+def test_probe_fallback_skips_without_raw_frame(tmp_path, caplog):
+    """A raw tree without the reference frame skips the raw-frame probe with
+    a warning and flags nothing."""
+    well = "-A001"
+    plate = _fallback_plate(tmp_path, n_frames=4)  # no LO005
+    seg_root = tmp_path / "seg" / "seg_growth_diff_LO005"
+    seg_root.mkdir(parents=True)
+    paths = [tmp_path / "raw" / name for name in plate.wells[well]]
+    geo = analysis.fit_well_circle(paths)
+    rows = [_crow(well, 6, 1, 1200.0, 1200.0)]
+    analysis.probe_pre_existing(well, rows, seg_root, _options(tmp_path), geo)
+    assert rows[0]["pre_existing"] == "0"
+    assert any("no raw LO005 frame" in m for m in caplog.messages)
 
 
 # --- growth rates --------------------------------------------------------------

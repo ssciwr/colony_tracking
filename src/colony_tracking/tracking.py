@@ -37,15 +37,15 @@ Before tracking, segments of one frame and group that touch (within
 pre-merged into the larger one — colonies that touch have grown together —
 unless ``merge_touching`` is off.
 
-Pre-existing filter (``exclude_before = N``): every frame with frame
-number < N yields an empty label image and no CSV rows (outputs stay 1:1
-with the input frames), and every colony whose first detection is at
-frame number <= N is flagged ``pre_existing=1`` (rows kept). Frame numbers
-are compared directly, so N need not exist in the well. Because the
-earlier frames are blanked, flagging effectively means "first detected
-at N". This replaces the prototype's ``--exclude_lo`` and
-``--drop_labels_before`` (which always travelled together) — a raw-root
-run now blanks too, an intentional behaviour change.
+Pre-existing filter (``exclude_before = N``): every colony whose first
+detection is at frame number <= N is flagged ``pre_existing=1`` (rows
+kept). Frames below N are segmented and tracked like any other — their
+colonies come out flagged, and the analysis stage excludes flagged
+colonies from the aggregates and plots (and from the bad-segment checks,
+so they cannot exclude their well). Frame numbers are compared directly,
+so N need not exist in the well. This replaces the prototype's
+``--exclude_lo`` and ``--drop_labels_before`` (which always travelled
+together).
 
 Ancestors (:func:`ancestor_counts`): per colony-frame row, the number of
 distinct original colonies combined in the segment — the colony itself
@@ -178,7 +178,8 @@ class TrackingResult:
     """The tracking output for one well.
 
     ``labels`` holds one colony-ID label image (uint32, 0 = background) per
-    input frame, 1:1 — frames blanked by ``exclude_before`` come out empty.
+    input frame, 1:1 — gate-skipped frames arrive empty from the caller and
+    stay empty.
     ``rows`` holds CSV-ready dicts with the tracker-owned ``colonies.csv``
     columns: ``frame`` (the frame number), ``colony_id``, ``group_id``,
     ``merged_with`` (';'-joined absorbed IDs, empty when none),
@@ -212,10 +213,10 @@ def track_colonies(
     and tracked forward within each group (see the module docstring for the
     identity rules).
 
-    With ``exclude_before = N``, frames with frame number < N contribute no
-    segments and stay empty in the output (1:1 with the input frames), and
-    colonies first detected at frame number <= N are flagged
-    ``pre_existing=1`` (rows kept).
+    With ``exclude_before = N``, colonies first detected at frame number
+    <= N are flagged ``pre_existing=1`` (rows kept); frames below N are
+    segmented and tracked like any other — their colonies come out
+    flagged, not blanked.
 
     Returns a :class:`TrackingResult` (label images, CSV-ready rows,
     done-marker counters).
@@ -248,8 +249,6 @@ def track_colonies(
         g: [[] for _ in frames] for g in range(1, n_groups + 1)
     }
     for t, (number, k) in enumerate(frames):
-        if exclude_before is not None and number < exclude_before:
-            continue  # blanked: no segments, the output frame stays empty
         for s in extract_segments(k):
             hits = np.bincount(groups[s.mask].ravel(), minlength=n_groups + 1)
             if not hits[1:].any():  # only possible inside the dilated margin
@@ -265,8 +264,6 @@ def track_colonies(
         active: list[dict[str, object]] = []  # colonies: id, mask, area, first
 
         for t, (number, _) in enumerate(frames):
-            if exclude_before is not None and number < exclude_before:
-                continue  # blanked: nothing is tracked, the frame stays empty
             segs = sorted(per_group[g][t], key=lambda s: -s.area)
             if merge_touching:
                 segs = premerge_touching(segs, desc=desc, frame=number, group=g)

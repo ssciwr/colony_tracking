@@ -226,8 +226,9 @@ class SegmentationOptions(Options):
     exclude_before: int | None = field(
         default=None,
         metadata={
-            "help": "Blank frames before this frame number and flag colonies "
-            "first detected at or before it as pre-existing."
+            "help": "Flag colonies first detected at or before this frame "
+            "number as pre-existing (excluded from the analysis); frames "
+            "below it are still segmented and tracked."
         },
     )
     merge_touching: bool = field(
@@ -294,21 +295,24 @@ class AnalysisOptions(Options):
         default=None,
         metadata={
             "help": "Raw-root segmentation tree probed to flag pre-existing "
-            "colonies of difference roots."
+            "colonies of difference roots; without it the raw reference "
+            "frame itself is probed (dark centroid window)."
         },
     )
     start_frames: int = field(
         default=1,
         metadata={
             "help": "A colony whose first valid frame lies within this many frames "
-            "of the series start is bad (from_start)."
+            "of the series start is bad (from_start); pre-existing colonies "
+            "are exempt."
         },
     )
     min_growth_2step: float = field(
         default=0.3,
         metadata={
             "help": "A colony whose every exact 2-frame window grows by less than "
-            "1 + this factor is bad (no_growth)."
+            "1 + this factor is bad (no_growth); pre-existing colonies "
+            "are exempt."
         },
     )
     refresh_geometry: bool = field(

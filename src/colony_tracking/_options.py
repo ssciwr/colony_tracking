@@ -30,6 +30,31 @@ Reference = Literal["first"] | int
 InputMode = Literal["raw", "diff"]
 
 
+def parse_reference(text: str) -> Reference:
+    """Parse one reference input: ``first`` (case-insensitive), a bare
+    1-based frame number (``5``), or the file-name form ``LO005`` (the
+    ``LO`` prefix is case-insensitive, the number may be zero-padded).
+
+    The one parser for user-typed reference text: the TUI's forms and
+    quick start parse through it, so they accept exactly what the CLI's
+    ``--reference`` flag accepts and reject the rest with the same
+    message. Raises ValueError otherwise; blank text is the caller's
+    "unset" and never reaches this parser.
+    """
+    lowered = text.strip().lower()
+    if lowered == "first":
+        return "first"
+    if lowered.startswith("lo"):
+        lowered = lowered[2:]
+    try:
+        return int(lowered)
+    except ValueError:
+        raise ValueError(
+            f"invalid reference {text!r}: expected 'first', a 1-based frame "
+            "number, or LO<nnn>"
+        ) from None
+
+
 def _to_plain(value: Any) -> Any:
     """Convert a field value to a plain (TOML-friendly) value."""
     if isinstance(value, Path):

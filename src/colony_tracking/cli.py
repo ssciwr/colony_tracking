@@ -1,7 +1,8 @@
 """The ``colony-tracking`` command line interface.
 
 One entry point with subcommands ``difference | segment | analyze | pipeline
-| train`` (``train`` has sub-subcommands ``prepare | train | evaluate``).
+| train | tui`` (``train`` has sub-subcommands ``prepare | train |
+evaluate``; ``tui`` takes no flags and opens the terminal user interface).
 Every option of a stage's options dataclass maps 1:1 to a kebab-case flag
 derived programmatically from the dataclass fields, with the per-field help
 text as the flag's help (the single source the TUI reuses too). Well names
@@ -35,7 +36,7 @@ from ._options import (
     SegmentationOptions,
     _union_members,
 )
-from .analysis import AnalysisSummary, run_analysis
+from .analysis import run_analysis
 from .difference import run_difference
 from .finetune import (
     EvaluateOptions,
@@ -47,6 +48,7 @@ from .finetune import (
 )
 from .pipeline import ConfigError, PipelineConfig, run_pipeline
 from .segmentation import run_segmentation
+from .tui import run_tui
 
 #: Flag names that are not the kebab-cased field name (repeatable path lists
 #: read as singular directories on the command line).
@@ -354,6 +356,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "evaluate",
         help="Benchmark a checkpoint: per-instance IoU on the held-out split.",
     ), EvaluateOptions)
+    subparsers.add_parser(
+        "tui",
+        help="The terminal user interface: configure stages, write the TOML "
+        "config, and run stages or the whole chain in-process.",
+        description="The terminal user interface: quick start, per-stage "
+        "option forms, config writing, and in-process runs with a live "
+        "log pane. Takes no flags.",
+    )
     return parser
 
 
@@ -406,6 +416,8 @@ def _dispatch(args: argparse.Namespace) -> int:
             log.error("train %s: %s", args.train_command, summary.error)
             return 1
         return 0
+    if args.command == "tui":
+        return run_tui()
     raise _UsageError(f"unknown command {args.command!r}")
 
 

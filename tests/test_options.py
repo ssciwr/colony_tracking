@@ -15,7 +15,32 @@ from colony_tracking._options import (
     AnalysisOptions,
     DifferenceOptions,
     SegmentationOptions,
+    parse_reference,
 )
+
+
+# --- parse_reference ---------------------------------------------------------
+
+
+def test_parse_reference_accepts_the_cli_spellings():
+    """``first`` (any case, surrounded by blanks), bare 1-based frame
+    numbers, and the file-name ``LO<nnn>`` form — the spellings the CLI's
+    ``--reference`` flag accepts."""
+    assert parse_reference("first") == "first"
+    assert parse_reference(" FIRST ") == "first"
+    assert parse_reference("5") == 5
+    assert parse_reference(" 005 ") == 5
+    assert parse_reference("LO005") == 5
+    assert parse_reference("lo5") == 5
+
+
+def test_parse_reference_rejects_anything_else():
+    """Anything else — including an empty string — raises ValueError with
+    the parser's message."""
+    with pytest.raises(ValueError, match=r"invalid reference 'second'"):
+        parse_reference("second")
+    with pytest.raises(ValueError, match="expected 'first', a 1-based frame"):
+        parse_reference("")
 
 
 # --- field contracts (names, order, required-ness) -------------------------

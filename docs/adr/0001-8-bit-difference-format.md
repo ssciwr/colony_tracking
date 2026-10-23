@@ -20,10 +20,10 @@ and the reference frame's file name are recorded per well in `scale.txt`
 
 Considered and rejected:
 
-- **int16 counts** — exact counts, but 2× the size of the uint8 preview and
+- **int16 counts.** Exact counts, but 2× the size of the uint8 preview and
   not directly displayable; the per-well scale recorded in `scale.txt` is
   enough to recover counts for the later stages.
-- **the `abs` / `abs_percentile` presentations** — experimental alternative
+- **The `abs` / `abs_percentile` presentations.** Experimental alternative
   presentations from the prototype; cut from the package (listed in the
   spec's Out of Scope).
 
@@ -34,5 +34,5 @@ Considered and rejected:
   is self-describing per well.
 - The previews are approximate counts: downstream decisions must not rely
   on count accuracy beyond the display limit.
-- Frames acquired before the reference frame come out polarity-flipped —
+- Frames acquired before the reference frame come out polarity-flipped;
   documented, intended, unchanged.

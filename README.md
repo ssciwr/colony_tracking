@@ -7,7 +7,7 @@ measurements, pooled aggregates, and plots.
 
 Three stages make up the standard chain:
 
-1. **difference** subtracts a reference frame from every other frame of a
+1. **difference** subtracts a reference frame from all other frames of a
    well and stores the result as uint8 preview frames (128 = no change,
    ADR 0001).
 2. **segment** runs micro-sam instance segmentation over the difference
@@ -26,6 +26,9 @@ the checkpoint against the held-out wells.
 
 ## Install
 
+The project installs from source only. Clone or download the repository,
+then install with uv:
+
 [uv](https://docs.astral.sh/uv/) manages the environment (ADR 0003).
 Python ≥ 3.12 is required; development uses 3.13.
 
@@ -34,11 +37,10 @@ uv sync
 ```
 
 This creates `.venv`, installs the package editable, and honours the
-committed `uv.lock`. `micro-sam` and `torch` come from PyPI. Segmentation
-needs a CUDA GPU; the difference, analyze, and finetune-conversion stages
-do not.
+committed `uv.lock`. Segmentation needs a CUDA GPU;
+the difference, analyze, and finetune-conversion stages do not.
 
-The test suite is hermetic (no real data, no GPU, no network):
+The test suite is hermetic: no real data, no GPU, no network.
 
 ```
 uv run pytest
@@ -46,13 +48,19 @@ uv run pytest
 
 ## Usage
 
-The `colony-tracking` console script has five subcommands. Runtime output
-goes to stderr through the package logger; nothing prints. Exit codes:
-0 success, 1 runtime error (a stage failure, logged with context), 2 usage
-error (bad flags, invalid option combination, invalid config).
+To run `colony-tracking`, you can use `uv run colony-tracking` inside the repository.  
+To run from a different directory, first activate the environment, followed by
+starting colony-tracking:  
 
-Resume behaviour is shared by the difference and segment stages: a well
-with a complete done marker is skipped on a re-run unless `redo` is set.
+```bash
+source [path/to/repo/].venv/bin/activate
+colony-tracking
+```
+
+The `colony-tracking` console script has five subcommands, which are explained below.
+
+Runs can be resumed after stopping, a well with a complete done marker is
+skipped on a re-run unless `redo` is set.
 
 ### difference
 
@@ -93,7 +101,7 @@ without the model.
 | `--min-overlap` | `0.5` | Minimum fraction of an instance's pixels that must lie inside the growth mask and inside a single group. |
 | `--max-fg-ratio` | `1.5` | Drift gate: skip frames whose elevated-foreground fraction exceeds this multiple of the reference frame's (0 disables the gate). |
 | `--exclude-before` | `none` | Flag colonies first detected at or before this frame number as pre-existing (excluded from the analysis); frames below it are still segmented and tracked. |
-| `--no-merge-touching` | `unset` | Pre-merge touching segments of one group (disable with --no-merge-touching). |
+| `--no-merge-touching` | `unset` | By default, touching segments of one group are pre-merged; the flag disables the pre-merge. |
 | `--redo` | `unset` | Reprocess wells even when their done marker is present. |
 | `--reid-only` | `unset` | Re-derive segments from the saved label images and re-track without the model (no GPU). |
 
@@ -152,19 +160,20 @@ out_root = "out"
 reference = 5
 ```
 
-The config file is optional: a flag-only run is equivalent to the minimal
-config —
+The config file is optional. A flag-only run is equivalent to the minimal
+config above:
 
 ```
 colony-tracking pipeline --raw-dir data/20260825_160101_Plate1 --out-root out --reference 5
 ```
 
-— and the flags are required when `--config` is omitted. Per-stage tuning
-still needs a config file.
+`--raw-dir` and `--out-root` are required when `--config` is omitted.
+Per-stage tuning still needs a config file.
 
 Tree names derive from the out root and the reference: `difference_LO005`,
-`seg_growth_diff_LO005`, `analysis/`. A stage section can override its
-tree's location (`[difference].out_dir`, `[segmentation].out_dir`,
+`seg_growth_diff_LO005`, `analysis/` (with `reference = "first"` the first
+two are plain `difference` and `seg_growth_diff`). A stage section can
+override its tree's location (`[difference].out_dir`, `[segmentation].out_dir`,
 `[analysis].out_root` and `[analysis].seg_dirs`). With a numeric
 reference, the segment stage's `exclude_before` defaults to the reference
 frame number.
@@ -237,23 +246,21 @@ opts = DifferenceOptions(raw_dir="plate", out_dir="difference_LO005", reference=
 summary = run_difference(opts)
 ```
 
-Every stage follows the same shape — an options dataclass whose defaults
+Every stage follows the same shape: an options dataclass whose defaults
 mirror the CLI flags, a `run_*` function, and a small summary dataclass.
-The pipeline step takes a `PipelineConfig` instead;
-`read_config(path)` and `write_config(config, path)` — module-level
-functions in `colony_tracking.pipeline` — round-trip it as TOML. The
-finetune track exposes `PrepareOptions`/`TrainOptions`/`EvaluateOptions`
-with their `run_*` functions the same way; the conversion module is
-private.
+The pipeline step takes a `PipelineConfig` instead; `read_config(path)`
+and `write_config(config, path)`, module-level functions in
+`colony_tracking.pipeline`, round-trip it as TOML. The finetune track
+exposes `PrepareOptions`/`TrainOptions`/`EvaluateOptions` with their
+`run_*` functions the same way; the conversion module is private.
 
 ## Input trees
 
 Every stage accepts two input layouts:
 
-- **flat** — all wells' frames in one directory; the well is parsed from
-  the leading `-<A-H>\d{3}` of the file name.
-- **per-well** — one subdirectory per well; the well is the directory
-  name.
+- flat: all wells' frames in one directory; the well is parsed from the
+  leading `-<A-H>\d{3}` of the file name.
+- per-well: one subdirectory per well; the well is the directory name.
 
 File-name example (the real acquisition's vocabulary):
 
@@ -273,7 +280,7 @@ reference frame 5 writes `difference_LO005/`, `seg_growth_diff_LO005/`,
 and `analysis/` under its out root.
 
 **A difference tree** holds, per well, the uint8 `_diff_uint8.tif` frames
-plus `scale.txt` — key/value lines with `reference` (the reference frame's
+plus `scale.txt`, key/value lines with `reference` (the reference frame's
 file name) and `display_limit_int16` (the float display limit). Readers
 tolerate missing or extra lines. Frames acquired before the reference
 frame come out polarity-flipped; that is intended (128 = no change, ADR
@@ -281,30 +288,30 @@ frame come out polarity-flipped; that is intended (128 = no change, ADR
 
 **A segmentation tree** holds, per well:
 
-- `<frame-stem>__labels.tif` — one label image per input frame (uint32;
+- `<frame-stem>__labels.tif`: one label image per input frame (uint32;
   0 = background; colony IDs), 1:1 with the input frames.
   `ref__labels.tif` holds the group labels of the reference frame.
-- `colonies.csv` — one row per colony per frame, columns
+- `colonies.csv`: one row per colony per frame, columns
   `well, frame, t_seconds, image, colony_id, group_id, merged_with,
   pre_existing, area_px, centroid_y, centroid_x`. `frame` is the 1-based
   frame number, `t_seconds` the raw `T` field (milliseconds here),
   `merged_with` the ';'-separated colony IDs absorbed in that frame's
   merge (empty when none).
-- `_done.txt` — tab-separated counters: `frames`, `groups`, `colonies`,
+- `_done.txt`: tab-separated counters for `frames`, `groups`, `colonies`,
   `pre_existing_colonies`, `merge_events`, `forked_segments`,
   `discarded_instances`. Presence means the well is complete.
 
 **The analyze stage** writes, under `<out-root>/<seg-root-name>/`:
 
-- `trajectories.csv` — one row per colony per frame: `well, frame,
+- `trajectories.csv`: one row per colony per frame, columns `well, frame,
   t_hours, colony_id, group_id, merged_with, ancestors, pre_existing,
   area_px, age_h, rim_frac, rim_excluded, bad, bad_reason`
-- `growth_rates.csv` — one row per colony: `well, colony_id, group_id,
-  first_frame, last_frame, n_frames, n_frames_valid, area_first,
-  area_last, max_ancestors, rim_excluded_frame, growth_rate_per_h,
-  growth_doublings_per_day, abs_growth_px_per_h, bad, bad_reason,
-  pre_existing`
-- `bad_segments.csv` — one row per bad colony (reason, frames, areas)
+- `growth_rates.csv`: one row per colony, columns `well, colony_id,
+  group_id, first_frame, last_frame, n_frames, n_frames_valid,
+  area_first, area_last, max_ancestors, rim_excluded_frame,
+  growth_rate_per_h, growth_doublings_per_day, abs_growth_px_per_h,
+  bad, bad_reason, pre_existing`
+- `bad_segments.csv`: one row per bad colony (reason, frames, areas)
 - pooled aggregates: `areas_by_ancestors.csv`, `rates_by_ancestors.csv`
 - plots: `growth_curves_by_ancestors.png`, `mean_area_by_ancestors.png`,
   `growth_rates_by_ancestors.png`
@@ -327,7 +334,7 @@ ones; new writes always use the canonical names.
 checks it against the prototype's published outputs. It is excluded from
 the default run and skips cleanly unless both prerequisites are present:
 
-- the data root via the `COLONY_TRACKING_DATA_ROOT` environment variable —
+- the data root via the `COLONY_TRACKING_DATA_ROOT` environment variable:
   the directory holding the raw plate (a `*_Plate*` subdirectory) and the
   prototype's outputs (`seg_growth_diff_LO005/`, `analysis/`, ...). The
   prototype trees are read-only;
@@ -358,12 +365,13 @@ clear message, so CI and dataless checkouts are unaffected.
 
 ## Documentation
 
-- `GLOSSARY.md` — the binding domain vocabulary (data, colonies,
+- `GLOSSARY.md`: the binding domain vocabulary (data, colonies,
   exclusions and flags, analysis).
-- `docs/adr/` — decision records: 0001 (8-bit difference frames with
+- `docs/adr/`: decision records on 0001 (8-bit difference frames with
   128 = no change), 0002 (growth-mask gating from the final frame), 0003
-  (uv + PyPI micro-sam).
+  (uv + PyPI micro-sam), and 0004 (`exclude_before` flags pre-existing
+  colonies instead of blanking their frames).
 
 ## License
 
-MIT — see `LICENSE`.
+MIT; see `LICENSE`.

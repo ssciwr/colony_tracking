@@ -27,6 +27,6 @@ not pay the torch import cost.
   prototype's conda torch, so small pixel-level segmentation differences
   against the prototype's outputs are expected. They are covered by visual
   QA and number sanity in the one-time full-plate check rather than byte
-  identity — an explicit user decision.
+  identity; that trade-off is an explicit user decision.
 - The finetuning track (micro-sam `train_sam`) runs in the same uv
   environment.

@@ -1,14 +1,22 @@
 """StageRunner: run the stages in-process from the TUI (spec story 37).
 
 :func:`start` runs one of ``run_difference`` / ``run_segmentation`` /
-``run_analysis`` / ``run_pipeline`` on a resolved
-:class:`~colony_tracking.pipeline.PipelineConfig` in a thread — the
-stage functions themselves are called unchanged, so a TUI run behaves
-exactly like a CLI run of the same config (resume via done markers
-included). One run at a time: starting a second run while one is active is
-an error the UI reports (no cancellation in v1 — stopping means quitting
-the TUI with Ctrl-Q; the stages' done markers make the next start a
-resume).
+``run_analysis`` / ``run_pipeline`` on its kind's resolved config in a
+thread — the stage functions themselves are called unchanged, so a TUI
+run behaves exactly like a CLI run of the same config (resume via done
+markers included). One run at a time: starting a second run while one is
+active is an error the UI reports (no cancellation in v1 — stopping
+means quitting the TUI with Ctrl-Q; the stages' done markers make the
+next start a resume).
+
+Each run kind carries its run type's own resolved config: a stage kind
+(:data:`KINDS` minus ``pipeline``) receives that stage's own
+:class:`~colony_tracking._options.Options` — exactly what the stage's
+independent, fully-explicit config resolves to, nothing derived from
+another stage or run type — and the ``pipeline`` kind still receives the
+chain's :class:`~colony_tracking.pipeline.PipelineConfig` (the chain's
+within-run wiring applies there, see
+:mod:`colony_tracking.pipeline`).
 
 Log routing: while a run is active, a :class:`logging.Handler` attached to
 the package logger :data:`colony_tracking.log` forwards every record to the
@@ -43,6 +51,7 @@ from typing import Any, Callable
 from textual.app import App
 
 from .. import log
+from .._options import Options
 from ..analysis import AnalysisSummary, run_analysis
 from ..difference import DifferenceSummary, run_difference
 from ..pipeline import PipelineConfig, PipelineSummary, run_pipeline
@@ -51,13 +60,16 @@ from ..segmentation import SegmentationSummary, run_segmentation
 #: The kinds :func:`start` can run: one per stage plus the whole chain.
 KINDS: tuple[str, ...] = ("difference", "segmentation", "analysis", "pipeline")
 
-#: The runner's table: kind -> the run to make on a resolved config. The
+#: The runner's table: kind -> the run to make on the kind's resolved
+#: config — a stage kind takes that stage's own resolved
+#: :class:`~colony_tracking._options.Options`, the ``pipeline`` kind the
+#: chain's :class:`~colony_tracking.pipeline.PipelineConfig`. The
 #: lambdas resolve the ``run_*`` globals at call time, so tests can
 #: monkeypatch them on this module.
-_RUNNERS: dict[str, Callable[[PipelineConfig], Any]] = {
-    "difference": lambda config: run_difference(config.difference),
-    "segmentation": lambda config: run_segmentation(config.segmentation),
-    "analysis": lambda config: run_analysis(config.analysis),
+_RUNNERS: dict[str, Callable[[PipelineConfig | Options], Any]] = {
+    "difference": lambda options: run_difference(options),
+    "segmentation": lambda options: run_segmentation(options),
+    "analysis": lambda options: run_analysis(options),
     "pipeline": lambda config: run_pipeline(config),
 }
 
@@ -157,7 +169,9 @@ class RunHandle:
     """
 
     kind: str
-    config: PipelineConfig
+    #: The resolved config the run runs on: the stage's own Options for a
+    #: stage kind, the chain's PipelineConfig for ``pipeline``.
+    config: PipelineConfig | Options
     #: The stage/pipeline summary when the run returned one.
     summary: object | None = None
     #: The exception when the stage raised one (never fatal).
@@ -264,7 +278,7 @@ def _run(
 
 def start(
     kind: str,
-    config: PipelineConfig,
+    config: PipelineConfig | Options,
     *,
     on_done: Callable[[RunHandle], None],
     on_record: Callable[[logging.LogRecord], None] | None = None,
@@ -274,9 +288,12 @@ def start(
 
     ``kind`` is one of :data:`KINDS`; the run happens in a thread — via
     ``app.run_worker(..., thread=True)`` when the running textual ``app``
-    is given, on a plain daemon thread otherwise — calling the stage's
-    ``run_*`` function unchanged with the config's resolved stage options
-    (the wiring ``run_pipeline`` would give the stage).
+    is given, on a plain daemon thread otherwise — calling the kind's
+    run function unchanged with the resolved config: a stage kind
+    receives that stage's own
+    :class:`~colony_tracking._options.Options` (nothing derived — the
+    stage's config is fully explicit), the ``pipeline`` kind the chain's
+    :class:`~colony_tracking.pipeline.PipelineConfig`.
 
     ``on_done(handle)`` fires when the run is finished (success, failed
     summary, or exception); ``on_record`` optionally receives every log

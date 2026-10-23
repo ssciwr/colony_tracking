@@ -21,25 +21,26 @@ stages are crash-safe via their per-well done markers, and the next
 start resumes where the run left off.
 
 Direct runs are written first (spec requirement 5): the entry points
-below run the draft's pre-flight checks, then write the TOML through the
-shared :class:`~colony_tracking.tui.screens._save.SaveConfigDialog` (the
-suggested path is ``<out_root>/pipeline.toml``), then push the run
-screen with the dialog's resolved config:
+below resolve the caller's draft, then write the TOML through the shared
+:class:`~colony_tracking.tui.screens._save.SaveConfigDialog` (each run
+type's own suggested path), then push the run screen with the dialog's
+resolved config:
 
-- :func:`open_pipeline_run` — *Run whole pipeline from draft* (also the
-  quick start's *Run now*): the full chain on the draft as it stands.
-- :func:`open_stage_run` — *Run this stage*: one stage with the wiring
-  ``run_pipeline`` would give it (the runner passes the resolved stage
-  options, owned fields forced). Re-running a stage re-enters it — the
-  per-well done markers make that a resume, not a wipe. For
-  ``segmentation`` the chain wiring consumes the difference tree; when
-  the draft has no ``[difference]`` section and the tree does not exist,
-  that is reported before anything starts.
+- :func:`open_pipeline_run` — the quick start's *Run now* (and any
+  whole-chain start): the full chain on the pipeline draft as it stands,
+  its within-run wiring intact.
+- :func:`open_stage_run` — the stage screens' *Run this stage*: one
+  stage on its own draft — the stage's own independent, fully-explicit
+  config, and the run takes its config's inputs as given. There is no
+  cross-run pre-flight: whether another run type has produced what this
+  run's paths point at is the config's own content, not the runner's
+  business. Re-running a stage re-enters it — the per-well done markers
+  make that a resume, not a wipe.
 
 Both entry points return the problem message when a run cannot start
-(the runner busy, an invalid draft, missing wiring) after reporting it
-in the UI, and ``None`` once the flow is underway — the dialog takes
-over from there (cancelling it writes nothing and runs nothing).
+(the runner busy, an invalid draft) after reporting it in the UI, and
+``None`` once the flow is underway — the dialog takes over from there
+(cancelling it writes nothing and runs nothing).
 """
 
 from __future__ import annotations
@@ -54,6 +55,7 @@ from textual.app import App, ComposeResult
 from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
+from ..._options import Options
 from ...pipeline import (
     AnalysisSummary,
     ConfigError,
@@ -242,7 +244,7 @@ class RunScreen(Screen[None]):
     def __init__(
         self,
         kind: str,
-        config: PipelineConfig,
+        config: PipelineConfig | Options,
         *,
         toml_path: Path | None = None,
     ) -> None:
@@ -253,7 +255,10 @@ class RunScreen(Screen[None]):
             )
         self.kind = kind
         #: The resolved config the run goes out with — for a direct start
-        #: the dialog's write result, so the run is reproducible from it.
+        #: the dialog's write result, so the run is reproducible from
+        #: it: a stage kind's own
+        #: :class:`~colony_tracking._options.Options`, the chain's
+        #: :class:`~colony_tracking.pipeline.PipelineConfig`.
         self.config = config
         #: Where the run's config TOML was written (None: not recorded).
         self.toml_path = toml_path
@@ -345,32 +350,15 @@ class RunScreen(Screen[None]):
         error.display = True
 
 
-def _wiring_problem(
-    kind: str, draft: ConfigDraft, config: PipelineConfig
-) -> str | None:
-    """The chain-wiring problem of running ``kind`` alone from ``draft``
-    (None: good to go): the segment stage consumes the difference tree —
-    when the draft has no ``[difference]`` section (so nothing in this
-    run produces it) and the tree does not exist, that is reported before
-    starting."""
-    if kind != "segmentation" or draft.stages["difference"]:
-        return None
-    diff_dir = config.segmentation.diff_dir
-    if diff_dir.is_dir():
-        return None
-    return (
-        f"the segment stage consumes the difference tree {diff_dir} — it "
-        "does not exist and the draft has no [difference] section: run "
-        "the difference stage first (or set [difference] options)"
-    )
-
-
 def _open_run(app: App[Any], draft: ConfigDraft, kind: str) -> str | None:
     """The shared direct-run flow (see the module docstring): the
-    pre-flight checks, then the shared save dialog — the reproducibility
-    write — and, on a successful write, the run screen with the dialog's
-    resolved config. Returns the problem message when a check failed
-    (also reported in the UI), None once the dialog is up."""
+    active-run check, then the draft resolved, then the shared save
+    dialog — the reproducibility write — and, on a successful write, the
+    run screen with the dialog's resolved config. Returns the problem
+    message when a check failed (also reported in the UI), None once the
+    dialog is up. There is no cross-run pre-flight: the draft's own
+    inputs are taken as given (:func:`resolve` is where anything wrong
+    with them reports)."""
     active = runner.active()
     if active is not None:
         return _report(app, ACTIVE_MESSAGE.format(kind=active.kind))
@@ -378,11 +366,8 @@ def _open_run(app: App[Any], draft: ConfigDraft, kind: str) -> str | None:
         config = draft.resolve()
     except ConfigError as err:
         return _report(app, str(err))
-    problem = _wiring_problem(kind, draft, config)
-    if problem is not None:
-        return _report(app, problem)
 
-    def after_write(result: tuple[Path, PipelineConfig] | None) -> None:
+    def after_write(result: tuple[Path, PipelineConfig | Options] | None) -> None:
         if result is None:  # cancelled: nothing runs
             return
         path, written = result
@@ -393,25 +378,27 @@ def _open_run(app: App[Any], draft: ConfigDraft, kind: str) -> str | None:
 
 
 def open_pipeline_run(app: App[Any], draft: ConfigDraft) -> str | None:
-    """*Run whole pipeline from draft* — also the quick start's *Run
-    now*: the full chain on the draft as it stands, its TOML written
-    first (see the module docstring).
+    """Start the whole chain from the pipeline draft — also the quick
+    start's *Run now*: the full chain on ``draft`` as it stands, its own
+    TOML written first (see the module docstring).
 
-    Returns the problem message when a pre-flight check failed (also
-    reported in the UI), None once the flow is underway.
+    Returns the problem message when a check failed (also reported in
+    the UI), None once the flow is underway.
     """
     return _open_run(app, draft, "pipeline")
 
 
 def open_stage_run(app: App[Any], draft: ConfigDraft, stage: str) -> str | None:
-    """*Run this stage* — the stage screens' action (the ticket-04
-    wiring calls this): one stage from ``draft`` with the wiring
-    ``run_pipeline`` would give it, its TOML written first (see the
-    module docstring). Re-running a stage re-enters it (a resume via the
-    done markers).
+    """Start one stage on its own — the stage screens' action (the
+    ticket-04 wiring calls this): a standalone run of ``stage`` on ``draft``,
+    that stage type's own independent, fully-explicit config, its own
+    TOML written first (see the module docstring). The run takes its
+    config's inputs as given — no other run type's state is consulted
+    (a stage's ``resolve`` is the only gate on the config itself).
+    Re-running a stage re-enters it (a resume via the done markers).
 
-    Returns the problem message when a pre-flight check failed (also
-    reported in the UI), None once the flow is underway.
+    Returns the problem message when a check failed (also reported in
+    the UI), None once the flow is underway.
     """
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r} — expected one of {list(STAGES)}")

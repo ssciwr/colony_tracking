@@ -229,34 +229,48 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 
 ### tui
 
-The terminal user interface: `colony-tracking tui` (no flags). The same
-stages as the CLI, driven from one in-progress config document shared by
-every screen; every runtime line the stages log streams live into the
-run screen. The home menu offers:
+The terminal user interface: `colony-tracking tui` (no flags). Four run
+types — the whole pipeline chain, and Difference / Segment / Analyze
+each on its own — each edit their own in-progress config and write and
+read their own config TOML; nothing on a screen is derived from another
+run type's configuration or outputs (the chain's own wiring — segment
+consuming the difference tree, the shared out root — applies only
+within one pipeline run). Every runtime line the stages log streams
+live into the run screen. The home menu offers:
 
 - **Quick start (full-auto)** — the raw directory and the out root (the
-  reference frame and wells optional), then *Run now*: the whole chain
-  runs in-process with every stage option at its default.
-- **Difference / Segment / Analyze** — one screen per stage: its options
-  as a form (the same option dataclasses the CLI flags come from; labels
-  are the kebab-case flag names), the pipeline-owned fields shown
-  read-only with their derived values, and *Run this stage*. Re-running a
-  stage re-enters it — per-well done markers make that a resume, not a
-  wipe.
-- **Pipeline config** — the run-level settings plus the draft's effective
-  TOML preview.
+  reference frame and wells optional), *Run now*: the whole chain runs
+  in-process with every stage option at its default. Edits and writes
+  the chain's `pipeline.toml`.
+- **Difference / Segment / Analyze** — one screen per stage on its own:
+  every option of the stage's dataclass as a form field (the same
+  option dataclasses the CLI flags come from; labels are the kebab-case
+  flag names) — including the ones the chain would wire for you,
+  e.g. segmentation's input mode and its difference-tree directory —
+  plus *Run this stage*, *Write TOML…*, and *Load TOML…* for the
+  stage's own flat config file (`difference.toml` / `segmentation.toml`
+  / `analysis.toml`). Re-running a stage re-enters it — per-well done
+  markers make that a resume, not a wipe.
+- **Pipeline config** — the chain's config in one place: the run-level
+  settings, the per-stage sections (the fields the chain wiring derives
+  within one run shown read-only), and the effective TOML preview;
+  *Write TOML…* / *Load TOML…* for `pipeline.toml`.
 - **Train** — planned; the stage registry leaves the slot.
 
 Path fields (the raw directory, the out root, output directories, and
 similar) carry a *browse* button that opens a directory picker; the
 choice lands in the field like typed text.
 
-Each stage is a decision point: after its options are filled, either
-*Write TOML…* or a direct start — and a direct start writes the TOML
-first, so every run is reproducible from its config file. The suggested
-path is `<out-root>/pipeline.toml`. Config-only mode is the same flow
-without a run: fill what you need, *Write TOML…*, quit, and run
-`colony-tracking pipeline --config <file>` later.
+Each run type is a decision point: after its options are filled, either
+*Write TOML…* or a direct start — and a direct start writes that run
+type's own TOML first, so every run is reproducible from its config
+file. A stage screen suggests its config beside the stage's own output
+directory (`<out-dir>/difference.toml`); the chain suggests
+`<out-root>/pipeline.toml`. *Load TOML…* reads a run type's config back
+into its screens (a load resets, it never merges). Config-only mode is
+the same flow without a run: fill what you need, *Write TOML…*, quit,
+and run the CLI later — the chain via
+`colony-tracking pipeline --config <file>`.
 
 A run opens on its own screen: the live log, the stage status line, and
 the final per-stage summaries (from the summary objects, never from the

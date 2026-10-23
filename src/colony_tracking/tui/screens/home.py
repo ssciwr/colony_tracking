@@ -3,8 +3,10 @@
 One entry per top-level action, in the spec's order: Quick start (full-auto)
 — raw frames to final analysis with zero configuration beyond the raw
 directory; the three stages (Difference, Segment, Analyze), each startable
-on its own and re-runnable (per-well done markers make a re-run a resume);
-Pipeline config (the run-level settings and the TOML); and the disabled
+on its own and re-runnable (per-well done markers make a re-run a resume),
+each on its own independent config (its run type's own draft and TOML —
+nothing derived from another run); Pipeline config (the chain's run-level
+settings, stage sections, and TOML); and the disabled
 ``Train — planned`` entry — the stage registry leaves training a slot, but
 this feature adds no training functionality.
 """

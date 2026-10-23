@@ -1,33 +1,43 @@
-"""The textual application: navigation, screen registry, and the shared
-draft.
+"""The textual application: navigation, screen registry, and the four
+run-type drafts.
 
-:class:`ColonyTuiApp` is the whole TUI's root: it owns the one
-:class:`~colony_tracking.tui.draft.ConfigDraft` every screen edits (the
-config source of truth), the screen registry (:attr:`SCREENS`) every
-screen is opened through, and the escape-to-go-back navigation:
+:class:`ColonyTuiApp` is the whole TUI's root: it owns the four
+:class:`~colony_tracking.tui.draft.ConfigDraft` instances the screens
+edit — one per run type, keyed by
+:data:`~colony_tracking.tui.draft.RUN_TYPES` in :attr:`drafts`; each is
+its run type's config source of truth and each writes and reads its own
+independent config TOML (:data:`~colony_tracking.tui.draft.TOML_NAMES`)
+— the screen registry (:attr:`SCREENS`) every screen is opened through,
+and the escape-to-go-back navigation:
 
 - ``quick_start`` — the full-auto flow
-  (:class:`~colony_tracking.tui.screens.quick_start.QuickStartScreen`);
+  (:class:`~colony_tracking.tui.screens.quick_start.QuickStartScreen`),
+  which edits the chain's ``drafts["pipeline"]``;
 - ``difference`` / ``segmentation`` / ``analysis`` — one
   :class:`~colony_tracking.tui.screens.stage.StageScreen` per registered
   stage, generated from the stage's options dataclass via the stage
   registry (:data:`colony_tracking.tui.screens.stage.STAGES`) — a future
-  stage (train) slots in there, with no per-stage class anywhere;
-- ``config`` — the run level plus the effective TOML
-  (:class:`~colony_tracking.tui.screens.config.ConfigScreen`).
+  stage (train) slots in there, with no per-stage class anywhere; each
+  stage screen edits its own run type's draft (its ``drafts`` entry), a
+  flat and fully-explicit document;
+- ``config`` — the chain's run level plus the effective TOML
+  (:class:`~colony_tracking.tui.screens.config.ConfigScreen`), the
+  pipeline draft again.
+
+No screen edits another run type's draft — each run type holds an
+independent config and derives no option from any other run.
 
 There is no ``run`` entry: the live run screen
 (:class:`~colony_tracking.tui.screens.run.RunScreen`) is pushed by the
-flow that starts a run, never opened from a menu. The stage screens'
-run actions reach it through
-:func:`~colony_tracking.tui.screens.run.open_stage_run` /
-:func:`~colony_tracking.tui.screens.run.open_pipeline_run` (the shipped
+flow that starts a run, never opened from a menu. The stage screens' run
+actions reach it through
+:func:`~colony_tracking.tui.screens.run.open_stage_run` (the shipped
 default of
 :meth:`StageScreen.start_run <colony_tracking.tui.screens.stage.StageScreen.start_run>`),
 the quick start's *Run now* through
 :func:`~colony_tracking.tui.screens.run.open_pipeline_run` — both entry
-points write the config TOML first (reproducibility) and then push the
-run screen, which starts the run through the
+points write their run type's own config TOML first (reproducibility)
+and then push the run screen, which starts the run through the
 :mod:`~colony_tracking.tui.runner` in-process.
 
 Everything user-visible goes into widgets; runtime diagnostics flow through
@@ -42,7 +52,7 @@ from textual.app import App
 from textual.binding import Binding
 from textual.screen import Screen
 
-from .draft import ConfigDraft
+from .draft import RUN_TYPES, ConfigDraft
 from .screens.config import ConfigScreen
 from .screens.home import HomeScreen
 from .screens.quick_start import QuickStartScreen
@@ -52,8 +62,9 @@ from .screens.stage import STAGES, StageScreen
 def _stage_screen(name: str) -> Callable[[], Screen]:
     """The screen factory for one registered stage: a
     :class:`~colony_tracking.tui.screens.stage.StageScreen` for ``name``
-    (the draft comes from the running app; the run actions use the
-    shipped default run flow — see
+    (the draft comes from the running app's ``drafts`` entry for the
+    stage's own run type; the run action uses the shipped default run
+    flow — see
     :meth:`~colony_tracking.tui.screens.stage.StageScreen.start_run`)."""
 
     def factory() -> Screen:
@@ -66,8 +77,10 @@ class ColonyTuiApp(App[None]):
     """The colony-tracking TUI (see the module docstring).
 
     The screen registry (:attr:`SCREENS`) names every screen the home
-    menu opens; the home screen is the bottom of the stack and
-    :attr:`draft` is the one config document every screen edits.
+    menu opens; the home screen is the bottom of the stack, and
+    :attr:`drafts` holds the four run types' independent config
+    documents — a screen edits its own run type's entry and nothing
+    else's.
     """
 
     TITLE = "colony-tracking"
@@ -89,8 +102,15 @@ class ColonyTuiApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
-        #: The one draft every screen edits (the config source of truth).
-        self.draft = ConfigDraft()
+        #: The four run types' drafts — one :class:`ConfigDraft` per run
+        #: type, keyed by :data:`~colony_tracking.tui.draft.RUN_TYPES`
+        #: (the config sources of truth): the quick start and the config
+        #: screen edit the chain's pipeline entry, every stage screen its
+        #: own stage's flat entry, and each run type writes and reads
+        #: only its own config TOML.
+        self.drafts: dict[str, ConfigDraft] = {
+            run_type: ConfigDraft(run_type) for run_type in RUN_TYPES
+        }
 
     def get_default_screen(self) -> Screen:
         """The home screen: the first screen on the stack."""

@@ -2,9 +2,12 @@
 
 The public entry point is :func:`run_tui`, launched by the ``tui``
 subcommand of the CLI. It starts the textual app (:mod:`.app`), whose
-screens edit one :class:`~colony_tracking.tui.draft.ConfigDraft` and start
-runs through :mod:`colony_tracking.tui.runner`. Errors of runs and forms
-are handled in the UI; the app exits cleanly.
+screens edit four independent per-run-type config drafts — one
+:class:`~colony_tracking.tui.draft.ConfigDraft` per run type (the
+pipeline chain and each stage run on its own), each writing and reading
+its run type's own config TOML and deriving nothing from any other run
+— and start runs through :mod:`colony_tracking.tui.runner`. Errors of
+runs and forms are handled in the UI; the app exits cleanly.
 """
 
 from __future__ import annotations

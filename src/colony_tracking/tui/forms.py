@@ -25,7 +25,7 @@ stores — the same shapes the config file uses.
 
 Value flow — on change
 ----------------------
-Values flow into the shared :class:`~colony_tracking.tui.draft.ConfigDraft`
+Values flow into the screen's :class:`~colony_tracking.tui.draft.ConfigDraft`
 on every change, not on submit: each edit parses immediately and writes
 through ``ConfigDraft.set``, and an emptied field clears its key, so the
 draft always matches the form and a screen's actions gate on exactly what
@@ -41,16 +41,12 @@ states, handled like this:
   the unset key's default therefore stores nothing — ``resolve`` applies
   the default anyway, so the document stays free of no-op keys.
 
-Reset and mirrors
------------------
+Reset
+-----
 Every field also carries a small *reset* button next to its widget: it
 clears exactly that field's draft key (``ConfigDraft.clear``) — back to
 the default — and stays enabled only while the key is set, so the
-set-vs-at-default state is visible at a glance. A field may also mirror
-another section's key (:attr:`FieldSpec.writes`): the stage screens'
-run-level mirrors read and write the ``[pipeline]`` key they name, labeled
-``run-level: ...`` — the editable half of the owned-field split (spec
-addendum, decision 2).
+set-vs-at-default state is visible at a glance.
 
 Browse
 ------
@@ -68,15 +64,14 @@ field's current value's nearest existing directory
 as if typed — the normal on-change flow parses and stores it; cancelling
 closes the picker and changes nothing. A list-of-path field
 (``seg_dirs``) keeps manual entry — the picker picks one directory, the
-field wants a list — and the derived/read-only owned fields render no
-widgets, so they get no button.
+field wants a list.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection, Iterable, Sequence
-from dataclasses import MISSING, dataclass, fields, replace
+from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
 
@@ -101,7 +96,7 @@ from textual_fspicker import SelectDirectory
 
 from .._options import Reference, _union_members, parse_reference
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
-from .draft import RUN_LEVEL, ConfigDraft
+from .draft import ConfigDraft
 from .screens._save import SaveConfigDialog
 
 #: Field-name → label spelling, mirroring the CLI's ``_RENAMES`` (the CLI
@@ -260,8 +255,7 @@ class FieldSpec:
     """One option field of a form: the draft key plus the declared type and
     the ``help`` metadata (the same source the CLI flags come from)."""
 
-    #: The dataclass field name — the draft key (owned keys are excluded by
-    #: the caller: they are derived, never edited).
+    #: The dataclass field name — the draft key.
     key: str
     #: The declared type hint (drives the widget and the parsing).
     hint: Any
@@ -272,13 +266,8 @@ class FieldSpec:
     default: Any = NO_DEFAULT
     #: Greyed hint text for an empty ``Input`` (a derived default).
     placeholder: str = ""
-    #: The widget's label (``kebab(key)`` when empty — a run-level mirror
-    #: overrides it, e.g. ``run-level: raw dir``).
+    #: The widget's label (``kebab(key)`` when empty).
     label: str = ""
-    #: The (section, key) the field reads and writes when it mirrors a key
-    #: of another section — the stage screens' run-level mirrors write the
-    #: ``[pipeline]`` key they name (empty: the form's own section and key).
-    writes: tuple[str, str] = ()
 
 
 def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec, ...]:
@@ -309,26 +298,6 @@ def run_level_specs() -> tuple[FieldSpec, ...]:
     :class:`~colony_tracking.pipeline.PipelineConfig` (``raw_dir``,
     ``out_root``, ``reference``, ``wells``)."""
     return specs_of(PipelineConfig, keys=_RUN_LEVEL_FIELDS)
-
-
-def run_level_mirror(key: str) -> FieldSpec:
-    """The mirror of one run-level field: an editable field that reads and
-    writes the ``[pipeline]`` key ``key`` — what a stage screen shows for
-    the owned fields the mirror split makes editable (spec addendum,
-    decision 2), labeled ``run-level: <name>`` so a mirror reads as the
-    shared setting it is.
-
-    The spec is the run-level field's own — the same hint, help, and
-    default the config screen's run-level form shows (one source) — with
-    the mirror label and the ``[pipeline]`` write target added. A key
-    that is not a run-level field is a programming error.
-    """
-    (spec,) = [spec for spec in run_level_specs() if spec.key == key]
-    return replace(
-        spec,
-        label=f"run-level: {kebab(key).replace('-', ' ')}",
-        writes=(RUN_LEVEL, key),
-    )
 
 
 def _optional_member(hint: Any) -> Any:
@@ -435,12 +404,11 @@ class OptionForm(VerticalScroll):
     marks the field inline and writes nothing, and :attr:`valid` tells the
     owning screen whether every field currently parses. ``draft`` must be
     set before the first change — a screen's ``compose`` runs under the
-    running app, so the screens pass ``app.draft`` at construction. Every
-    field carries its reset button, and every single-``Path`` field a
-    browse button that opens the directory picker (the module docstring's
-    Browse section); a field whose spec declares a mirror target
-    (:attr:`FieldSpec.writes`) reads and writes that (section, key)
-    instead of the form's own.
+    running app, so the screens pass the draft of their run type (the
+    app's ``drafts`` entry) at construction. Every field carries its reset
+    button, and every single-``Path`` field a browse button that opens
+    the directory picker (the module docstring's Browse section): every
+    field reads and writes the form's own section and key.
     """
 
     DEFAULT_CSS = """
@@ -524,7 +492,9 @@ class OptionForm(VerticalScroll):
         super().__init__()
         #: The draft section the form edits (``pipeline`` for the run level).
         self.section = section
-        #: The draft the form writes into (the app's one shared draft).
+        #: The run type's draft the form writes into (the app's
+        #: ``drafts`` entry for the screen's run type, or the screen's
+        #: explicit one).
         self.draft = draft
         self._specs = tuple(specs)
         self._on_change = on_change
@@ -560,15 +530,10 @@ class OptionForm(VerticalScroll):
         across the coexisting screens of the stack)."""
         return f"{self._id_prefix}-{kebab(key)}"
 
-    def _target(self, spec: FieldSpec) -> tuple[str, str]:
-        """The (section, key) ``spec`` reads and writes: the mirror target
-        it declares, else the form's own section and key."""
-        return spec.writes if spec.writes else (self.section, spec.key)
-
     def _is_set(self, spec: FieldSpec) -> bool:
         """Whether the field's draft key is set (its reset affordance is
         enabled only then — at-default state stays visible)."""
-        return self.draft.get(*self._target(spec)) is not None
+        return self.draft.get(self.section, spec.key) is not None
 
     def compose(self) -> ComposeResult:
         for spec in self._specs:
@@ -579,7 +544,7 @@ class OptionForm(VerticalScroll):
                 widget = Checkbox(label, value=self._checked(spec), id=widget_id)
             elif kind == "select":
                 values = self._literals[spec.key]
-                current = self.draft.get(*self._target(spec))
+                current = self.draft.get(self.section, spec.key)
                 widget = Select(
                     [(str(value), value) for value in values],
                     prompt="(default)",
@@ -589,7 +554,7 @@ class OptionForm(VerticalScroll):
                 )
             else:
                 widget = Input(
-                    value=format_field(self.draft.get(*self._target(spec))),
+                    value=format_field(self.draft.get(self.section, spec.key)),
                     placeholder=spec.placeholder,
                     id=widget_id,
                 )
@@ -614,7 +579,7 @@ class OptionForm(VerticalScroll):
     def _checked(self, spec: FieldSpec) -> bool:
         """A checkbox's initial state: the draft value, else the field's
         default (a required bool defaults to unchecked)."""
-        value = self.draft.get(*self._target(spec))
+        value = self.draft.get(self.section, spec.key)
         if value is None:
             value = spec.default if spec.default is not NO_DEFAULT else False
         return bool(value)
@@ -627,8 +592,8 @@ class OptionForm(VerticalScroll):
     def refresh_from_draft(self) -> None:
         """Set every widget's value from the draft again.
 
-        A screen is mounted once but entered many times, and other screens
-        may have edited the shared draft meanwhile. Idempotent: widgets
+        A screen is mounted once but entered many times, and another
+        screen may have edited the same draft meanwhile. Idempotent: widgets
         already showing the draft's value emit no change events. The reset
         buttons' enabled states follow along.
         """
@@ -642,11 +607,11 @@ class OptionForm(VerticalScroll):
         kind = self._kinds[spec.key]
         widget = self.query_one(f"#{self._field_id(spec.key)}")
         if kind == "input":
-            widget.value = format_field(self.draft.get(*self._target(spec)))
+            widget.value = format_field(self.draft.get(self.section, spec.key))
         elif kind == "checkbox":
             widget.value = self._checked(spec)
         else:
-            value = self.draft.get(*self._target(spec))
+            value = self.draft.get(self.section, spec.key)
             widget.value = value if value in self._literals[spec.key] else Select.NULL
 
     # --- change handling ------------------------------------------------------
@@ -668,9 +633,9 @@ class OptionForm(VerticalScroll):
             return
         default = bool(spec.default) if spec.default is not NO_DEFAULT else False
         if event.value == default:
-            self.draft.clear(*self._target(spec))
+            self.draft.clear(self.section, spec.key)
         else:
-            self.draft.set(*self._target(spec), event.value)
+            self.draft.set(self.section, spec.key, event.value)
         self._refresh_reset(spec)
         self._changed()
 
@@ -680,9 +645,9 @@ class OptionForm(VerticalScroll):
         if spec is None:
             return
         if event.select.is_blank():
-            self.draft.clear(*self._target(spec))
+            self.draft.clear(self.section, spec.key)
         else:
-            self.draft.set(*self._target(spec), event.value)
+            self.draft.set(self.section, spec.key, event.value)
         self._refresh_reset(spec)
         self._changed()
 
@@ -698,7 +663,7 @@ class OptionForm(VerticalScroll):
         spec = self._resets.get(event.button.id)
         if spec is None:
             return
-        self.draft.clear(*self._target(spec))
+        self.draft.clear(self.section, spec.key)
         self._refresh_one(spec)
         self._refresh_reset(spec)
         self._changed()
@@ -730,9 +695,9 @@ class OptionForm(VerticalScroll):
             del self._errors[spec.key]
             self._set_error(spec.key, "")
         if value is UNSET:
-            self.draft.clear(*self._target(spec))
+            self.draft.clear(self.section, spec.key)
         else:
-            self.draft.set(*self._target(spec), value)
+            self.draft.set(self.section, spec.key, value)
         self._refresh_reset(spec)
         self._changed()
 
@@ -765,20 +730,21 @@ class OptionForm(VerticalScroll):
 
 
 class FormScreen(Screen[None]):
-    """Base for the screens that edit one draft section through an
+    """Base for the screens that edit one run type's draft through an
     :class:`OptionForm`.
 
-    The screen resolves its draft (the constructor's explicit one, else the
-    running app's ``ColonyTuiApp.draft``), refreshes the form from it on
-    every entry (a screen is mounted once but entered many times), and owns
-    the action gate: the buttons named in :attr:`gated_actions` stay
-    disabled until every field parses and the whole draft resolves — while
-    the status line shows the pipeline's exact ``ConfigError`` message
-    otherwise (verbatim, the same text the CLI reports). Subclasses provide
-    :meth:`compose_body` (which must set ``self._form``), their action
-    buttons, and :meth:`refresh_extras`. A screen may edit several draft
-    sections (the stage screens' run-level mirror group): :attr:`forms`
-    lists them all, and the entry refresh and the gate cover every one.
+    The screen resolves its draft (the constructor's explicit one, else
+    the running app's ``ColonyTuiApp.drafts`` entry for the screen's
+    :attr:`run_type`), refreshes the form from it on every entry (a screen
+    is mounted once but entered many times), and owns the action gate: the
+    buttons named in :attr:`gated_actions` stay disabled until every field
+    parses and the whole draft resolves — while the status line shows the
+    draft's exact ``ConfigError`` message otherwise (verbatim, the
+    machinery's own wording). Subclasses provide :meth:`compose_body`
+    (which must set ``self._form``), their action buttons, and
+    :meth:`refresh_extras`. A screen may edit several draft sections:
+    :attr:`forms` lists them all, and the entry refresh and the gate cover
+    every one.
     """
 
     #: The button ids the action gate enables and disables.
@@ -825,18 +791,26 @@ class FormScreen(Screen[None]):
         self.draft: ConfigDraft | None = None
         self._enabled = False
 
+    @property
+    def run_type(self) -> str:
+        """The run type this screen edits (a key of
+        :data:`~colony_tracking.tui.draft.RUN_TYPES`): the pipeline chain
+        by default; a stage screen's is its own stage."""
+        return "pipeline"
+
     def _resolve_draft(self) -> ConfigDraft:
-        """The draft to edit: the explicit one, else the app's (an app
-        without a ``draft`` is a wiring mistake — fail loudly)."""
+        """The draft to edit: the explicit one, else the app's entry for
+        :attr:`run_type` (an app without a ``drafts`` dict is a wiring
+        mistake — fail loudly)."""
         if self._draft is not None:
             return self._draft
-        draft = getattr(self.app, "draft", None)
-        if draft is None:
+        drafts = getattr(self.app, "drafts", None)
+        if drafts is None:
             raise RuntimeError(
                 "no draft to edit — pass one to the screen, or run it on an "
-                "app with a .draft (ColonyTuiApp)"
+                "app with a .drafts dict (ColonyTuiApp)"
             )
-        return draft
+        return drafts[self.run_type]
 
     def compose_body(self) -> ComposeResult:
         """The screen's content between the header and the status line:
@@ -848,8 +822,8 @@ class FormScreen(Screen[None]):
         raise NotImplementedError
 
     def refresh_extras(self) -> None:
-        """Refresh the screen's extras after a draft change (the stage
-        screens' derived owned values, the config screen's TOML preview)."""
+        """Refresh the screen's extras after a draft change (the config
+        screen's TOML preview)."""
         raise NotImplementedError
 
     def compose(self) -> ComposeResult:
@@ -866,7 +840,7 @@ class FormScreen(Screen[None]):
 
     def on_screen_resume(self, event: events.ScreenResume) -> None:
         """Every entry refreshes from the draft (screens are cached across
-        pushes; other screens may have edited the shared draft meanwhile)."""
+        pushes; another screen may have edited the same draft meanwhile)."""
         self.refresh_screen()
 
     def refresh_screen(self) -> None:
@@ -882,7 +856,7 @@ class FormScreen(Screen[None]):
     def refresh_gate(self) -> None:
         """Re-check the draft and the forms: enable the gated actions when
         everything resolves; otherwise disable them and show why — the
-        pipeline's exact ``ConfigError`` message, verbatim."""
+        draft's exact ``ConfigError`` message, verbatim."""
         message = ""
         try:
             self.draft.resolve()
@@ -929,9 +903,9 @@ class FormScreen(Screen[None]):
 
     def _field_widgets(self) -> list[Widget]:
         """The screen's field widgets in DOM order — every form's fields
-        (a screen with run-level mirrors leads with those, the DOM order
-        the entry auto-focus and tab follow; the declaration order of each
-        form's specs): one Input, Select, or Checkbox per field."""
+        (the declaration order of each form's specs, the DOM order the
+        entry auto-focus and tab follow): one Input, Select, or Checkbox
+        per field."""
         return list(self.query("Input, Select, Checkbox"))
 
     def action_next_field(self) -> None:

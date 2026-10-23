@@ -15,16 +15,20 @@ frame and wells filter — and two gated actions:
   resolved config with every stage option at its default, on the shared
   :class:`~colony_tracking.tui.screens.run.RunScreen`.
 
-Like the stage screens' forms, the fields live-sync into the app's one
-:class:`~colony_tracking.tui.draft.ConfigDraft` on every change — an
-emptied field clears its key, back to the default — and both actions stay
-disabled until the draft resolves (the stage screens' gate): a field the
-shared parser rejects keeps its last valid value and shows its error on
-the status line, everything else shows the pipeline's exact
-:class:`~colony_tracking.pipeline.ConfigError` message verbatim (the same
-text the CLI reports). Nothing is written or run while the gate is closed;
-the dialog reports deeper config errors the same way the spec asks for
-(exact problem, nothing written).
+The quick start edits the pipeline run type's draft only — the chain's
+own :class:`~colony_tracking.tui.draft.ConfigDraft`
+(:attr:`draft`, the app's ``drafts["pipeline"]`` entry), the document
+whose ``pipeline.toml`` it writes: the stage run types' drafts are
+independent of it and untouched here. Like the stage screens' forms, the
+fields live-sync into the draft on every change — an emptied field
+clears its key, back to the default — and both actions stay disabled
+until the draft resolves (the stage screens' gate): a field the shared
+parser rejects keeps its last valid value and shows its error on the
+status line, everything else shows the pipeline's exact
+:class:`~colony_tracking.pipeline.ConfigError` message verbatim (the
+same text the CLI reports). Nothing is written or run while the gate is
+closed; the dialog reports deeper config errors the same way the spec
+asks for (exact problem, nothing written).
 
 The two path fields (raw directory, out root) carry the forms' browse
 button (see :mod:`colony_tracking.tui.forms`): it opens the directory
@@ -106,9 +110,19 @@ def _prefill(draft: ConfigDraft, name: str) -> str:
 
 class QuickStartScreen(Screen[None]):
     """The quick-start screen: the full-auto flow (see the module
-    docstring). Edits the app's shared draft — :attr:`App.draft` — the
-    same document every other screen sees, and gates its actions on it
-    like the stage screens do."""
+    docstring). Edits the pipeline chain's draft — the app's
+    ``drafts["pipeline"]`` entry (:attr:`draft`) — and gates its actions
+    on it like the stage screens do.
+    """
+
+    @property
+    def draft(self) -> ConfigDraft:
+        """The draft this screen edits: the pipeline chain's — the app's
+        ``drafts["pipeline"]`` entry. The quick start writes the chain's
+        ``pipeline.toml``; every stage run type's draft (and its
+        ``difference.toml`` / ``segmentation.toml`` / ``analysis.toml``)
+        is independent of it."""
+        return self.app.drafts["pipeline"]
 
     CSS = """
     #qs-body { height: 1fr; }
@@ -152,7 +166,7 @@ class QuickStartScreen(Screen[None]):
         self._enabled = False
 
     def compose(self) -> ComposeResult:
-        draft = self.app.draft
+        draft = self.draft
         yield Header()
         # One scrollable body: the actions below stay reachable on a small
         # terminal whatever the fields' combined height (the stage
@@ -254,9 +268,9 @@ class QuickStartScreen(Screen[None]):
             return
         label.display = False
         if event.button.id == "qs-write":
-            self.app.push_screen(SaveConfigDialog(self.app.draft))
+            self.app.push_screen(SaveConfigDialog(self.draft))
             return
-        run_problem = open_pipeline_run(self.app, self.app.draft)
+        run_problem = open_pipeline_run(self.app, self.draft)
         if run_problem is not None:  # reported as a toast too; keep a line here
             label.update(run_problem)
             label.display = True
@@ -283,7 +297,7 @@ class QuickStartScreen(Screen[None]):
         if problem is not None:
             return problem
         try:
-            self.app.draft.resolve()
+            self.draft.resolve()
         except ConfigError as err:
             return str(err)
         return None
@@ -295,7 +309,7 @@ class QuickStartScreen(Screen[None]):
         (:func:`~colony_tracking._options.parse_reference`) rejects leaves
         its key at the last valid value and comes back as the problem
         message, while the other fields still sync."""
-        draft = self.app.draft
+        draft = self.draft
         wells_text = self.query_one("#qs-wells", Input).value.strip()
         wells = (
             None

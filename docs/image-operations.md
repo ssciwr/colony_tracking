@@ -24,7 +24,7 @@ Constants referenced below: `subsample` (default 8), `display_percentile`
 `min_solidity` (0.7), `mask_margin` (15 px), `min_overlap` (0.5),
 `GAP_FLOOR` (0.5), `MIN_FG_ABS` (0.05), `MATCH_IOU` (0.3),
 `ABSORB_COVERAGE` (0.5), `TOUCH_DILATE` (3 px), `rim_width_px` (60),
-`rim_overlap_max` (0.1), `PRE_EXISTING_DARK_FRAC` (0.5).
+`rim_overlap_max` (0.1).
 
 ---
 
@@ -114,62 +114,43 @@ Operates on the boolean segment masks derived above (no pixel intensity math).
 Module: `src/colony_tracking/analysis.py`. Image math on raw frames (well
 circle, QA overlay) and on label images (rim fractions).
 
-### 3.1 Well-circle fit from the earliest raw frames (`_fit_frame`, `analysis.py:215-247`)
+### 3.1 Well-circle fit from the earliest raw frames (`_fit_frame`, `analysis.py:205-237`)
 
 Up to the three earliest raw frames per well, each fitted independently
-(`load_geometry`, `analysis.py:1105-1124`).
+(`load_geometry`, `analysis.py:957-976`).
 
 | # | Operation | Exact math | Code |
 | --- | --- | --- | --- |
-| 3.1.1 | Gaussian blur | `sm = ndi.gaussian_filter(tifffile.imread(path).astype(np.float32), 6)`, σ = 6 px | `analysis.py:226` |
-| 3.1.2 | Radial profile sampling (stage 1) | 240 angles `angs = np.linspace(0, 2π, 240, endpoint=False)`; radii `rs = np.arange(650, 1120, 2.0)` around (h/2, w/2); sample `ys = (cy + rr·sin θ).astype(int)`, `xs = (cx + rr·cos θ).astype(int)`; out-of-bounds samples NaN → replaced by the angle's row mean; 9-point radial smoothing `ndi.uniform_filter1d(prof, 9, axis=1)`; darkest radius per angle `i = np.nanargmin(prof, axis=1)` | `analysis.py:140-180` (`_radial_minima`), called at `analysis.py:228` |
-| 3.1.3 | Local-dip test | neighbourhood mean over ±30 radius steps (±60 px): `nb_mean = prof[k, lo[k]:hi[k]].mean()` with `lo = clip(i−30, 0, …)`, `hi = clip(i+31, 0, …)`; keep the angle only if ≥ 90 % of its samples were in-bounds and `prof[i] ≤ nb_mean − dip·(depth + 1e−9)` with `depth = nanmax − nanmin` of the angle's profile, `dip = 0.08` (stage 1) | `analysis.py:168-178` |
-| 3.1.4 | Kasa circle fit | `a = [y, x, 1]`; `c = lstsq(a, y² + x²)`; `cy = c₀/2`, `cx = c₁/2`, `R = √(c₂ + cy² + cx²)` | `analysis.py:183-188` (`_circle_fit`) |
-| 3.1.5 | Iterative radius-outlier trimming | up to 3 iterations: `rr = √((y−cy)² + (x−cx)²)`; keep `\|rr − median(rr)\| < tol` (30 px stage 1, 25 px stage 2); stop when all points survive or fewer than 20 remain; final fit on the survivors, reporting radius `std` | `analysis.py:191-212` (`_trim_fit`), called at `analysis.py:231, 238` |
-| 3.1.6 | Stage 2 re-lock | re-sample `_radial_minima` in the narrow window `R ± 70 px` around the coarse fit (same centre), `dip = 0.02`; needs ≥ 40 surviving points (stage 1 needs ≥ 30) | `analysis.py:234-237` |
-| 3.1.7 | Acceptance | accept only if `700 < R < 1100`, `200 < cy, cx < 1850`, radius `std < 20 px`, and ≥ 8 of 12 angular sectors covered (`cov = len(np.unique((deg(arctan2(y−cy, x−cx)) + 360) % 360 // 30))`) | `analysis.py:242-246` |
-| 3.1.8 | Average the frame fits | `med_r = median(R)`; drop fits with `\|R − med_r\| > 40 px`; result = per-coordinate `mean` of the survivors; cached in `well_geometry.csv` | `analysis.py:261-266` (`fit_well_circle`), cache at `io.py:322-350` |
+| 3.1.1 | Gaussian blur | `sm = ndi.gaussian_filter(tifffile.imread(path).astype(np.float32), 6)`, σ = 6 px | `analysis.py:216` |
+| 3.1.2 | Radial profile sampling (stage 1) | 240 angles `angs = np.linspace(0, 2π, 240, endpoint=False)`; radii `rs = np.arange(650, 1120, 2.0)` around (h/2, w/2); sample `ys = (cy + rr·sin θ).astype(int)`, `xs = (cx + rr·cos θ).astype(int)`; out-of-bounds samples NaN → replaced by the angle's row mean; 9-point radial smoothing `ndi.uniform_filter1d(prof, 9, axis=1)`; darkest radius per angle `i = np.nanargmin(prof, axis=1)` | `analysis.py:130-170` (`_radial_minima`), called at `analysis.py:218` |
+| 3.1.3 | Local-dip test | neighbourhood mean over ±30 radius steps (±60 px): `nb_mean = prof[k, lo[k]:hi[k]].mean()` with `lo = clip(i−30, 0, …)`, `hi = clip(i+31, 0, …)`; keep the angle only if ≥ 90 % of its samples were in-bounds and `prof[i] ≤ nb_mean − dip·(depth + 1e−9)` with `depth = nanmax − nanmin` of the angle's profile, `dip = 0.08` (stage 1) | `analysis.py:158-168` |
+| 3.1.4 | Kasa circle fit | `a = [y, x, 1]`; `c = lstsq(a, y² + x²)`; `cy = c₀/2`, `cx = c₁/2`, `R = √(c₂ + cy² + cx²)` | `analysis.py:173-178` (`_circle_fit`) |
+| 3.1.5 | Iterative radius-outlier trimming | up to 3 iterations: `rr = √((y−cy)² + (x−cx)²)`; keep `\|rr − median(rr)\| < tol` (30 px stage 1, 25 px stage 2); stop when all points survive or fewer than 20 remain; final fit on the survivors, reporting radius `std` | `analysis.py:181-202` (`_trim_fit`), called at `analysis.py:221, 228` |
+| 3.1.6 | Stage 2 re-lock | re-sample `_radial_minima` in the narrow window `R ± 70 px` around the coarse fit (same centre), `dip = 0.02`; needs ≥ 40 surviving points (stage 1 needs ≥ 30) | `analysis.py:224-227` |
+| 3.1.7 | Acceptance | accept only if `700 < R < 1100`, `200 < cy, cx < 1850`, radius `std < 20 px`, and ≥ 8 of 12 angular sectors covered (`cov = len(np.unique((deg(arctan2(y−cy, x−cx)) + 360) % 360 // 30))`) | `analysis.py:232-236` |
+| 3.1.8 | Average the frame fits | `med_r = median(R)`; drop fits with `\|R − med_r\| > 40 px`; result = per-coordinate `mean` of the survivors; cached in `well_geometry.csv` | `analysis.py:251-256` (`fit_well_circle`), cache at `io.py:322-350` |
 
-### 3.2 Rim fractions from the label images (`rim_stats`, `analysis.py:288-330`)
-
-| # | Operation | Exact math | Code |
-| --- | --- | --- | --- |
-| 3.2.1 | Distance map | `yy, xx = np.mgrid[0:h, 0:w]`; `d = np.sqrt((yy − cy)² + (xx − cx)²).astype(np.float32)`, built once per well from the first loaded label image | `analysis.py:317-319` |
-| 3.2.2 | Rim zone | `zone = d > (R − rim_width)`, the 60-px band at the inner edge of the well circle | `analysis.py:320` |
-| 3.2.3 | Pixel binning per frame | per label image `lab` (uint32): `n_all = np.bincount(lab.ravel(), minlength=mx+1)`, `n_zone = np.bincount(lab[zone].ravel(), minlength=mx+1)` | `analysis.py:324-325` |
-| 3.2.4 | Rim fraction per (frame, colony) | `rim_frac = n_zone[cid] / n_all[cid]` | `analysis.py:329` |
-| 3.2.5 | Monotone exclusion | a colony is rim-excluded from the first frame with `rim_frac > rim_overlap_max (0.1)` and stays excluded (`excluded` latch in `build_trajectories`) | `analysis.py:402-413` |
-
-### 3.3 Pre-existing probe on the base image (`probe_pre_existing`, `analysis.py:588-626`)
-
-Difference roots only (`*diff_LO<nnn>`). Two probes, in order of preference:
-
-1. **Raw-root probe** (`raw_seg_dir` set): the raw root's label image at the
-   reference frame is loaded and each colony's first-detection centroid is
-   probed.
-2. **Raw-frame probe** (the fallback, the pipeline chain's default path):
-   when the raw root or its label image is missing, the raw frame at the
-   reference frame is probed directly. Background anchor: the median inside
-   the fitted well circle; skipped (warned) without the circle or without
-   the raw frame.
+### 3.2 Rim fractions from the label images (`rim_stats`, `analysis.py:278-320`)
 
 | # | Operation | Exact math | Code |
 | --- | --- | --- | --- |
-| 3.3.1 | Centroid window | `win = lab[y−12 : y+13, x−12 : x+13]` (clipped at the image edge); hit when `win.max() > 0` | `analysis.py:543-544` |
-| 3.3.2 | Area-equivalent disk | raw-colony discs `(cy, cx, r)` with `r = (area_px / π)^0.5` from the raw root's `colonies.csv` at the reference frame; hit when `(dcy − cy)² + (dcx − cx)² ≤ (drad + 15)²` | `analysis.py:537-539, 546-547` |
-| 3.3.3 | Raw-frame darkness | background `= median(raw[inside circle])`; hit when `median(raw[y−12 : y+13, x−12 : x+13]) < PRE_EXISTING_DARK_FRAC (0.5) × background` | `analysis.py:578-583` (`_probe_raw_frame`) |
+| 3.2.1 | Distance map | `yy, xx = np.mgrid[0:h, 0:w]`; `d = np.sqrt((yy − cy)² + (xx − cx)²).astype(np.float32)`, built once per well from the first loaded label image | `analysis.py:307-309` |
+| 3.2.2 | Rim zone | `zone = d > (R − rim_width)`, the 60-px band at the inner edge of the well circle | `analysis.py:310` |
+| 3.2.3 | Pixel binning per frame | per label image `lab` (uint32): `n_all = np.bincount(lab.ravel(), minlength=mx+1)`, `n_zone = np.bincount(lab[zone].ravel(), minlength=mx+1)` | `analysis.py:314-315` |
+| 3.2.4 | Rim fraction per (frame, colony) | `rim_frac = n_zone[cid] / n_all[cid]` | `analysis.py:319` |
+| 3.2.5 | Monotone exclusion | a colony is rim-excluded from the first frame with `rim_frac > rim_overlap_max (0.1)` and stays excluded (`excluded` latch in `build_trajectories`) | `analysis.py:391-402` |
 
-### 3.4 Time and growth-rate math (no images, listed for completeness)
+### 3.3 Time and growth-rate math (no images, listed for completeness)
 
 | # | Operation | Exact math | Code |
 | --- | --- | --- | --- |
-| 3.4.1 | Hours from the `T` field | `t_h = T / 3.6e6` when `max(T) > 1e6` (ms), else `T / 3600` (s) | `analysis.py:272-282` (`t_hours_of`) |
-| 3.4.2 | no_growth test | each valid frame compared once to the earliest valid frame ≥ 2 images ahead (the second-next image when that image is valid, else the next valid frame after it), per-image growth `((a2 − a1) / a1) / (l2 − l1)`; bad when `min(per_image) ≤ min_growth_per_frame (0.1)`, so any failing comparison flags (a shrink between compared frames too); a trajectory with nothing to compare (single valid frame or two adjacent valid frames) is exempt | `analysis.py:434-443` |
-| 3.4.3 | Bad-flag exemption | a colony with any `pre_existing = 1` row gets no `from_start`/`no_growth` reasons; it is excluded from the analysis anyway and cannot flag its well bad | `analysis.py:420-425` |
-| 3.4.4 | Specific growth rate | least-squares slope of `ln(area)` vs hours: `k = polyfit(t, log(a), 1)` over a valid window at least three frames wide (first to last valid frame ≥ 2 images apart — the window the `no_growth` test needs), with `t[-1] > t[0]` and `a > 0`; narrower windows (single valid frame, two adjacent frames) get no rates | `analysis.py:672, 675-677` |
-| 3.4.5 | Doublings / absolute growth | `k · 24 / ln 2` (day⁻¹); `(a[-1] − a[0]) / (t[-1] − t[0])` (px/h) | `analysis.py:678, 680-682` |
+| 3.3.1 | Hours from the `T` field | `t_h = T / 3.6e6` when `max(T) > 1e6` (ms), else `T / 3600` (s) | `analysis.py:262-272` (`t_hours_of`) |
+| 3.3.2 | no_growth test | each valid frame compared once to the earliest valid frame ≥ 2 images ahead (the second-next image when that image is valid, else the next valid frame after it), per-image growth `((a2 − a1) / a1) / (l2 − l1)`; bad when `min(per_image) ≤ min_growth_per_frame (0.1)`, so any failing comparison flags (a shrink between compared frames too); a trajectory with nothing to compare (single valid frame or two adjacent valid frames) is exempt | `analysis.py:423-432` |
+| 3.3.3 | Bad-flag exemption | a colony with any `pre_existing = 1` row gets no `from_start`/`no_growth` reasons; it is excluded from the analysis anyway and cannot flag its well bad | `analysis.py:409-414` |
+| 3.3.4 | Specific growth rate | least-squares slope of `ln(area)` vs hours: `k = polyfit(t, log(a), 1)` over a valid window at least three frames wide (first to last valid frame ≥ 2 images apart — the window the `no_growth` test needs), with `t[-1] > t[0]` and `a > 0`; narrower windows (single valid frame, two adjacent frames) get no rates | `analysis.py:524, 527-529` |
+| 3.3.5 | Doublings / absolute growth | `k · 24 / ln 2` (day⁻¹); `(a[-1] − a[0]) / (t[-1] − t[0])` (px/h) | `analysis.py:530, 532-534` |
 
-### 3.5 QA overlay on a raw frame (`qa_overlay`, `analysis.py:991-1065`)
+### 3.4 QA overlay on a raw frame (`qa_overlay`, `analysis.py:843-917`)
 
 The raw frame with the highest frame number that has trajectory rows; a
 well with no rows at all gets a rim-only overlay (circle + rim zone on its
@@ -177,10 +158,10 @@ last raw frame, no colony tinting; logged).
 
 | # | Operation | Exact math | Code |
 | --- | --- | --- | --- |
-| 3.5.1 | Load + stretch + RGB | `im = tifffile.imread(src).astype(np.float32)`; `u8 = stretch_uint8(im)` (the 1/99 percentile stretch of `io.py:140-152`); `rgb = np.stack([u8]·3, −1)` | `analysis.py:1026-1028` |
-| 3.5.2 | Colony tint | `sel[m] = 0.45` (m = colony mask); `rgb = (rgb·(1 − sel) + color·sel).astype(np.uint8)`; edge = `m & ~ndi.binary_erosion(m)` (1-px boundary, scipy cross erosion) painted solid | `analysis.py:1035-1044` (`tint`), edge at `analysis.py:1051` |
-| 3.5.3 | Circle + rim rings | `d = √((yy − cy)² + (xx − cx)²)`; `rgb[\|d − R\| < 2.5]` blue (well circle), `rgb[\|d − (R − rim_width)\| < 2.5]` orange (rim boundary) | `analysis.py:1060-1063` |
-| 3.5.4 | Downscale + save | `Image.fromarray(rgb).resize((512, 512), BILINEAR).save(out_path)` | `analysis.py:1064-1065` |
+| 3.4.1 | Load + stretch + RGB | `im = tifffile.imread(src).astype(np.float32)`; `u8 = stretch_uint8(im)` (the 1/99 percentile stretch of `io.py:140-152`); `rgb = np.stack([u8]·3, −1)` | `analysis.py:878-880` |
+| 3.4.2 | Colony tint | `sel[m] = 0.45` (m = colony mask); `rgb = (rgb·(1 − sel) + color·sel).astype(np.uint8)`; edge = `m & ~ndi.binary_erosion(m)` (1-px boundary, scipy cross erosion) painted solid | `analysis.py:887-896` (`tint`), edge at `analysis.py:903` |
+| 3.4.3 | Circle + rim rings | `d = √((yy − cy)² + (xx − cx)²)`; `rgb[\|d − R\| < 2.5]` blue (well circle), `rgb[\|d − (R − rim_width)\| < 2.5]` orange (rim boundary) | `analysis.py:912-915` |
+| 3.4.4 | Downscale + save | `Image.fromarray(rgb).resize((512, 512), BILINEAR).save(out_path)` | `analysis.py:916-917` |
 
 ---
 
@@ -215,6 +196,5 @@ raw uint16
   │     → colony label images (uint32)
   └─ analyze: raw uint16 → float32 → gaussian σ6 → radial dips → Kasa circle (float)
               label uint32 → distance map float32 → rim zone (bool) → rim fractions
-              raw reference frame → median background → dark centroid-window probe
               raw frame → 1/99 stretch → uint8 RGB overlay → 512×512 PNG
 ```

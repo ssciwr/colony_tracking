@@ -38,8 +38,7 @@ reference, and every one is overridable in the stage sections:
   overridden by ``[segmentation].exclude_before``;
 - analysis out root ``<out_root>/analysis`` — overridden by
   ``[analysis].out_root``; ``seg_dirs`` defaults to ``[the segment root]`` —
-  overridden by ``[analysis].seg_dirs``. ``raw_seg_dir`` is never invented:
-  set it in ``[analysis]`` to probe a raw-input segmentation root.
+  overridden by ``[analysis].seg_dirs``.
 
 Config contract
 ---------------

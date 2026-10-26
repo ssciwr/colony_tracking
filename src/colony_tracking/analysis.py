@@ -76,19 +76,10 @@ are always reported in the log and ``bad_segments.csv`` (the rows stay in the
 CSVs, flagged). Pre-existing colonies are never bad-flagged — they are
 excluded from the analysis anyway and must not exclude their well.
 
-**Pre-existing.** The segment stage's ``pre_existing`` flag excludes a colony
-from aggregates/plots over its whole lifetime (``keep_pre_existing``
-overrides; the rows stay in the CSVs) and from the bad-segment checks. For
-difference roots (roots named
-``*diff_LO<nnn>``) the reference frame is invisible to the root, so each
-colony's first-detection centroid is additionally probed against the base
-image (the raw frame at the reference frame): with ``raw_seg_dir`` set, the
-raw root's label image is probed (a hit at the centroid ± 12 px, or inside
-an area-equivalent disk of a raw colony + 15 px slack); otherwise the raw
-reference frame itself is probed — a first-detection centroid window (± 12 px)
-clearly darker than the well interior (below ``PRE_EXISTING_DARK_FRAC``
-= 0.5× its median) flags the colony pre-existing. Either way the flag marks
-the colony pre-existing on all its rows.
+**Pre-existing.** The segment stage's ``pre_existing`` flag — every colony
+first detected at or before ``exclude_before`` — excludes a colony from
+aggregates/plots over its whole lifetime (``keep_pre_existing`` overrides;
+the rows stay in the CSVs) and from the bad-segment checks.
 
 **Growth rates.** Over a colony's valid (not rim-excluded) frames with
 positive area, and only when the window is at least three frames wide —
@@ -116,7 +107,6 @@ new writes always use the canonical names.
 
 from __future__ import annotations
 
-import re
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -363,11 +353,10 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
       ``bad_reason`` holds the triggered criteria. Pre-existing colonies
       are never bad-flagged (they are excluded from the analysis anyway,
       and must not exclude their well).
-    - ``pre_existing`` is the pipeline's flag, possibly OR-ed with the
-      base-image probe result for difference roots (see
-      :func:`probe_pre_existing`). Colonies flagged pre_existing are
-      dropped from the aggregates and plots over their whole lifetime, not
-      from the CSVs.
+    - ``pre_existing`` is the pipeline's flag (every colony first detected
+      at or before the segment stage's ``exclude_before``). Colonies
+      flagged pre_existing are dropped from the aggregates and plots over
+      their whole lifetime, not from the CSVs.
     """
     t_hours = {int(r["frame"]): t for r, t in
                zip(rows, t_hours_of([r["t_seconds"] for r in rows]))}
@@ -487,143 +476,6 @@ def split_bad(traj, options):
                 and not options.keep_bad_wells}
     traj_f = [r for r in traj if r["well"] not in excluded and not r["bad"]]
     return traj_f, per_well_bad, excluded
-
-
-# ---------------------------------------------------- pre-existing probe ------
-
-
-#: The raw-frame pre-existing probe flags a colony whose first-detection
-#: centroid window (± 12 px) median intensity sits below this fraction of the
-#: well interior's median in the raw reference frame. Calibrated on real runs:
-#: colonies that already existed at the reference frame (static there, so the
-#: difference stream cannot see them) read 0.2–0.4× background at their
-#: surfacing centroid, while genuinely new colonies sit on agar (≥ 1.0×) —
-#: the gap is wide, and 0.5 sits in the middle of it.
-PRE_EXISTING_DARK_FRAC = 0.5
-
-
-def _first_detection_centroids(rows) -> dict[int, tuple[float, float]]:
-    """Each colony's first-detection centroid (colony id -> (cy, cx))."""
-    per_colony: dict[int, list] = {}
-    for r in rows:
-        per_colony.setdefault(int(r["colony_id"]), []).append(r)
-    out = {}
-    for cid, crows in per_colony.items():
-        first = min(crows, key=lambda r: int(r["frame"]))
-        out[cid] = (float(first["centroid_y"]), float(first["centroid_x"]))
-    return out
-
-
-def _flag_pre_existing(well, rows, ref_frame, flagged: list[int]) -> None:
-    """Flag the given colony ids pre-existing on all their rows (and log)."""
-    if not flagged:
-        return
-    hits = set(flagged)
-    for r in rows:
-        if int(r["colony_id"]) in hits:
-            r["pre_existing"] = 1
-    log.info("[%s] pre-existing on the LO%03d base image: colony ids %s",
-             well, ref_frame, ",".join(str(c) for c in sorted(hits)))
-
-
-def _probe_raw_root(well, rows, ref_frame, well_dir, label_path) -> None:
-    """The raw-root probe: a colony whose first-detection centroid lands on
-    colony territory that existed at the reference frame (a label at the
-    centroid or within 12 px, or inside a raw colony's area-equivalent disk
-    + 15 px slack) is flagged pre-existing."""
-    lab = io.read_label_image(label_path)
-    csv_path = well_dir / "colonies.csv"
-    raw_rows = io.read_colonies(csv_path) if csv_path.exists() else []
-    discs = [(float(r["centroid_y"]), float(r["centroid_x"]),
-              (int(r["area_px"]) / np.pi) ** 0.5)
-             for r in raw_rows if int(r["frame"]) == ref_frame]
-    flagged = []
-    for cid, (cy, cx) in _first_detection_centroids(rows).items():
-        y, x = int(round(cy)), int(round(cx))
-        win = lab[max(0, y - 12):y + 13, max(0, x - 12):x + 13]
-        hit = bool(win.size) and int(win.max()) > 0
-        if not hit:
-            hit = any((dcy - cy) ** 2 + (dcx - cx) ** 2 <= (drad + 15) ** 2
-                      for dcy, dcx, drad in discs)
-        if hit:
-            flagged.append(cid)
-    _flag_pre_existing(well, rows, ref_frame, flagged)
-
-
-def _probe_raw_frame(well, rows, ref_frame, options, geo) -> None:
-    """The raw-frame probe (the no-raw-root fallback): a colony whose
-    first-detection centroid window (± 12 px) is clearly dark in the raw
-    reference frame existed as material there — the difference stream is
-    blind to static content, so such a colony only surfaces once it resumes
-    growing. The background anchor is the well interior's median (inside the
-    fitted circle); without the circle the probe is skipped (logged),
-    mirroring rim exclusion.
-    """
-    if geo is None:
-        log.warning("[%s] no well circle; raw-frame pre-existing probe skipped",
-                    well)
-        return
-    raw_dir = Path(options.raw_dir)
-    frames = (io.discover_wells(raw_dir, wells=[well]).get(well, [])
-              if raw_dir.is_dir() else [])
-    raw = next((f for f in frames if f.frame == ref_frame), None)
-    if raw is None:
-        log.warning("[%s] no raw LO%03d frame under %s; raw-frame pre-existing "
-                    "probe skipped", well, ref_frame, raw_dir)
-        return
-    frame = np.asarray(tifffile.imread(raw.path))
-    cy0, cx0, r0 = geo
-    yy, xx = np.mgrid[0:frame.shape[0], 0:frame.shape[1]]
-    inside = (yy - cy0) ** 2 + (xx - cx0) ** 2 <= r0 ** 2
-    background = float(np.median(frame[inside]))
-    flagged = []
-    for cid, (cy, cx) in _first_detection_centroids(rows).items():
-        y, x = int(round(cy)), int(round(cx))
-        win = frame[max(0, y - 12):y + 13, max(0, x - 12):x + 13]
-        if win.size and float(np.median(win)) < PRE_EXISTING_DARK_FRAC * background:
-            flagged.append(cid)
-    _flag_pre_existing(well, rows, ref_frame, flagged)
-
-
-def probe_pre_existing(well, rows, seg_root, options, geo=None):
-    """Flag colonies that already existed on the root's base image.
-
-    For difference-based roots (name ``...diff_LO<nnn>``): the base image is
-    the raw frame at the reference frame. The difference pipeline cannot see
-    it (the reference frame is differenced against itself and comes out
-    blank), so colonies that already existed there only surface later — first
-    detected one or more frames after the reference, often already large.
-
-    Two probes, in order of preference:
-
-    - With ``raw_seg_dir`` (a raw-input segmentation root), its label image
-      at the reference frame is probed at each colony's first-detection
-      centroid: a colony landing on colony territory that existed at the
-      base frame (a label at the centroid or within 12 px, or inside a raw
-      colony's area-equivalent disk + 15 px slack) is flagged.
-    - Without the raw root (or without its label image) the raw reference
-      frame itself is probed (:func:`_probe_raw_frame`): a colony whose
-      first-detection centroid window is clearly dark in it existed there
-      already. This is the pipeline chain's default path — the pipeline
-      never invents a ``raw_seg_dir``, so every pipeline run probes this way.
-
-    A flagged colony is ``pre_existing=1`` on all its rows (OR-ed with the
-    pipeline's own flag). No-op for raw roots.
-    """
-    m = re.search(r"diff_LO(\d+)$", Path(seg_root).name)
-    if m is None:
-        return
-    ref_frame = int(m.group(1))
-    if options.raw_seg_dir is not None:
-        well_dir = Path(options.raw_seg_dir) / well
-        paths = sorted(well_dir.glob(f"*--LO{ref_frame:03d}--*__labels.tif"))
-        if paths:
-            _probe_raw_root(well, rows, ref_frame, well_dir, paths[0])
-            return
-        log.warning("[%s] no raw LO%03d label image under %s; falling back "
-                    "to the raw-frame pre-existing probe",
-                    well, ref_frame, options.raw_seg_dir)
-    _probe_raw_frame(well, rows, ref_frame, options, geo)
 
 
 # ---------------------------------------------------------------- rates ------
@@ -1134,7 +986,6 @@ def process_well(well, seg_root, options, out_dir, geometry):
     for r in rows:
         r["frame"] = int(r["frame"])
     geo = load_geometry(well, options, geometry)
-    probe_pre_existing(well, rows, seg_root, options, geo)
     rim_fracs = rim_stats(rows, seg_root, geo, options.rim_width_px)
     # the well's own frame series defines "the beginning" (the earliest frame
     # with a label image - colonies.csv rows start later wherever growth does)

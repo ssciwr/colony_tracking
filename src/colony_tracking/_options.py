@@ -256,8 +256,7 @@ class AnalysisOptions(Options):
         metadata={"help": "Segmentation trees to analyze (repeatable)."}
     )
     raw_dir: Path = field(
-        metadata={"help": "Raw plate directory (well-circle fit and the "
-        "difference-root probe)."},
+        metadata={"help": "Raw plate directory (well-circle fit)."},
     )
     out_root: Path = field(
         metadata={"help": "Directory to write the analysis outputs into."}
@@ -289,14 +288,6 @@ class AnalysisOptions(Options):
     keep_pre_existing: bool = field(
         default=False,
         metadata={"help": "Include pre-existing colonies in aggregates and plots."},
-    )
-    raw_seg_dir: Path | None = field(
-        default=None,
-        metadata={
-            "help": "Raw-root segmentation tree probed to flag pre-existing "
-            "colonies of difference roots; without it the raw reference "
-            "frame itself is probed (dark centroid window)."
-        },
     )
     start_frames: int = field(
         default=1,

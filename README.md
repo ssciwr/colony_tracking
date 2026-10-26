@@ -381,6 +381,16 @@ prototype-written trees and maps the legacy names (`lo`, `n_merged`,
 `max_n_merged`, `first_lo`, `last_lo`, `rim_excluded_lo`) to the canonical
 ones; new writes always use the canonical names.
 
+**QA overlay colors.** Each `qa/<well>_rim.png` composites the colony
+statuses of the frame with the highest frame number that has rows onto the
+raw frame. Colony tints (translucent fill plus solid edge, at the shown
+frame, in this order): magenta — bad segment (from the series start or not
+growing); orange — pre-existing (excluded over its whole lifetime); red —
+rim-excluded; green edge without fill — valid. Beneath the colonies, the
+fitted well circle is blue and the rim-zone boundary orange (the same hue
+as the pre-existing tint; the boundary is a thin ring). A well with no
+colony rows gets a rim-only overlay on its last raw frame.
+
 ## Integration test
 
 `tests/test_integration.py` runs the standard chain on the real plate and

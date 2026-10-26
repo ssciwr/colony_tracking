@@ -20,7 +20,13 @@ the values the chain derives for them
 ``PipelineConfig.resolve_stages`` performs), every entry marked
 ``(derived)``. The run level is *this screen's form*, not a line among
 them. The free fields that default to a derived name grey that default
-in their empty input (:func:`placeholders`). This wiring is the chain's
+in their empty input while ``out_root`` is set (:func:`placeholders`,
+laid over the forms' static grays through
+:meth:`~colony_tracking.tui.forms.OptionForm.refresh_placeholders`) —
+a blank or cleared ``out_root`` re-lays the static grays, no stale
+derived name lingers; everywhere else the greys are the forms' own
+static ones (the field's declared default, ``(default: unset)``, or its
+``required:`` text). This wiring is the chain's
 own — nothing here is derived from another run type's configuration or
 outputs.
 
@@ -125,9 +131,11 @@ def placeholders(draft: ConfigDraft, stage: str) -> dict[str, str]:
     """The derived default each free field of ``stage`` falls back to when
     left blank — greyed in the empty input so the user sees what the
     chain run would pick; stages without such fields get an empty
-    mapping. These greys are the chain's own within-run wiring — tree
-    names built from the run level on the same draft, never from another
-    run type's configuration."""
+    mapping, and an unset ``out_root`` gets one too — the overlay
+    (:meth:`~colony_tracking.tui.forms.OptionForm.refresh_placeholders`)
+    re-lays every field's static gray then. These greys are the chain's
+    own within-run wiring — tree names built from the run level on the
+    same draft, never from another run type's configuration."""
     out_root = draft.get(RUN_LEVEL, "out_root")
     if out_root is None:
         return {}
@@ -234,8 +242,10 @@ class ConfigScreen(FormScreen):
         stands, rendered as TOML (markup-free — section names like
         ``[pipeline]`` must show as typed) — plus every stage section's
         within-chain owned line (every entry marked ``derived``; the run
-        level is this screen's own form) and the stage forms' greyed
-        within-chain defaults."""
+        level is this screen's own form) and every stage form's grays
+        re-laid over their static defaults: the derived tree names where
+        the chain derives them, the forms' own grays everywhere else (a
+        cleared ``out_root`` re-lays the statics, no stale derived name)."""
         self.query_one("#toml-preview", Static).update(
             Text(tomli_w.dumps(self.draft.document()))
         )
@@ -249,8 +259,7 @@ class ConfigScreen(FormScreen):
                 Text("wired within the chain: " + (joined if joined else "none"))
             )
             form = self._stage_forms[stage]
-            for key, text in placeholders(self.draft, stage).items():
-                form.set_placeholder(key, text)
+            form.refresh_placeholders(placeholders(self.draft, stage))
 
     def compose_actions(self) -> ComposeResult:
         yield Button("Write TOML…", id="write-toml")

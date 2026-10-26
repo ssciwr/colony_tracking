@@ -44,7 +44,7 @@ from colony_tracking._options import (
 from colony_tracking.pipeline import _STAGES
 from colony_tracking.tui.app import ColonyTuiApp
 from colony_tracking.tui.draft import ConfigDraft
-from colony_tracking.tui.forms import kebab
+from colony_tracking.tui.forms import NO_DEFAULT, kebab, specs_of
 from colony_tracking.tui.screens._save import LoadConfigDialog, SaveConfigDialog
 from colony_tracking.tui.screens.config import ConfigScreen
 from colony_tracking.tui.screens.home import HomeScreen
@@ -96,6 +96,38 @@ def _section_of(app: ColonyTuiApp, run_type: str) -> dict:
     carry a run type key; only a stage draft's own section exists)."""
     draft = app.drafts[run_type]
     return {} if draft.is_pipeline else draft.stages[run_type]
+
+
+async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
+    """Scroll a (possibly folded-away) widget into view and click it."""
+    app.screen.query_one(selector).scroll_visible(animate=False)
+    await pilot.pause()
+    assert await pilot.click(selector), selector
+    await pilot.pause()
+
+
+#: The required fields' example texts (the ticket's copy table): the
+#: ``required:`` gray copy, keyed by field name.
+_REQUIRED = {
+    "raw_dir": "/path/to/raw-plate-frames",
+    "out_root": "/path/to/output-root",
+    "out_dir": "/path/to/output-dir",
+    "seg_dirs": "/path/to/segmentation-trees",
+}
+
+
+def _gray(spec) -> str:
+    """A field's expected gray text — the test's own copy of the forms
+    module's rules, off the declared default alone: the bare value
+    (sequences comma-joined), ``(default: unset)`` for a ``None``
+    default, and ``required: <example>`` when required."""
+    if spec.default is NO_DEFAULT:
+        return f"required: {_REQUIRED.get(spec.key, spec.key)}"
+    if spec.default is None:
+        return "(default: unset)"
+    if isinstance(spec.default, (list, tuple)):
+        return ", ".join(str(item) for item in spec.default)
+    return str(spec.default)
 
 
 # --- the registry ---------------------------------------------------------------
@@ -203,6 +235,97 @@ def test_formerly_owned_fields_are_editable_widgets_and_nothing_owned_remains(
             assert str(app.screen.query_one("#stage-title", Static).render()) == (
                 f"{STAGES[stage].title} — options"
             )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("stage", ["difference", "segmentation", "analysis"])
+def test_every_option_field_grays_what_a_blank_resolves_to(stage):
+    """EVERY field of the stage's own screen — the chain-derived ones
+    included — shows its gray from the declared dataclass default: an
+    input its bare default / its ``required:`` example / the unset
+    marker, the segmentation ``input`` select its default literal as the
+    blank prompt, checkboxes none (the default shows as the check
+    state)."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StageScreen(stage)
+            app.push_screen(screen)
+            await pilot.pause()
+            for spec in specs_of(STAGES[stage].options):
+                widget = screen.form.query_one(f"#{stage}-{kebab(spec.key)}")
+                if isinstance(widget, Checkbox):
+                    continue  # the default shows as the check state
+                shown = (
+                    widget.prompt if isinstance(widget, Select) else widget.placeholder
+                )
+                assert shown == _gray(spec), (stage, spec.key)
+            # explicit spot checks against the copy table
+            if stage == "segmentation":
+                assert (
+                    screen.form.query_one("#segmentation-input", Select).prompt
+                    == "raw"
+                )
+            if stage == "difference":
+                assert (
+                    screen.form.query_one("#difference-raw-dir", Input).placeholder
+                    == "required: /path/to/raw-plate-frames"
+                )
+
+    asyncio.run(scenario())
+
+
+def test_a_reset_restores_the_gray_on_a_stage_screen_too():
+    """The same reset-restore on the stage screens (the forms' shared
+    machinery): a typed reference input blanks back to its ``first``
+    gray, the segmentation select drops back to blank showing its ``raw``
+    prompt, the dry-run checkbox unchecks (its gray is the check state)
+    — every draft key dropped."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            # input, on the difference screen
+            difference = StageScreen("difference")
+            app.push_screen(difference)
+            await pilot.pause()
+            reference = difference.form.query_one("#difference-reference", Input)
+            reference.value = "3"
+            await pilot.pause()
+            assert reference.placeholder == "first"  # the gray is unchanged
+            await _click(pilot, app, "#reset-difference-reference")
+            reference = difference.form.query_one("#difference-reference", Input)
+            assert reference.value == ""
+            assert reference.placeholder == "first"
+            assert _section_of(app, "difference") == {}
+            # select, on the segmentation screen: the picked literal
+            # dropped, blank again behind its gray prompt
+            segmentation = StageScreen("segmentation")
+            app.push_screen(segmentation)
+            await pilot.pause()
+            select = segmentation.form.query_one("#segmentation-input", Select)
+            select.value = "diff"
+            await pilot.pause()
+            assert _section_of(app, "segmentation") == {"input": "diff"}
+            await _click(pilot, app, "#reset-segmentation-input")
+            await pilot.pause()
+            assert select.value is Select.NULL
+            assert select.prompt == "raw"
+            assert _section_of(app, "segmentation") == {}
+            # checkbox, on the difference screen: toggled away, the reset
+            # drops it back to the default check state
+            app.push_screen(difference)
+            await pilot.pause()
+            dry_run = difference.form.query_one("#difference-dry-run", Checkbox)
+            dry_run.value = True
+            await pilot.pause()
+            assert _section_of(app, "difference") == {"dry_run": True}
+            await _click(pilot, app, "#reset-difference-dry-run")
+            await pilot.pause()
+            assert dry_run.value is False
+            assert _section_of(app, "difference") == {}
 
     asyncio.run(scenario())
 

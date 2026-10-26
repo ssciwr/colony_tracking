@@ -36,14 +36,14 @@ from typing import Literal, get_origin
 
 import pytest
 from textual.css.query import NoMatches
-from textual.widgets import Button, Checkbox, Input, Static
+from textual.widgets import Button, Checkbox, Input, Select, Static
 
 from colony_tracking import DifferenceSummary
 from colony_tracking._options import DifferenceOptions, Options, _union_members
 from colony_tracking.pipeline import _OWNED, read_config
 from colony_tracking.tui import runner
 from colony_tracking.tui.app import ColonyTuiApp
-from colony_tracking.tui.forms import kebab, run_level_specs, specs_of
+from colony_tracking.tui.forms import NO_DEFAULT, kebab, run_level_specs, specs_of
 from colony_tracking.tui.screens._save import LoadConfigDialog, SaveConfigDialog
 from colony_tracking.tui.screens.config import ConfigScreen, editable_specs
 from colony_tracking.tui.screens.run import RunScreen
@@ -51,6 +51,29 @@ from colony_tracking.tui.screens.stage import STAGES, StageSpec, StageScreen
 
 #: How long a test waits for a (fake) run to finish.
 _TIMEOUT = 10.0
+
+#: The required fields' example texts (the ticket's copy table): the
+#: ``required:`` gray copy, keyed by field name.
+_REQUIRED = {
+    "raw_dir": "/path/to/raw-plate-frames",
+    "out_root": "/path/to/output-root",
+    "out_dir": "/path/to/output-dir",
+    "seg_dirs": "/path/to/segmentation-trees",
+}
+
+
+def _gray(spec) -> str:
+    """A field's expected gray text — the test's own copy of the forms
+    module's rules, off the declared default alone: the bare value
+    (sequences comma-joined), ``(default: unset)`` for a ``None``
+    default, and ``required: <example>`` when required."""
+    if spec.default is NO_DEFAULT:
+        return f"required: {_REQUIRED.get(spec.key, spec.key)}"
+    if spec.default is None:
+        return "(default: unset)"
+    if isinstance(spec.default, (list, tuple)):
+        return ", ".join(str(item) for item in spec.default)
+    return str(spec.default)
 
 
 @dataclass(kw_only=True)
@@ -270,6 +293,155 @@ def test_derived_defaults_show_as_placeholders(tmp_path):
                 .placeholder
                 == f"{out_root}/analysis"
             )
+
+    asyncio.run(scenario())
+
+
+def test_the_config_screen_shows_every_field_its_declared_gray():
+    """Every widget on the config screen shows what a blank resolves to,
+    from the declared dataclass defaults: the run level's inputs and the
+    stage sections' fields — the shipped sections' selects are owned
+    fields (shown read-only), so a section hosting one yet would show its
+    default literal as the blank prompt (the stage screens prove that
+    case; see ``tests/test_tui_stage_screens.py``); checkboxes show none
+    (their default shows as the check state)."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 60)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            for spec in run_level_specs():
+                input_widget = screen.form.query_one(
+                    f"#pipeline-{kebab(spec.key)}", Input
+                )
+                assert input_widget.placeholder == _gray(spec), spec.key
+            for stage, entry in STAGES.items():
+                form = screen.stage_forms[stage]
+                for spec in specs_of(entry.options):
+                    if spec.key in _OWNED[stage]:
+                        continue  # read-only owned lines, not fields
+                    widget = form.query_one(f"#cfg-{stage}-{kebab(spec.key)}")
+                    if isinstance(widget, Checkbox):
+                        continue  # the default shows as the check state
+                    shown = (
+                        widget.prompt if isinstance(widget, Select)
+                        else widget.placeholder
+                    )
+                    assert shown == _gray(spec), (stage, spec.key)
+
+    asyncio.run(scenario())
+
+
+def test_the_derived_grays_fall_back_to_the_required_texts():
+    """The derived-tree grays are an overlay on the static ones: a blank
+    ``out_root`` leaves the four derived fields their ``required:`` gray
+    texts; typing ``out_root`` lays the derived names over them; emptying
+    the input — or pressing its own reset — re-lays the statics, no
+    stale derived name lingering."""
+    root = "/data/out-root"
+    static = (
+        "required: /path/to/output-dir",
+        "required: /path/to/output-dir",
+        "required: /path/to/segmentation-trees",
+        "required: /path/to/output-root",
+    )
+    derived = (
+        f"{root}/difference",
+        f"{root}/seg_growth_diff",
+        f"{root}/seg_growth_diff",
+        f"{root}/analysis",
+    )
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 60)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+
+            def shown() -> tuple[str, str, str, str]:
+                """The four derived fields' grays: difference out_dir,
+                segmentation out_dir, analysis seg_dirs and out_root."""
+                return (
+                    screen.stage_forms["difference"]
+                    .query_one("#cfg-difference-out-dir", Input)
+                    .placeholder,
+                    screen.stage_forms["segmentation"]
+                    .query_one("#cfg-segmentation-out-dir", Input)
+                    .placeholder,
+                    screen.stage_forms["analysis"]
+                    .query_one("#cfg-analysis-seg-dir", Input)
+                    .placeholder,
+                    screen.stage_forms["analysis"]
+                    .query_one("#cfg-analysis-out-root", Input)
+                    .placeholder,
+                )
+
+            assert shown() == static
+            out_root = screen.form.query_one("#pipeline-out-root", Input)
+            out_root.value = root
+            await pilot.pause()
+            assert shown() == derived  # dynamic values win while the root is set
+            out_root.value = ""
+            await pilot.pause()
+            assert shown() == static  # a cleared out_root re-lays the statics
+            out_root.value = root
+            await pilot.pause()
+            assert shown() == derived
+            await _click(pilot, app, "#reset-pipeline-out-root")
+            assert shown() == static  # the reset re-lays the statics too
+            assert (
+                screen.form.query_one("#pipeline-out-root", Input).value == ""
+            )
+
+    asyncio.run(scenario())
+
+
+def test_a_reset_button_restores_the_gray_of_every_widget_kind():
+    """A field's reset re-shows what a blank resolves to, for every widget
+    kind the config screen shows (the segment ``input`` select is owned
+    and read-only here — the stage screen's select reset is covered in
+    ``tests/test_tui_stage_screens.py``): the reference input blanks back
+    to its ``first`` gray, and the dry-run checkbox unchecks — its gray
+    is the check state. Every draft key dropped, every reset disabled
+    again."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 60)) as pilot:
+            screen = ConfigScreen()
+            app.push_screen(screen)
+            await pilot.pause()
+            # input: a typed value cleared back to the gray default text
+            reference = screen.form.query_one("#pipeline-reference", Input)
+            reference.value = "3"
+            await pilot.pause()
+            assert reference.placeholder == "first"  # the gray is unchanged
+            await _click(pilot, app, "#reset-pipeline-reference")
+            reference = screen.form.query_one("#pipeline-reference", Input)
+            assert reference.value == ""
+            assert reference.placeholder == "first"
+            assert app.drafts["pipeline"].get("pipeline", "reference") is None
+            assert app.screen.query_one("#reset-pipeline-reference", Button).disabled
+            # checkbox: toggled away, the reset drops it back to the
+            # default check state (the checkbox's gray)
+            dry_run = screen.stage_forms["difference"].query_one(
+                "#cfg-difference-dry-run", Checkbox
+            )
+            dry_run.value = True
+            await pilot.pause()
+            assert app.drafts["pipeline"].get("difference", "dry_run") is True
+            await _click(pilot, app, "#reset-cfg-difference-dry-run")
+            await pilot.pause()
+            assert dry_run.value is False
+            assert app.drafts["pipeline"].get("difference", "dry_run") is None
+            assert (
+                app.screen.query_one("#reset-cfg-difference-dry-run", Button).disabled
+            )
+            # a select reset is proven on the stage screens (the config
+            # screen hosts no Literal field outside the owned lines)
 
     asyncio.run(scenario())
 

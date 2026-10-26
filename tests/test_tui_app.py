@@ -378,3 +378,45 @@ def test_a_stage_screen_run_action_runs_through_the_wired_flow(
 
     asyncio.run(scenario())
     assert at_call["toml"] is not None  # written before the run started
+
+
+# --- the quick start's grays: the config screen's run level ---------------
+
+
+def test_quick_start_grays_match_the_config_screens_run_level():
+    """The quick start's four gray texts equal the config screen's
+    run-level grays exactly (the shared placeholder rule — the ``wells``
+    field in the ``(default: unset)`` form, never the old hardcoded
+    examples): the two paths' ``required:`` texts, reference ``first``,
+    wells ``(default: unset)``."""
+
+    async def scenario() -> None:
+        expected = {
+            "raw_dir": "required: /path/to/raw-plate-frames",
+            "out_root": "required: /path/to/output-root",
+            "reference": "first",
+            "wells": "(default: unset)",
+        }
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.push_screen(QuickStartScreen())
+            await pilot.pause()
+            quick_start = app.screen
+            quick_fields = {
+                name: quick_start.query_one(
+                    f"#qs-{name.replace('_', '-')}", Input
+                )
+                for name in expected
+            }
+            # the config screen's run-level form shows the same four texts
+            app.push_screen(ConfigScreen())
+            await pilot.pause()
+            for name, text in expected.items():
+                assert quick_fields[name].placeholder == text, name
+                config_gray = app.screen.form.query_one(
+                    f"#pipeline-{kebab(name)}", Input
+                ).placeholder
+                assert config_gray == text, name
+                assert quick_fields[name].placeholder == config_gray, name
+
+    asyncio.run(scenario())

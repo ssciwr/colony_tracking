@@ -19,6 +19,26 @@ per field, chosen from the field's type hint alone:
 ``str`` falls to ``Input``. Field labels are the CLI flag names
 (kebab-case); the help metadata is the description line under the widget.
 
+Placeholders
+------------
+A blank field shows in gray exactly what a blank resolves to, laid from
+the field's declared option state by one shared rule
+(:func:`placeholder_text`, applied to every :class:`FieldSpec` at spec
+time):
+
+- a declared default that is not ``None`` — the bare default value
+  (``reference`` → ``first``, ``display_percentile`` → ``99.5``);
+- default ``None`` — ``(default: unset)`` (``wells``, ``checkpoint``);
+- required (no default) — ``required: <example>``
+  (:data:`REQUIRED_EXAMPLES`).
+
+An ``Input`` shows it as ``placeholder``, a blank ``Select`` as its
+prompt (never a pre-picked default value), a ``Checkbox`` not at all —
+its default shows as the check state. The config screen overlays the
+within-chain derived tree names onto the stage forms' static grays
+(:meth:`OptionForm.refresh_placeholders`) and falls back to them again
+whenever the ``out_root`` they derive from is cleared.
+
 Value flow — on change
 ----------------------
 Values flow into the screen's :class:`~colony_tracking.tui.draft.ConfigDraft`
@@ -57,7 +77,7 @@ cancelling closes the picker and changes nothing. A list-of-path field
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
 from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
@@ -229,11 +249,38 @@ class _NoDefault:
 #: FieldSpec.default's marker for a required field.
 NO_DEFAULT: Final[_NoDefault] = _NoDefault()
 
+#: Required fields' example texts — the ``required:`` gray copy, keyed by
+#: field name (these are all the required keys of the pipeline's own
+#: options dataclasses; an unmapped required key falls back to its name).
+REQUIRED_EXAMPLES: Final[dict[str, str]] = {
+    "raw_dir": "/path/to/raw-plate-frames",
+    "out_root": "/path/to/output-root",
+    "out_dir": "/path/to/output-dir",
+    "seg_dirs": "/path/to/segmentation-trees",
+}
+
+#: The gray text of a field whose declared default is ``None``.
+UNSET_DEFAULT_TEXT: Final[str] = "(default: unset)"
+
+
+def placeholder_text(key: str, default: Any) -> str:
+    """The gray text a blank field shows — what a blank resolves to, from
+    the declared option state in priority order: a default that is not
+    ``None`` as :func:`format_field` renders it, ``None`` as
+    :data:`UNSET_DEFAULT_TEXT`, and required (no default) as
+    ``required: <example>`` (:data:`REQUIRED_EXAMPLES`, one text per key
+    name, shared across screens)."""
+    if default is NO_DEFAULT:
+        return f"required: {REQUIRED_EXAMPLES.get(key, key)}"
+    if default is None:
+        return UNSET_DEFAULT_TEXT
+    return format_field(default)
+
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """One option field of a form: the draft key plus the declared type
-    and the ``help`` metadata."""
+    """One option field of a form: the draft key plus the declared type,
+    the gray text of a blank field, and the ``help`` metadata."""
 
     #: The dataclass field name — the draft key.
     key: str
@@ -244,7 +291,9 @@ class FieldSpec:
     #: The dataclass default (:data:`NO_DEFAULT` when required); a
     #: checkbox shows it while the key is unset.
     default: Any = NO_DEFAULT
-    #: Greyed hint text for an empty ``Input`` (a derived default).
+    #: The gray text a blank field shows (:func:`placeholder_text` at
+    #: spec time — an ``Input``'s placeholder, a blank ``Select``'s
+    #: prompt); the config screen overlays derived texts over it.
     placeholder: str = ""
     #: The widget's label (``kebab(key)`` when empty).
     label: str = ""
@@ -252,7 +301,8 @@ class FieldSpec:
 
 def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec, ...]:
     """The form specs of a dataclass: one :class:`FieldSpec` per field in
-    declaration order, restricted to ``keys`` when given."""
+    declaration order (hint, help, default, and the blank field's gray
+    text — :func:`placeholder_text`), restricted to ``keys`` when given."""
     hints = get_type_hints(cls)
     out = []
     for f in fields(cls):
@@ -264,7 +314,13 @@ def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec,
         if default is MISSING:
             default = NO_DEFAULT
         out.append(
-            FieldSpec(f.name, hints[f.name], f.metadata.get("help", ""), default)
+            FieldSpec(
+                f.name,
+                hints[f.name],
+                f.metadata.get("help", ""),
+                default,
+                placeholder_text(f.name, default),
+            )
         )
     return tuple(out)
 
@@ -505,9 +561,11 @@ class OptionForm(VerticalScroll):
             elif kind == "select":
                 values = self._literals[spec.key]
                 current = self.draft.get(self.section, spec.key)
+                # the blank select shows its gray default in the prompt —
+                # never a pre-picked value (the draft stays unset then)
                 widget = Select(
                     [(str(value), value) for value in values],
-                    prompt="(default)",
+                    prompt=spec.placeholder,
                     allow_blank=True,
                     value=current if current in values else Select.NULL,
                     id=widget_id,
@@ -548,6 +606,19 @@ class OptionForm(VerticalScroll):
         """Set the greyed hint of one field's input (the derived default a
         blank input falls back to)."""
         self.query_one(f"#{self._field_id(key)}", Input).placeholder = text
+
+    def refresh_placeholders(self, derived: Mapping[str, str]) -> None:
+        """Re-lay every field's gray after a draft change — the config
+        screen's overlay: ``derived``'s within-chain tree names wherever
+        the chain derives them (while ``out_root`` is set), every other
+        input its static gray (:attr:`FieldSpec.placeholder`); an empty
+        mapping (a blank ``out_root``) re-lays the statics, so no stale
+        derived name lingers after a clear. Selects keep their prompt and
+        checkboxes their check state — the overlay never targets them."""
+        for spec in self._specs:
+            if self._kinds[spec.key] != "input":
+                continue
+            self.set_placeholder(spec.key, derived.get(spec.key, spec.placeholder))
 
     def refresh_from_draft(self) -> None:
         """Set every widget's value from the draft again.

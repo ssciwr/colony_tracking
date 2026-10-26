@@ -77,11 +77,9 @@ again it resumes its own ID.
 continues (logged and counted in the done marker).
 
 **pre-existing** — A colony whose first detection is at or before the
-`exclude_before` frame, or that is probed pre-existing against the raw root
-(or, without one, against the raw reference frame itself) for a difference
-root. Flagged `pre_existing=1`; excluded from aggregates and plots over its
-whole lifetime unless `keep_pre_existing`, and never bad-flagged (so it
-cannot exclude its well).
+`exclude_before` frame. Flagged `pre_existing=1`; excluded from aggregates and
+plots over its whole lifetime unless `keep_pre_existing`, and never
+bad-flagged (so it cannot exclude its well).
 
 ## Exclusions-and-flags
 

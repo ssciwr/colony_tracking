@@ -119,7 +119,7 @@ trees.
 | Option | Default | Description |
 | --- | --- | --- |
 | `--seg-dir` | `required` | Segmentation trees to analyze (repeatable). |
-| `--raw-dir` | `required` | Raw plate directory (well-circle fit and the difference-root probe). |
+| `--raw-dir` | `required` | Raw plate directory (well-circle fit). |
 | `--out-root` | `required` | Directory to write the analysis outputs into. |
 | `--wells` | `none` | Analyze only these wells (repeatable, comma-separated). Default: all wells. |
 | `--rim-width-px` | `60` | Width of the rim band inside the well circle (px). |
@@ -127,7 +127,6 @@ trees.
 | `--max-bad-segments` | `2` | A well with at least this many distinct bad colonies is a bad well. |
 | `--keep-bad-wells` | `unset` | Include bad wells in aggregates and plots. |
 | `--keep-pre-existing` | `unset` | Include pre-existing colonies in aggregates and plots. |
-| `--raw-seg-dir` | `none` | Raw-root segmentation tree probed to flag pre-existing colonies of difference roots; without it the raw reference frame itself is probed (dark centroid window). |
 | `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start); pre-existing colonies are exempt. |
 | `--min-growth-per-frame` | `0.1` | A colony for which any valid frame, compared to the earliest valid frame >= 2 images ahead, grows by this factor or less per image is bad (no_growth); pre-existing colonies are exempt. |
 | `--refresh-geometry` | `unset` | Re-fit the well circles instead of using the cached well_geometry.csv. |
@@ -381,6 +380,16 @@ written as `frame`. Values are unchanged. The analyze stage reads
 prototype-written trees and maps the legacy names (`lo`, `n_merged`,
 `max_n_merged`, `first_lo`, `last_lo`, `rim_excluded_lo`) to the canonical
 ones; new writes always use the canonical names.
+
+**QA overlay colors.** Each `qa/<well>_rim.png` composites the colony
+statuses of the frame with the highest frame number that has rows onto the
+raw frame. Colony tints (translucent fill plus solid edge, at the shown
+frame, in this order): magenta — bad segment (from the series start or not
+growing); orange — pre-existing (excluded over its whole lifetime); red —
+rim-excluded; green edge without fill — valid. Beneath the colonies, the
+fitted well circle is blue and the rim-zone boundary orange (the same hue
+as the pre-existing tint; the boundary is a thin ring). A well with no
+colony rows gets a rim-only overlay on its last raw frame.
 
 ## Integration test
 

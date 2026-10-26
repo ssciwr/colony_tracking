@@ -96,7 +96,6 @@ def test_analysis_options_fields_match_contract():
         "max_bad_segments",
         "keep_bad_wells",
         "keep_pre_existing",
-        "raw_seg_dir",
         "start_frames",
         "min_growth_per_frame",
         "refresh_geometry",
@@ -172,7 +171,6 @@ def test_analysis_options_defaults():
     assert opts.max_bad_segments == 2
     assert opts.keep_bad_wells is False
     assert opts.keep_pre_existing is False
-    assert opts.raw_seg_dir is None
     assert opts.start_frames == 1
     assert opts.min_growth_per_frame == 0.1
     assert opts.refresh_geometry is False
@@ -236,7 +234,6 @@ def test_analysis_options_roundtrip_with_path_lists():
         seg_dirs=[Path("/seg1"), Path("/seg2")],
         raw_dir=Path("/raw"),
         out_root=Path("/out"),
-        raw_seg_dir=Path("/seg_raw"),
     )
     data = opts.to_dict()
     assert data["seg_dirs"] == ["/seg1", "/seg2"]

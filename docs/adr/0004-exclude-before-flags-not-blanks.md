@@ -1,6 +1,6 @@
 # 0004: `exclude_before` flags pre-existing colonies instead of blanking frames
 
-Status: accepted (2026-10-22)
+Status: amended (2026-10-26)
 
 ## Context
 
@@ -59,3 +59,16 @@ through the `pre_existing` flag instead.
   difference chains.
 - Trajectories/growth-rates rows of flagged colonies stay in the CSVs
   (statistics-level exclusion); label images keep their segments.
+
+## Amendment (2026-10-26)
+
+The analysis-stage base-image probe is removed: pre-existing exclusion is
+solely the segment-stage first-detection flag above, in both the model path
+and the reid path. Colonies that existed at the reference frame but surface
+after N in the difference chain are therefore analyzed as new colonies by
+definition — the Consequences bullet "the analysis stage's base-image probe
+covers that case" is superseded. What still holds: static objects chain
+through the blank reference frame, so their first detection stays ≤ N and
+they drop out of the analysis; a harder exclusion is not available without
+re-running the segment stage with a different `exclude_before` (the reid
+path re-flags from the saved label images without re-segmentation).

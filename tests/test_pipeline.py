@@ -134,7 +134,6 @@ def test_from_toml_defaults_for_omitted_keys(tmp_path):
     assert config.analysis.rim_width_px == 60
     assert config.analysis.max_bad_segments == 2
     assert config.analysis.keep_bad_wells is False
-    assert config.analysis.raw_seg_dir is None
 
 
 def test_from_toml_run_level_and_per_stage_values(tmp_path):
@@ -158,7 +157,6 @@ def test_from_toml_run_level_and_per_stage_values(tmp_path):
         [analysis]
         rim_width_px = 80
         keep_pre_existing = true
-        raw_seg_dir = "/data/run/seg_growth_raw_LO001"
         """,
     )
     config = read_config(path)
@@ -170,7 +168,6 @@ def test_from_toml_run_level_and_per_stage_values(tmp_path):
     assert config.segmentation.exclude_before == 7
     assert config.analysis.rim_width_px == 80
     assert config.analysis.keep_pre_existing is True
-    assert config.analysis.raw_seg_dir == Path("/data/run/seg_growth_raw_LO001")
     # untouched options in a present section still take their defaults
     assert config.difference.subsample == 8
     assert config.segmentation.model_type == "vit_b_lm"
@@ -328,7 +325,6 @@ def test_toml_round_trip_equality(tmp_path):
         min_solidity = 0.6
 
         [analysis]
-        raw_seg_dir = "/data/run/seg_growth_raw_LO001"
         """,
     )
     config = read_config(path)
@@ -406,8 +402,6 @@ def test_stages_run_in_order_with_wired_options(tmp_path, monkeypatch):
     assert ana_opts.raw_dir == Path("/data/plate")
     assert ana_opts.out_root == Path("/data/run/analysis")
     assert ana_opts.wells == ["-A001"]
-    # no raw-input segmentation root is ever invented
-    assert ana_opts.raw_seg_dir is None
     assert summary.status == "ok"
     assert summary.failed_stage is None
     assert summary.difference is not None and summary.difference.processed == 2

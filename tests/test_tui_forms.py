@@ -20,15 +20,17 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Checkbox, Input, Label, Select
 
-from colony_tracking._options import Options, Reference
+from colony_tracking._options import DifferenceOptions, Options, Reference
 from colony_tracking.tui.draft import ConfigDraft
 from colony_tracking.tui.forms import (
+    NO_DEFAULT,
     UNSET,
     FieldError,
     OptionForm,
     format_field,
     kebab,
     parse_field,
+    placeholder_text,
     run_level_specs,
     specs_of,
 )
@@ -51,6 +53,16 @@ class DemoOptions(Options):
     )
     limit: int | None = field(default=None, metadata={"help": "Optional cap."})
     flag: bool = field(default=True, metadata={"help": "A default-True flag."})
+
+
+@dataclass(kw_only=True)
+class DemoUnsetSelect(Options):
+    """A stand-in with a ``None``-default literal: the select kind whose
+    gray prompt shows the unset marker (no shipped stage has one)."""
+
+    mode: Literal["a", "b"] | None = field(
+        default=None, metadata={"help": "Optional mode."}
+    )
 
 
 class _FormHost(App[None]):
@@ -194,6 +206,45 @@ def test_format_field_inverts_parse():
         assert format_field(value) == text
 
 
+def test_placeholder_text_follows_the_copy_table():
+    """The gray text of a blank field, from the declared option state in
+    priority order: the bare default (format_field's rendering),
+    ``(default: unset)`` for a ``None`` default, and
+    ``required: <example>`` for required fields (one mapped example per
+    key name; an unmapped key falls back to its name)."""
+    assert placeholder_text("reference", "first") == "first"
+    assert placeholder_text("display_percentile", 99.5) == "99.5"
+    assert placeholder_text("subsample", 8) == "8"
+    assert placeholder_text("patch_shape", (512, 512)) == "512, 512"
+    assert placeholder_text("wells", None) == "(default: unset)"
+    assert placeholder_text("raw_dir", NO_DEFAULT) == (
+        "required: /path/to/raw-plate-frames"
+    )
+    assert placeholder_text("out_root", NO_DEFAULT) == (
+        "required: /path/to/output-root"
+    )
+    assert placeholder_text("out_dir", NO_DEFAULT) == (
+        "required: /path/to/output-dir"
+    )
+    assert placeholder_text("seg_dirs", NO_DEFAULT) == (
+        "required: /path/to/segmentation-trees"
+    )
+    assert placeholder_text("label_dir", NO_DEFAULT) == "required: label_dir"
+
+
+def test_specs_carry_the_gray_text():
+    """specs_of lays the gray text onto every spec from the field's
+    declared default: the run level's ``required:`` paths and the unset
+    marker, the difference stage's bare ``99.5``."""
+    by_key = {spec.key: spec for spec in run_level_specs()}
+    assert by_key["raw_dir"].placeholder == "required: /path/to/raw-plate-frames"
+    assert by_key["out_root"].placeholder == "required: /path/to/output-root"
+    assert by_key["reference"].placeholder == "first"
+    assert by_key["wells"].placeholder == "(default: unset)"
+    difference = {spec.key: spec for spec in specs_of(DifferenceOptions)}
+    assert difference["display_percentile"].placeholder == "99.5"
+
+
 # --- the mounted form -----------------------------------------------------------
 
 
@@ -241,6 +292,51 @@ def test_form_shows_labels_and_help():
         for help_text in ("Input mode.", "Tile size in px.", "Optional cap."):
             assert help_text in texts
         assert form.query_one("#demo-flag", Checkbox).label == "flag"
+
+    _run_form(form, observe)
+
+
+def test_form_lays_the_gray_from_the_specs():
+    """Every field's gray comes off its spec at compose time — the
+    select's default literal as the blank prompt among them — and
+    `set_placeholder` re-points one input while the overlay refresh
+    (:meth:`OptionForm.refresh_placeholders`) re-lays every input from a
+    derived mapping, the select's prompt untouched."""
+    form = OptionForm("demo", specs_of(DemoOptions), _demo_draft())
+
+    async def observe(app, form, pilot):
+        await pilot.pause()
+        assert form.query_one("#demo-mode", Select).prompt == "raw"
+        assert form.query_one("#demo-limit", Input).placeholder == "(default: unset)"
+        assert form.query_one("#demo-patch", Input).placeholder == "512, 512"
+        form.set_placeholder("limit", "from-the-chain")
+        form.refresh_placeholders({"patch": "derived-tree"})
+        await pilot.pause()
+        assert form.query_one("#demo-patch", Input).placeholder == "derived-tree"
+        assert form.query_one("#demo-limit", Input).placeholder == "(default: unset)"
+        assert form.query_one("#demo-mode", Select).prompt == "raw"  # no overlay
+        form.refresh_placeholders({})  # empty mapping: the static grays back
+        await pilot.pause()
+        assert form.query_one("#demo-patch", Input).placeholder == "512, 512"
+        assert form.query_one("#demo-limit", Input).placeholder == "(default: unset)"
+
+    _run_form(form, observe)
+
+
+def test_a_none_default_select_prompts_the_unset_marker():
+    """A Literal field whose declared default is ``None`` grays the unset
+    marker in its blank prompt — the select kind's ``(default: unset)``
+    case — and mounts blank, never the default pre-picked."""
+    spec = specs_of(DemoUnsetSelect)[0]
+    assert spec.placeholder == "(default: unset)"
+
+    form = OptionForm("demo", [specs_of(DemoUnsetSelect)[0]], _demo_draft())
+
+    async def observe(app, form, pilot):
+        await pilot.pause()
+        widget = form.query_one("#demo-mode", Select)
+        assert widget.prompt == "(default: unset)"
+        assert widget.value is Select.NULL  # the draft stays unset
 
     _run_form(form, observe)
 

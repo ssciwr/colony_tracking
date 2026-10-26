@@ -3,7 +3,7 @@
 Binding domain vocabulary for `colony_tracking`. These terms are used in
 identifiers, help text, and documentation.
 
-Sections: Data / Colonies / Exclusions-and-flags / Analysis.
+Sections: Data / Colonies / Exclusions-and-flags / Analysis / Configuration.
 
 ## Data
 
@@ -128,3 +128,8 @@ plots.
 **pooled** — Cross-well statistics grouped by ancestor count: pooled area
 statistics per (frame, ancestors) and pooled rate statistics per
 max-ancestors.
+
+## Configuration
+
+**default** — The value an option takes when the draft leaves it unset;
+resolved at run time and shown gray in an empty TUI field.

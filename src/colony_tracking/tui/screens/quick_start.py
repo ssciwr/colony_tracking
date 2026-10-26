@@ -14,6 +14,10 @@ frame and wells filter — and two gated actions:
   resolved config with every stage option at its default, on the shared
   :class:`~colony_tracking.tui.screens.run.RunScreen`.
 
+Each empty field shows in gray what a blank resolves to — the forms'
+shared placeholder rule (:attr:`~colony_tracking.tui.forms.FieldSpec.placeholder`),
+the same run-level grays the config screen shows.
+
 The quick start edits the pipeline run type's draft only — the chain's
 own :class:`~colony_tracking.tui.draft.ConfigDraft`
 (:attr:`draft`, the app's ``drafts["pipeline"]`` entry), the document
@@ -37,7 +41,6 @@ above does the rest.
 
 from __future__ import annotations
 
-from dataclasses import fields
 from pathlib import Path
 from typing import Any, ClassVar, Final
 
@@ -48,14 +51,16 @@ from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
 from ..._options import parse_reference
-from ...pipeline import ConfigError, PipelineConfig
+from ...pipeline import ConfigError
 from ..draft import RUN_LEVEL, ConfigDraft
 from ..forms import (
     BROWSE_LABEL,
     BrowseButton,
+    FieldSpec,
     focus_field,
     open_directory_picker,
     picker_location,
+    run_level_specs,
 )
 from ._save import SaveConfigDialog
 from .run import open_pipeline_run
@@ -70,12 +75,12 @@ _FIELDS: tuple[str, ...] = ("raw_dir", "out_root", "reference", "wells")
 #: :mod:`colony_tracking.tui.forms`, the Browse section).
 _BROWSE_FIELDS: Final[tuple[str, ...]] = ("raw_dir", "out_root")
 
-#: Placeholder text per field (the hint an empty input shows).
-_PLACEHOLDERS: dict[str, str] = {
-    "raw_dir": "/path/to/raw-plate-frames",
-    "out_root": "/path/to/output-root",
-    "reference": "first",
-    "wells": "-A001, -A002",
+#: The run-level form specs, by field name — a field's help and its
+#: gray text (what a blank resolves to, :attr:`FieldSpec.placeholder`)
+#: come from here: the same specs the config screen's run-level form
+#: renders from, so the two screens show the same grays.
+_SPECS: Final[dict[str, FieldSpec]] = {
+    spec.key: spec for spec in run_level_specs()
 }
 
 
@@ -91,9 +96,9 @@ _BROWSE_BUTTONS: Final[dict[str, str]] = {
 
 
 def _help(name: str) -> str:
-    """The field's help text from :class:`PipelineConfig`'s metadata."""
-    (field,) = [f for f in fields(PipelineConfig) if f.name == name]
-    return field.metadata.get("help", "")
+    """The field's help text (the spec's — the config dataclass's own
+    metadata)."""
+    return _SPECS[name].help
 
 
 def _prefill(draft: ConfigDraft, name: str) -> str:
@@ -183,7 +188,7 @@ class QuickStartScreen(Screen[None]):
                 )
                 widget = Input(
                     value=_prefill(draft, name),
-                    placeholder=_PLACEHOLDERS[name],
+                    placeholder=_SPECS[name].placeholder,
                     id=_field_id(name),
                 )
                 if name in _BROWSE_FIELDS:  # a single-Path field: browse joins it

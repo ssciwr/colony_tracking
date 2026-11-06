@@ -515,6 +515,121 @@ def test_growth_rates_carries_flags_and_max_ancestors(tmp_path):
     assert r2["group_id"] == 2
 
 
+# --- good-set CSVs (trajectories_good / per-ancestor buckets) -------------------
+
+
+def _good_csvs(out_dir):
+    """Read back the good-row CSVs: (good rows, {ancestors: bucket rows})."""
+    good = io.read_csv_rows(out_dir / "trajectories_good.csv")
+    buckets = {}
+    for path in out_dir.glob("trajectories_ancestors_*.csv"):
+        n = int(path.stem.rsplit("_", 1)[1])
+        buckets[n] = io.read_csv_rows(path)
+    return good, buckets
+
+
+def test_good_csvs_exclude_flags(tmp_path):
+    """The good rows are the usable pool minus rim-excluded rows: a
+    no_growth colony, a pre-existing colony (unless keep_pre_existing) and
+    every rim-excluded row stay out."""
+    well = "-A001"
+    rows = []
+    for f in range(3, 9):  # colony 1: healthy grower
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.35 ** (f - 3))))
+    for f in range(2, 7):  # colony 2: stationary debris -> no_growth
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 2, 500))
+    for f in range(1, 6):  # colony 3: pre-existing grower
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 3,
+                         int(100 * 1.35 ** (f - 1)), pre=1))
+    for f in range(3, 9):  # colony 4: healthy grower, rim-excluded from f6
+        rows.append(_row(well, f, (f - 1) * 3_600_000, 4,
+                         int(100 * 1.35 ** (f - 3))))
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
+    for r in traj:
+        if r["colony_id"] == 4 and r["frame"] >= 6:
+            r["rim_excluded"] = 1
+    out = tmp_path / "out"
+    analysis.write_outputs(traj, _options(tmp_path, no_plots=True), out)
+
+    good, buckets = _good_csvs(out)
+    # source order and schema: the good rows are the trajectories.csv rows
+    # that survive every filter, in the same order
+    allrows = io.read_csv_rows(out / "trajectories.csv")
+    expected = [r for r in allrows if r["no_growth"] == "0"
+                and r["pre_existing"] == "0" and r["rim_excluded"] == "0"]
+    assert good == expected
+    assert list(good[0]) == analysis.TRAJ_FIELDS
+    assert {(r["colony_id"], r["frame"]) for r in good} == {
+        ("1", str(f)) for f in range(3, 9)} | {
+        ("4", str(f)) for f in range(3, 6)}
+    assert set(buckets) == {1}
+    assert buckets[1] == good
+
+    # keep_pre_existing puts the pre-existing colony back into the good set
+    analysis.write_outputs(
+        traj, _options(tmp_path, no_plots=True, keep_pre_existing=True), out)
+    good, _ = _good_csvs(out)
+    assert "3" in {r["colony_id"] for r in good}
+    assert len(good) == 14  # colony 1 (6) + colony 3 (5) + colony 4 (3)
+
+
+def test_good_csvs_bucket_row_level_ancestors(tmp_path):
+    """Bucketing is row-level: a colony that later merges appears in more
+    than one bucket, only non-empty buckets get files, and the bucket files
+    are a straight partition of trajectories_good.csv."""
+    well = "-A001"
+    rows = [
+        _row(well, 5, 4 * 3_600_000, 1, 100),
+        _row(well, 5, 4 * 3_600_000, 2, 100),
+        _row(well, 7, 6 * 3_600_000, 1, 300, merged="2"),
+    ]
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
+    by = {(r["frame"], r["colony_id"]): r for r in traj}
+    assert by[(7, 1)]["ancestors"] == 2
+    out = tmp_path / "out"
+    analysis.write_outputs(traj, _options(tmp_path, no_plots=True), out)
+
+    good, buckets = _good_csvs(out)
+    keys = [(r["frame"], r["colony_id"]) for r in good]
+    assert keys == [("5", "1"), ("5", "2"), ("7", "1")]
+    assert set(buckets) == {1, 2}  # no ancestors_3 file
+    assert [(r["frame"], r["colony_id"]) for r in buckets[1]] == [
+        ("5", "1"), ("5", "2")]
+    assert [(r["frame"], r["colony_id"]) for r in buckets[2]] == [("7", "1")]
+    assert buckets[1] + buckets[2] == good
+    assert list(buckets[2][0]) == analysis.TRAJ_FIELDS
+
+
+def test_good_csvs_stale_files_removed_and_keep_bad_wells(tmp_path):
+    """A rerun replaces trajectories_good.csv and deletes ancestor buckets
+    that no longer occur; keep_bad_wells puts the bad well's clean colonies
+    back into the good set."""
+    traj = _traj_for_split(tmp_path)  # -A001 has two bad colonies
+    out = tmp_path / "out"
+    analysis.write_outputs(traj, _options(tmp_path, no_plots=True), out)
+    good, buckets = _good_csvs(out)
+    assert {(r["well"], r["colony_id"]) for r in good} == {("-A002", "1")}
+    assert set(buckets) == {1}
+
+    # stale outputs from an earlier run: an ancestor count no longer
+    # present, plus an old good file to be replaced
+    io.write_csv_rows(out / "trajectories_ancestors_9.csv",
+                      [{"well": "-A001"}], analysis.TRAJ_FIELDS)
+    io.write_csv_rows(out / "trajectories_good.csv",
+                      [{"well": "-A001", "colony_id": 99}],
+                      analysis.TRAJ_FIELDS)
+    analysis.write_outputs(
+        traj, _options(tmp_path, no_plots=True, keep_bad_wells=True), out)
+
+    assert not (out / "trajectories_ancestors_9.csv").exists()
+    good, buckets = _good_csvs(out)
+    assert {(r["well"], r["colony_id"]) for r in good} == {
+        ("-A001", "3"), ("-A002", "1")}
+    assert set(buckets) == {1}
+    assert buckets[1] == good
+
+
 # --- end-to-end (run_analysis) -------------------------------------------------
 
 import csv  # noqa: E402  (legacy-tree tests write prototype-style CSVs)
@@ -654,8 +769,10 @@ def test_run_analysis_end_to_end(tmp_path):
 
     # -- the output files ------------------------------------------------------
     out = tmp_path / "out" / "seg_growth"
-    for name in ("trajectories.csv", "growth_rates.csv", "bad_segments.csv",
-                 "areas_by_ancestors.csv", "rates_by_ancestors.csv",
+    for name in ("trajectories.csv", "trajectories_good.csv",
+                 "trajectories_ancestors_1.csv", "growth_rates.csv",
+                 "bad_segments.csv", "areas_by_ancestors.csv",
+                 "rates_by_ancestors.csv",
                  "growth_curves_by_ancestors.png",
                  "mean_area_by_ancestors.png",
                  "growth_rates_by_ancestors.png"):
@@ -681,6 +798,19 @@ def test_run_analysis_end_to_end(tmp_path):
     assert by[("-A003", 1, 3)]["pre_existing"] == "1"
     assert by[("-A003", 2, 8)]["area_px"] != ""
     assert (by[("-A003", 2, 8)]["age_h"]) == "0.0"  # first valid frame
+
+    # -- the good-set CSVs -------------------------------------------------------
+    good = io.read_csv_rows(out / "trajectories_good.csv")
+    assert list(good[0]) == TRAJ_HEADER
+    # -A001 is an excluded bad well, the pre-existing and bad rows are out,
+    # and rim-excluded rows are out: only -A002's grower (f3-f8) and
+    # -A003's single-frame colony (f8) remain, all with ancestors 1.
+    assert [(r["well"], int(r["colony_id"]), int(r["frame"]))
+            for r in good] == ([("-A002", 1, f) for f in range(3, 9)]
+                               + [("-A003", 2, 8)])
+    assert {r["ancestors"] for r in good} == {"1"}
+    assert io.read_csv_rows(out / "trajectories_ancestors_1.csv") == good
+    assert not (out / "trajectories_ancestors_2.csv").exists()
 
     # -- growth rates ------------------------------------------------------------
     rates = io.read_csv_rows(out / "growth_rates.csv")
@@ -774,6 +904,19 @@ def test_run_analysis_keep_bad_wells(tmp_path):
     assert len(areas) == len(got)  # one row per (frame, ancestors)
     assert all(int(r["n_wells"]) <= 3 for r in areas)
 
+    good = io.read_csv_rows(
+        tmp_path / "out" / "seg_growth" / "trajectories_good.csv")
+    # colony 3 (static) is bad, but the pair (1) and at_start (4) are clean
+    assert {("-A001", "1"), ("-A001", "4"), ("-A002", "1")} <= {
+        (r["well"], r["colony_id"]) for r in good}
+    assert ("-A001", "3") not in {
+        (r["well"], r["colony_id"]) for r in good}
+    # row-level ancestors: the merged pair lands in the 2-bucket only, so
+    # both bucket families exist and no 3-bucket file is written
+    assert {int(r["ancestors"]) for r in good} == {1, 2}
+    assert not (tmp_path / "out" / "seg_growth"
+                / "trajectories_ancestors_3.csv").exists()
+
 
 def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
     """plots_only re-renders from the existing trajectories CSV: no raw-plate
@@ -792,18 +935,30 @@ def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
         })
     io.write_csv_rows(out / "trajectories.csv", rows,
                       analysis.TRAJ_FIELDS)
+    traj_bytes = (out / "trajectories.csv").read_bytes()
+    # a stale per-ancestor file from an earlier run must be removed
+    io.write_csv_rows(out / "trajectories_ancestors_7.csv", rows,
+                      analysis.TRAJ_FIELDS)
     empty_raw = tmp_path / "empty_raw"
     empty_raw.mkdir()
     options = _options(tmp_path, seg_dirs=[seg_root], raw_dir=empty_raw,
                        plots_only=True)
     summary = analysis.run_analysis(options)
 
-    for name in ("growth_rates.csv", "bad_segments.csv",
+    for name in ("trajectories_good.csv", "trajectories_ancestors_1.csv",
+                 "growth_rates.csv", "bad_segments.csv",
                  "areas_by_ancestors.csv", "rates_by_ancestors.csv",
                  "growth_curves_by_ancestors.png",
                  "mean_area_by_ancestors.png",
                  "growth_rates_by_ancestors.png"):
         assert (out / name).exists() and (out / name).stat().st_size > 0, name
+    # the re-plot leaves trajectories.csv byte-identical, replaces the good
+    # set and drops the stale bucket
+    assert (out / "trajectories.csv").read_bytes() == traj_bytes
+    assert not (out / "trajectories_ancestors_7.csv").exists()
+    good = io.read_csv_rows(out / "trajectories_good.csv")
+    assert len(good) == 3
+    assert io.read_csv_rows(out / "trajectories_ancestors_1.csv") == good
     assert not any("no plausible well circle" in m for m in caplog.messages)
     assert not (tmp_path / "out" / "well_geometry.csv").exists()
     assert not any("colonies.csv" in m for m in caplog.messages)

@@ -25,6 +25,9 @@ well-split h5 training set, run micro-sam decoder training, and benchmark
 the checkpoint against the held-out wells.
 The `tui` subcommand opens a terminal interface over the same stages
 (see below).
+The `view` subcommand opens a run's wells in
+[napari](https://napari.org): one greyscale time-series stack per well, so
+the QA protocol becomes "look at the run" instead of "open the PNG".
 
 ## Install
 
@@ -59,7 +62,7 @@ source [path/to/repo/].venv/bin/activate
 colony-tracking
 ```
 
-The `colony-tracking` console script has six subcommands, which are explained below.
+The `colony-tracking` console script has seven subcommands, which are explained below.
 
 Runs can be resumed after stopping, a well with a complete done marker is
 skipped on a re-run unless `redo` is set.
@@ -286,6 +289,41 @@ error panel and the app stays alive. There is no cancellation: quitting
 (Ctrl-Q) mid-run is safe, the stages are crash-safe via their done
 markers, and the next start resumes where the run left off.
 
+### view
+
+Open a run's wells in napari: the raw acquisition as one greyscale
+time-series stack, named `<well> raw`, with the frame slider walking the
+series. Several wells at once give several stacks in one session, one per
+well, each layer named after its well. napari ships with micro-sam, so
+`view` needs nothing extra; it is imported only when the command runs.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--wells` | `none` | Wells to display (repeatable, comma-separated), e.g. -A001. Always explicit: every well must exist in the configured sources. |
+| `--config` | `none` | TOML config file to read the paths from (default: pipeline.toml in the current directory, when that file exists). |
+| `--raw-dir` | `none` | Directory of raw plate frames (flat or per-well layout). Overrides the config file's raw directory. |
+
+From a run directory that holds a `pipeline.toml`, one flag is enough:
+
+```
+colony-tracking view --wells=-A001
+```
+
+Paths resolve in this order: `--config PATH` when given, else the current
+directory's `pipeline.toml` when that file exists, else the explicit path
+flags. An explicit path flag overrides only its own config value, so
+`--raw-dir` alone points at a different raw plate while the rest of the
+config stays in force; with neither a config file nor `--raw-dir`, the
+command exits 2 naming both ways to provide paths.
+
+Wells are always named on the command line — `--wells` is never inherited
+from the config's `[pipeline].wells`. Well names start with a dash, so the
+value stays inside the flag: `--wells=-A001,-B004` (or `--wells -A001`
+once, repeatable). A missing `--wells`, a well the configured sources do
+not hold, or a session with nothing to load exits 2 with the wells that
+are available. `view` writes nothing and performs no pixel conversion: the
+stack keeps the raw uint16 counts.
+
 ## Python API
 
 ```python
@@ -305,6 +343,12 @@ and `write_config(config, path)`, module-level functions in
 `colony_tracking.pipeline`, round-trip it as TOML. The finetune track
 exposes `PrepareOptions`/`TrainOptions`/`EvaluateOptions` with their
 `run_*` functions the same way; the conversion module is private.
+
+The viewer follows the same shape: `view_wells(ViewOptions(...), viewer=None)`
+builds the layers and returns the viewer without starting napari's event
+loop (the CLI starts it). `view_wells` and `ViewOptions` are exported from
+the package root; `viewer` accepts a napari session of the caller's own
+(the tests pass a recording stub, so they never touch napari).
 
 ## Input trees
 

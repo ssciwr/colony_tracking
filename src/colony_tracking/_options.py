@@ -473,3 +473,40 @@ class EvaluateOptions(Options):
     output: Path | None = field(
         default=None, metadata={"help": "Optional path for a JSON report."}
     )
+
+
+@dataclass(kw_only=True)
+class ViewOptions:
+    """Options for the viewer (``view`` subcommand).
+
+    The fields are the command's flags, like every stage's dataclass. The
+    CLI fills an unset path field from the config file before handing the
+    options to :func:`~colony_tracking.viewer.view_wells`, so a
+    ``ViewOptions`` the viewer sees is resolved: every path it loads from
+    is already set, and the viewer never reads a config file or derives a
+    tree name. Not an :class:`Options`: the viewer writes nothing and has
+    no config section of its own.
+    """
+
+    wells: list[str] | None = field(
+        default=None,
+        metadata={
+            "help": "Wells to display (repeatable, comma-separated), e.g. "
+            "-A001. Always explicit: every well must exist in the configured "
+            "sources."
+        },
+    )
+    config: Path | None = field(
+        default=None,
+        metadata={
+            "help": "TOML config file to read the paths from (default: "
+            "pipeline.toml in the current directory, when that file exists)."
+        },
+    )
+    raw_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Directory of raw plate frames (flat or per-well layout). "
+            "Overrides the config file's raw directory."
+        },
+    )

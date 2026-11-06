@@ -1,8 +1,8 @@
 """colony_tracking — stable package for the colony-size measurement pipeline.
 
 The public API — the option dataclasses, the ``run_*`` functions,
-``PipelineConfig``, and the summary types — is re-exported from here;
-``__all__`` is the single source of truth for that namespace.
+``PipelineConfig``, ``view_wells``, and the summary types — is re-exported
+from here; ``__all__`` is the single source of truth for that namespace.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from ._options import (  # noqa: E402
     AnalysisOptions,
     DifferenceOptions,
     SegmentationOptions,
+    ViewOptions,
 )
 from .analysis import (  # noqa: E402
     AnalysisSummary,
@@ -48,6 +49,7 @@ from .segmentation import (  # noqa: E402
     SegmentationSummary,
     run_segmentation,
 )
+from .viewer import view_wells  # noqa: E402
 
 __all__: list[str] = [
     # The public API: option dataclasses, run_* functions, PipelineConfig,
@@ -74,4 +76,6 @@ __all__: list[str] = [
     "PipelineConfig",
     "PipelineSummary",
     "run_pipeline",
+    "ViewOptions",
+    "view_wells",
 ]

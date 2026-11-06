@@ -1,8 +1,9 @@
 """The ``colony-tracking`` command line interface.
 
 One entry point with subcommands ``difference | segment | analyze | pipeline
-| train | tui`` (``train`` has sub-subcommands ``prepare | train |
-evaluate``; ``tui`` takes no flags and opens the terminal user interface).
+| train | tui | view`` (``train`` has sub-subcommands ``prepare | train |
+evaluate``; ``tui`` takes no flags and opens the terminal user interface;
+``view`` opens a run's wells in napari).
 Every option of a stage's options dataclass maps 1:1 to a kebab-case flag
 derived programmatically from the dataclass fields, with the per-field help
 text as the flag's help (the single source the TUI reuses too). Well names
@@ -34,6 +35,7 @@ from ._options import (
     DifferenceOptions,
     Reference,
     SegmentationOptions,
+    ViewOptions,
     _union_members,
 )
 from .analysis import run_analysis
@@ -46,9 +48,10 @@ from .finetune import (
     run_prepare,
     run_train,
 )
-from .pipeline import ConfigError, PipelineConfig, run_pipeline
+from .pipeline import ConfigError, PipelineConfig, read_config, run_pipeline
 from .segmentation import run_segmentation
 from .tui import run_tui
+from .viewer import available_wells, view_wells
 
 #: Flag names that are not the kebab-cased field name (repeatable path lists
 #: read as singular directories on the command line).
@@ -273,6 +276,56 @@ def _add_pipeline_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+#: The config file ``view`` reads when ``--config`` is not given and the file
+#: exists in the current directory.
+_VIEW_CONFIG = Path("pipeline.toml")
+
+
+def _view_options(args: argparse.Namespace) -> ViewOptions:
+    """The viewer options: the config file's paths (``--config``, or the
+    current directory's ``pipeline.toml`` when it exists) with the explicit
+    path flags overriding single values. Wells are never taken from the
+    config's ``[pipeline].wells`` — ``--wells`` is the only source."""
+    options = ViewOptions(**_stage_kwargs(args, ViewOptions))
+    path = options.config
+    if path is None and _VIEW_CONFIG.exists():
+        path = _VIEW_CONFIG
+    if path is not None:
+        if not Path(path).is_file():
+            raise _UsageError(f"no such config file: {path}")
+        config = read_config(path)
+        if options.raw_dir is None:
+            options.raw_dir = config.raw_dir
+    if options.raw_dir is None:
+        raise _UsageError(
+            "no paths to read: pass --config PATH (a pipeline TOML) or "
+            "--raw-dir DIR"
+        )
+    return options
+
+
+def _check_view_wells(options: ViewOptions) -> None:
+    """Reject a missing or unknown well as a usage error (exit 2) listing
+    the wells the configured sources hold."""
+    available = available_wells(options)
+    names = ", ".join(available) or "none"
+    if not options.wells:
+        raise _UsageError(f"--wells is required: available wells: {names}")
+    unknown = [well for well in options.wells if well not in available]
+    if unknown:
+        raise _UsageError(
+            f"unknown well(s) {', '.join(unknown)}: available wells: {names}"
+        )
+
+
+def _run_napari() -> None:
+    """Run napari's event loop once the viewer is built (the lazy import
+    lives here too: the package never imports napari at load time)."""
+    import napari
+
+    napari.run()
+
+
 def _train_options(args: argparse.Namespace):
     """The finetune options for the given ``train`` sub-subcommand."""
     cls = {"prepare": PrepareOptions, "train": TrainOptions,
@@ -295,7 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = _Parser(
         prog="colony-tracking",
         description="Colony-size measurement pipeline (difference → segment "
-        "→ analyze, plus the finetuning track).",
+        "→ analyze, plus the finetuning track and the napari viewer).",
     )
     subparsers = parser.add_subparsers(dest="command", required=True,
                                        metavar="command")
@@ -364,6 +417,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "option forms, config writing, and in-process runs with a live "
         "log pane. Takes no flags.",
     )
+    _add_flags(
+        subparsers.add_parser(
+            "view",
+            help="Open a run's wells in napari as image layers.",
+            description="Open a run's wells in napari: one greyscale "
+            "time-series stack per well, named '<well> raw'. Paths come from "
+            "the config file (--config, or pipeline.toml in the current "
+            "directory when it exists) or from --raw-dir alone; wells are "
+            "always explicit via --wells (see --help for every flag).",
+        ),
+        ViewOptions,
+    )
     return parser
 
 
@@ -418,6 +483,12 @@ def _dispatch(args: argparse.Namespace) -> int:
         return 0
     if args.command == "tui":
         return run_tui()
+    if args.command == "view":
+        options = _view_options(args)
+        _check_view_wells(options)
+        view_wells(options)
+        _run_napari()
+        return 0
     raise _UsageError(f"unknown command {args.command!r}")
 
 
@@ -451,7 +522,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:  # a ValueError: must map to 2, not 1
         log.error("config error: %s", exc)
         return 2
-    except (FileNotFoundError, OSError, ValueError) as exc:
+    except (FileNotFoundError, OSError, RuntimeError, ValueError) as exc:
         log.error("%s", exc)
         return 1
 

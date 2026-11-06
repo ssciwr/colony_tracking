@@ -265,6 +265,17 @@ live into the run screen. The home menu offers:
   settings, the per-stage sections (the fields the chain wiring derives
   within one run shown read-only), and the effective TOML preview;
   *Write TOML…* / *Load TOML…* for `pipeline.toml`.
+- **View wells in napari** — the wells the chain's resolved sources
+  contain: the pipeline draft's raw directory and its three derived
+  output trees (difference, segmentation, analysis), discovered exactly
+  as the `view` command discovers them, so a well none of them holds is
+  never offered. Select one or more and *Open in napari*: the TUI starts
+  `colony-tracking view` as a separate process with the wells and the
+  draft's resolved paths, so the viewer shows the same layers the command
+  produces by hand for those wells. The TUI never imports napari and
+  stays usable while the viewer is open; the child's lines and any launch
+  failure (napari missing, no display) appear in the screen's log pane,
+  never as a crash.
 - **Train** — shown disabled (no training screen).
 
 Path fields (the raw directory, the out root, output directories, and
@@ -358,6 +369,11 @@ session with nothing to load exits 2 with the wells that are available.
 `view` writes nothing and performs no pixel conversion: the raw stack keeps
 the raw uint16 counts, the difference stack the stored uint8 values, and
 the label images their `uint32` IDs.
+
+The TUI offers the same session: **View wells in napari** on the home menu
+lists the wells the chain draft's resolved sources hold and starts this
+command as a separate process (see [tui](#tui)); the TUI itself never
+imports napari.
 
 ## Python API
 

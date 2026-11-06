@@ -212,6 +212,21 @@ def _deliverer(
     return lambda callback, *args: app.call_from_thread(callback, *args)
 
 
+def record_forwarder(
+    deliver: Callable[..., None],
+    on_record: Callable[[logging.LogRecord], None] | None,
+) -> logging.Handler:
+    """A handler that hands the package logger's records to ``on_record``,
+    posted through ``deliver`` (the :func:`_deliverer` wrapper of the
+    running app, so records reach the UI thread).
+
+    The shared routing seam: a run attaches one for its duration
+    (:func:`start`), the viewer launcher attaches one per launch. Callers
+    attach and detach exactly what they got, so handlers never stack.
+    """
+    return _ForwardHandler(deliver, on_record)
+
+
 def _run(
     handle: RunHandle,
     deliver: Callable[..., None],
@@ -226,7 +241,7 @@ def _run(
     callback that immediately starts the next run can never stack
     handlers or trip the one-run-at-a-time check.
     """
-    handler = _ForwardHandler(deliver, on_record)
+    handler = record_forwarder(deliver, on_record)
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
     log.setLevel(logging.INFO)
     log.addHandler(handler)

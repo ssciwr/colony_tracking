@@ -14,7 +14,7 @@ Everything about a launch — the command, the child's lines, and a
 failure (napari missing, no display) — lands in the screen's log pane
 through the package logger
 (:data:`colony_tracking.log`, forwarded by
-:func:`~colony_tracking.tui.runner.record_forwarder`). A failed launch
+:func:`~colony_tracking.tui.records.forwarding`). A failed launch
 never takes the interface down.
 
 A draft that does not resolve (the chain's required run level missing)

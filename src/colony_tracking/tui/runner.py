@@ -16,12 +16,13 @@ chain's :class:`~colony_tracking.pipeline.PipelineConfig`.
 
 Log routing: while a run is active, a :class:`logging.Handler` attached
 to the package logger :data:`colony_tracking.log` forwards every record
-to the UI. With a running textual ``App`` (the normal TUI case) records
-and the completion callback are marshalled onto the UI thread via
-``App.call_from_thread``; without one (tests, scripts) they run directly
-on the worker thread. The handler is attached on start and detached on
-completion — exactly what was attached, so repeated runs cannot stack
-handlers.
+to the UI, and :func:`~colony_tracking.tui.records.forwarding` owns that
+attach/detach for the run's block. With a running textual ``App`` (the
+normal TUI case) records and the completion callback are marshalled onto
+the UI thread via ``App.call_from_thread``; without one (tests, scripts)
+they run directly on the worker thread. The handler is attached on start
+and detached on completion — exactly what was attached, so repeated runs
+cannot stack handlers.
 
 Failures are never fatal: an exception escaping a stage is caught,
 stored on the :class:`RunHandle`, logged, and reported through
@@ -48,6 +49,7 @@ from ..analysis import AnalysisSummary, run_analysis
 from ..difference import DifferenceSummary, run_difference
 from ..pipeline import PipelineConfig, PipelineSummary, run_pipeline
 from ..segmentation import SegmentationSummary, run_segmentation
+from .records import deliverer, forwarding
 
 #: The kinds :func:`start` can run: one per stage plus the whole chain.
 KINDS: tuple[str, ...] = ("difference", "segmentation", "analysis", "pipeline")
@@ -179,54 +181,6 @@ def active() -> RunHandle | None:
     return None if handle is None or handle.done.is_set() else handle
 
 
-class _ForwardHandler(logging.Handler):
-    """The per-run log forwarder: ``emit`` hands the record itself to the
-    deliver callback — not formatted text, so the pane chooses its own
-    rendering. A delivery failure is never fatal: ``handleError``
-    reports it and the run goes on."""
-
-    def __init__(
-        self,
-        deliver: Callable[..., None],
-        on_record: Callable[[logging.LogRecord], None] | None,
-    ) -> None:
-        super().__init__()
-        self._deliver = deliver
-        self._on_record = on_record
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            if self._on_record is not None:
-                self._deliver(self._on_record, record)
-        except Exception:  # noqa: BLE001 — logging must never kill a run
-            self.handleError(record)
-
-
-def _deliverer(
-    app: App[Any] | None,
-) -> Callable[..., None]:
-    """The post-to-UI-thread wrapper for one run: ``app.call_from_thread``
-    when a textual App is given, a direct call otherwise."""
-    if app is None:
-        return lambda callback, *args: callback(*args)
-    return lambda callback, *args: app.call_from_thread(callback, *args)
-
-
-def record_forwarder(
-    deliver: Callable[..., None],
-    on_record: Callable[[logging.LogRecord], None] | None,
-) -> logging.Handler:
-    """A handler that hands the package logger's records to ``on_record``,
-    posted through ``deliver`` (the :func:`_deliverer` wrapper of the
-    running app, so records reach the UI thread).
-
-    The shared routing seam: a run attaches one for its duration
-    (:func:`start`), the viewer launcher attaches one per launch. Callers
-    attach and detach exactly what they got, so handlers never stack.
-    """
-    return _ForwardHandler(deliver, on_record)
-
-
 def _run(
     handle: RunHandle,
     deliver: Callable[..., None],
@@ -241,33 +195,29 @@ def _run(
     callback that immediately starts the next run can never stack
     handlers or trip the one-run-at-a-time check.
     """
-    handler = record_forwarder(deliver, on_record)
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
-    log.setLevel(logging.INFO)
-    log.addHandler(handler)
-    try:
-        summary = _RUNNERS[handle.kind](handle.config)
-    except Exception as exc:  # noqa: BLE001 — a stage failure is not fatal
-        handle.error = exc
-        log.error("tui: %s run failed\n%s", handle.kind, traceback.format_exc())
-    else:
-        handle.summary = summary
-        if summary_failed(summary):
-            _log_failed_summary(handle.kind, summary)
-    finally:
-        log.removeHandler(handler)
-        with _LOCK:
-            if _ACTIVE is handle:
-                _ACTIVE = None
-        handle.done.set()
+    with forwarding(deliver, on_record):
         try:
-            deliver(on_done, handle)
-        except Exception:  # noqa: BLE001 — reporting must never be fatal
-            log.error(
-                "tui: reporting the finished %s run failed\n%s",
-                handle.kind,
-                traceback.format_exc(),
-            )
+            summary = _RUNNERS[handle.kind](handle.config)
+        except Exception as exc:  # noqa: BLE001 — a stage failure is not fatal
+            handle.error = exc
+            log.error("tui: %s run failed\n%s", handle.kind, traceback.format_exc())
+        else:
+            handle.summary = summary
+            if summary_failed(summary):
+                _log_failed_summary(handle.kind, summary)
+    with _LOCK:
+        if _ACTIVE is handle:
+            _ACTIVE = None
+    handle.done.set()
+    try:
+        deliver(on_done, handle)
+    except Exception:  # noqa: BLE001 — reporting must never be fatal
+        log.error(
+            "tui: reporting the finished %s run failed\n%s",
+            handle.kind,
+            traceback.format_exc(),
+        )
 
 
 def start(
@@ -317,7 +267,7 @@ def _spawn(
     app: App[Any] | None,
 ) -> None:
     """Start :func:`_run` for ``handle`` in the right kind of thread."""
-    deliver = _deliverer(app)
+    deliver = deliverer(app)
 
     def body() -> None:
         _run(handle, deliver, on_record, on_done)

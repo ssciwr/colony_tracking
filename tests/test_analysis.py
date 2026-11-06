@@ -528,6 +528,16 @@ def _good_csvs(out_dir):
     return good, buckets
 
 
+def _rate_csvs(out_dir):
+    """Read back the good-rate CSVs: (good rows, {max_ancestors: rows})."""
+    good = io.read_csv_rows(out_dir / "rates_good.csv")
+    buckets = {}
+    for path in out_dir.glob("rates_ancestors_*.csv"):
+        n = int(path.stem.rsplit("_", 1)[1])
+        buckets[n] = io.read_csv_rows(path)
+    return good, buckets
+
+
 def test_good_csvs_exclude_flags(tmp_path):
     """The good rows are the usable pool minus rim-excluded rows: a
     no_growth colony, a pre-existing colony (unless keep_pre_existing) and
@@ -624,6 +634,99 @@ def test_good_csvs_stale_files_removed_and_keep_bad_wells(tmp_path):
 
     assert not (out / "trajectories_ancestors_9.csv").exists()
     good, buckets = _good_csvs(out)
+    assert {(r["well"], r["colony_id"]) for r in good} == {
+        ("-A001", "3"), ("-A002", "1")}
+    assert set(buckets) == {1}
+    assert buckets[1] == good
+
+
+# --- good-set rate CSVs (rates_good / max-ancestors) ---------------------------
+
+
+def test_good_rates_exclude_flags_and_split_by_max_ancestors(tmp_path):
+    """Only good colonies with a computed rate are exported: a no_growth
+    colony, a pre-existing colony, a colony from an excluded bad well and a
+    colony whose rate window is too narrow (blank rate) all stay out.
+    Bucketing is colony-level, by max_ancestors; the bucket files keep
+    RATE_FIELDS and the source row order and are a straight partition."""
+    good_well, bad_well = "-A001", "-A002"
+    rows = []
+    for f in range(3, 9):  # good/1: healthy grower, ancestors 1
+        rows.append(_row(good_well, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.35 ** (f - 3))))
+    # good/2: grows, absorbs colony 3 at frame 7 -> max_ancestors 2
+    rows.append(_row(good_well, 5, 4 * 3_600_000, 2, 100))
+    rows.append(_row(good_well, 7, 6 * 3_600_000, 2, 400, merged="3"))
+    rows.append(_row(good_well, 9, 8 * 3_600_000, 2, 900))
+    # good/3: absorbed at frame 7; two adjacent frames -> blank rate
+    rows.append(_row(good_well, 5, 4 * 3_600_000, 3, 100))
+    rows.append(_row(good_well, 6, 5 * 3_600_000, 3, 150))
+    for f in range(2, 8):  # good/4: stationary debris -> no_growth
+        rows.append(_row(good_well, f, (f - 1) * 3_600_000, 4, 500))
+    for f in range(1, 7):  # good/5: pre-existing grower
+        rows.append(_row(good_well, f, (f - 1) * 3_600_000, 5,
+                         int(100 * 1.35 ** (f - 1)), pre=1))
+    # bad well: one clean grower plus two bad colonies -> well excluded
+    for f in range(3, 9):
+        rows.append(_row(bad_well, f, (f - 1) * 3_600_000, 1,
+                         int(100 * 1.35 ** (f - 3))))
+    for f in range(2, 8):
+        rows.append(_row(bad_well, f, (f - 1) * 3_600_000, 2, 500))
+        rows.append(_row(bad_well, f, (f - 1) * 3_600_000, 3, 500))
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
+    out = tmp_path / "out"
+    analysis.write_outputs(traj, _options(tmp_path, no_plots=True), out)
+
+    allrates = io.read_csv_rows(out / "growth_rates.csv")
+    # only colony 3 lacks a rate; the no_growth, pre-existing and bad-well
+    # colonies all have one, so their absence is a flag filter, not a blank
+    assert [r["growth_doublings_per_day"] for r in allrates].count("") == 1
+    for well, cid in ((good_well, "4"), (good_well, "5"), (bad_well, "1")):
+        row = next(r for r in allrates
+                   if r["well"] == well and r["colony_id"] == cid)
+        assert row["growth_doublings_per_day"] != ""
+
+    good, buckets = _rate_csvs(out)
+    assert [(r["well"], r["colony_id"]) for r in good] == [
+        (good_well, "1"), (good_well, "2")]
+    assert good == [r for r in allrates
+                    if (r["well"], r["colony_id"]) in {
+                        (good_well, "1"), (good_well, "2")}]
+    assert list(good[0]) == analysis.RATE_FIELDS
+    # colony-level split: each colony lands entirely in one bucket
+    assert set(buckets) == {1, 2}
+    assert [(r["well"], r["colony_id"]) for r in buckets[1]] == [
+        (good_well, "1")]
+    assert [(r["well"], r["colony_id"]) for r in buckets[2]] == [
+        (good_well, "2")]
+    assert buckets[1] + buckets[2] == good
+    assert list(buckets[2][0]) == analysis.RATE_FIELDS
+    assert not (out / "rates_ancestors_3.csv").exists()
+
+
+def test_good_rates_stale_files_removed_and_keep_bad_wells(tmp_path):
+    """A rerun replaces rates_good.csv and deletes max-ancestors buckets that
+    no longer occur; keep_bad_wells brings the bad well's clean colonies
+    back into the good rate set."""
+    traj = _traj_for_split(tmp_path)  # -A001 has two bad colonies
+    out = tmp_path / "out"
+    analysis.write_outputs(traj, _options(tmp_path, no_plots=True), out)
+    good, buckets = _rate_csvs(out)
+    assert {(r["well"], r["colony_id"]) for r in good} == {("-A002", "1")}
+    assert set(buckets) == {1}
+
+    # stale outputs from an earlier run: a bucket no longer present, plus an
+    # old good file to be replaced
+    io.write_csv_rows(out / "rates_ancestors_9.csv",
+                      [{"well": "-A001"}], analysis.RATE_FIELDS)
+    io.write_csv_rows(out / "rates_good.csv",
+                      [{"well": "-A001", "colony_id": 99}],
+                      analysis.RATE_FIELDS)
+    analysis.write_outputs(
+        traj, _options(tmp_path, no_plots=True, keep_bad_wells=True), out)
+
+    assert not (out / "rates_ancestors_9.csv").exists()
+    good, buckets = _rate_csvs(out)
     assert {(r["well"], r["colony_id"]) for r in good} == {
         ("-A001", "3"), ("-A002", "1")}
     assert set(buckets) == {1}
@@ -771,6 +874,7 @@ def test_run_analysis_end_to_end(tmp_path):
     out = tmp_path / "out" / "seg_growth"
     for name in ("trajectories.csv", "trajectories_good.csv",
                  "trajectories_ancestors_1.csv", "growth_rates.csv",
+                 "rates_good.csv", "rates_ancestors_1.csv",
                  "bad_segments.csv", "areas_by_ancestors.csv",
                  "rates_by_ancestors.csv",
                  "growth_curves_by_ancestors.png",
@@ -837,6 +941,18 @@ def test_run_analysis_end_to_end(tmp_path):
     assert single["growth_doublings_per_day"] == ""
     assert single["abs_growth_px_per_h"] == ""
     assert single["area_first"] == single["area_last"] != ""
+
+    # -- the good-set rate CSVs -------------------------------------------------
+    good_rates, rate_buckets = _rate_csvs(out)
+    assert list(good_rates[0]) == RATE_HEADER
+    # only -A002's grower has a rate: -A001 is an excluded bad well, -A003's
+    # pre-existing colony is dropped and its single-frame colony has no rate
+    assert [(r["well"], int(r["colony_id"])) for r in good_rates] == [
+        ("-A002", 1)]
+    assert good_rates[0] == grown
+    assert set(rate_buckets) == {1}
+    assert rate_buckets[1] == good_rates
+    assert not (out / "rates_ancestors_2.csv").exists()
 
     # -- bad segments ------------------------------------------------------------
     bads = io.read_csv_rows(out / "bad_segments.csv")
@@ -917,6 +1033,27 @@ def test_run_analysis_keep_bad_wells(tmp_path):
     assert not (tmp_path / "out" / "seg_growth"
                 / "trajectories_ancestors_3.csv").exists()
 
+    # the good rate set: -A001's pair (max_ancestors 2), its absorbed partner,
+    # at_start and the rim colony (rate over its valid frames 3-5), plus
+    # -A002's grower. The two bad -A001 colonies, the pre-existing -A003
+    # colony and its single-frame colony (no rate) are out.
+    good_rates, rate_buckets = _rate_csvs(
+        tmp_path / "out" / "seg_growth")
+    assert {(r["well"], int(r["colony_id"])) for r in good_rates} == {
+        ("-A001", 1), ("-A001", 2), ("-A001", 4), ("-A001", 5),
+        ("-A002", 1)}
+    assert set(rate_buckets) == {1, 2}
+    assert {(r["well"], int(r["colony_id"]))
+            for r in rate_buckets[2]} == {("-A001", 1)}
+    assert rate_buckets[1] == [r for r in good_rates
+                               if r["max_ancestors"] == "1"]
+    # the buckets are a straight partition of the good file
+    partition = sorted((r["well"], r["colony_id"])
+                       for r in rate_buckets[1] + rate_buckets[2])
+    assert partition == [(r["well"], r["colony_id"]) for r in good_rates]
+    assert not (tmp_path / "out" / "seg_growth"
+                / "rates_ancestors_3.csv").exists()
+
 
 def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
     """plots_only re-renders from the existing trajectories CSV: no raw-plate
@@ -936,9 +1073,16 @@ def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
     io.write_csv_rows(out / "trajectories.csv", rows,
                       analysis.TRAJ_FIELDS)
     traj_bytes = (out / "trajectories.csv").read_bytes()
-    # a stale per-ancestor file from an earlier run must be removed
+    # stale per-ancestor and good-rate files from an earlier run must be
+    # removed
     io.write_csv_rows(out / "trajectories_ancestors_7.csv", rows,
                       analysis.TRAJ_FIELDS)
+    io.write_csv_rows(out / "rates_ancestors_7.csv",
+                      [{"well": "-A001", "colony_id": 7}],
+                      analysis.RATE_FIELDS)
+    io.write_csv_rows(out / "rates_good.csv",
+                      [{"well": "-A001", "colony_id": 7}],
+                      analysis.RATE_FIELDS)
     empty_raw = tmp_path / "empty_raw"
     empty_raw.mkdir()
     options = _options(tmp_path, seg_dirs=[seg_root], raw_dir=empty_raw,
@@ -946,19 +1090,26 @@ def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
     summary = analysis.run_analysis(options)
 
     for name in ("trajectories_good.csv", "trajectories_ancestors_1.csv",
-                 "growth_rates.csv", "bad_segments.csv",
+                 "growth_rates.csv", "rates_good.csv",
+                 "rates_ancestors_1.csv", "bad_segments.csv",
                  "areas_by_ancestors.csv", "rates_by_ancestors.csv",
                  "growth_curves_by_ancestors.png",
                  "mean_area_by_ancestors.png",
                  "growth_rates_by_ancestors.png"):
         assert (out / name).exists() and (out / name).stat().st_size > 0, name
     # the re-plot leaves trajectories.csv byte-identical, replaces the good
-    # set and drops the stale bucket
+    # set and rate set, and drops the stale buckets
     assert (out / "trajectories.csv").read_bytes() == traj_bytes
     assert not (out / "trajectories_ancestors_7.csv").exists()
+    assert not (out / "rates_ancestors_7.csv").exists()
     good = io.read_csv_rows(out / "trajectories_good.csv")
     assert len(good) == 3
     assert io.read_csv_rows(out / "trajectories_ancestors_1.csv") == good
+    good_rates, rate_buckets = _rate_csvs(out)
+    assert len(good_rates) == 1
+    assert good_rates[0]["colony_id"] == "1"
+    assert set(rate_buckets) == {1}
+    assert rate_buckets[1] == good_rates
     assert not any("no plausible well circle" in m for m in caplog.messages)
     assert not (tmp_path / "out" / "well_geometry.csv").exists()
     assert not any("colonies.csv" in m for m in caplog.messages)

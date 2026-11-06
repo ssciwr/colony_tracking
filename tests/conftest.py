@@ -148,7 +148,7 @@ def _default_disks(well_index: int) -> list[DiskSpec]:
     """Default planting (calibrated for 2048x2048, ring R 920 at the centre).
 
     Well 0 is the "full" well: a pair that grows until it touches (merge),
-    a static disk (no_growth), one present from frame 1 (from_start), and
+    a static disk (no_growth), one present from frame 1 and growing, and
     one that grows into the rim zone (monotone rim exclusion). Every other
     well is "healthy": one clean exponential disk.
     """
@@ -160,7 +160,7 @@ def _default_disks(well_index: int) -> list[DiskSpec]:
                      first_frame=2),
             DiskSpec("static", cy=1450.0, cx=1450.0, r0=50.0, growth=1.0,
                      first_frame=2),
-            DiskSpec("from_start", cy=600.0, cx=1500.0, r0=30.0,
+            DiskSpec("at_start", cy=600.0, cx=1500.0, r0=30.0,
                      growth=1.25, first_frame=1),
             DiskSpec("rim", cy=1024.0, cx=1824.0, r0=40.0, growth=1.35,
                      first_frame=3),

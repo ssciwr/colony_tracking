@@ -92,9 +92,8 @@ in `well_geometry.csv`), the anchor of rim exclusion.
 `rim_overlap_max` of its pixels lie in the rim. Exclusion is monotone:
 colonies only grow into the rim.
 
-**bad segment** — A colony flagged `from_start` (first valid frame within
-`start_frames` of the series start) or `no_growth` (any valid frame,
-compared to the earliest valid frame ≥ 2 images ahead, growing by
+**bad segment** — A colony flagged `no_growth` (any valid frame, compared
+to the earliest valid frame ≥ 2 images ahead, growing by
 `min_growth_per_frame` or less per image).
 
 **bad well** — A well with ≥ `max_bad_segments` distinct bad colonies;

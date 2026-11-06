@@ -8,12 +8,12 @@ root under ``<out_root>/<name of the root>/``:
 
 - ``trajectories.csv`` — one row per colony per frame:
   ``well, frame, t_hours, colony_id, group_id, merged_with, ancestors,
-  pre_existing, area_px, age_h, rim_frac, rim_excluded, bad, bad_reason``;
+  pre_existing, area_px, age_h, rim_frac, rim_excluded, no_growth``;
 - ``growth_rates.csv`` — one row per colony: specific rate (h⁻¹),
   doublings/day, absolute growth (px/h), first/last frame, areas,
-  ``max_ancestors``, first rim-excluded frame, ``bad``/``bad_reason``,
+  ``max_ancestors``, first rim-excluded frame, ``no_growth``,
   ``pre_existing``;
-- ``bad_segments.csv`` — one row per bad colony: reason, frames, areas,
+- ``bad_segments.csv`` — one row per bad colony: frames, areas,
   per-well bad count, and whether the well was excluded from the aggregates;
 - ``areas_by_ancestors.csv`` / ``rates_by_ancestors.csv`` — the pooled
   aggregates over non-bad, non-pre-existing rows of non-excluded wells
@@ -62,11 +62,10 @@ histories, the colony itself included (an A+B where B had merged with C ends
 at 3; unmerged = 1). The prototype computed the same quantity as
 ``n_merged``; values are unchanged, the name is now ``ancestors``.
 
-**Bad segments.** ``from_start`` — first valid frame within ``start_frames``
-(1) of the series start (anchored at the earliest label image); ``no_growth``
-— each valid frame compared to the earliest valid frame at least 2 images
-ahead (the second-next image when valid, else the next valid frame after
-it) sustains at most ``(a2/a1 − 1) / (l2 − l1)`` relative growth per image
+**Bad segments.** ``no_growth`` — each valid frame compared to the earliest
+valid frame at least 2 images ahead (the second-next image when valid, else
+the next valid frame after it) sustains at most
+``(a2/a1 − 1) / (l2 − l1)`` relative growth per image
 (``min_growth_per_frame``, 0.1); any such comparison failing — a shrink
 between compared frames among them — flags the colony, and a trajectory
 with nothing to compare (single-frame, adjacent-two-frame) never flags. A
@@ -323,8 +322,8 @@ def rim_stats(rows, seg_dir, geo, rim_width: int) -> dict:
 # ---------------------------------------------------------- trajectories ----
 
 
-def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
-    """Per-frame colony records: ancestors, rim exclusion, bad flags.
+def build_trajectories(rows, rim_fracs, options):
+    """Per-frame colony records: ancestors, rim exclusion, no_growth flag.
 
     One output row per input row, in (well, frame, colony_id) order. For
     every colony, frames are walked chronologically:
@@ -343,16 +342,13 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
       exclude;
     - ``age_h`` is hours since the colony's first valid (not excluded)
       frame — undefined if the colony was excluded from birth;
-    - ``bad`` flags segments to exclude from the analysis: present from the
-      beginning of the well's series (first valid frame within
-      ``start_frames`` of ``series_start_frame``), or not growing (any
-      valid frame, compared to the earliest valid frame >= 2 images ahead,
-      grows by ``min_growth_per_frame`` or less per image — a shrink
-      between compared frames fails too; single-frame and
+    - ``no_growth`` flags segments to exclude from the analysis: not
+      growing (any valid frame, compared to the earliest valid frame >= 2
+      images ahead, grows by ``min_growth_per_frame`` or less per image — a
+      shrink between compared frames fails too; single-frame and
       adjacent-two-frame trajectories have nothing to compare).
-      ``bad_reason`` holds the triggered criteria. Pre-existing colonies
-      are never bad-flagged (they are excluded from the analysis anyway,
-      and must not exclude their well).
+      Pre-existing colonies are never bad-flagged (they are excluded from
+      the analysis anyway, and must not exclude their well).
     - ``pre_existing`` is the pipeline's flag (every colony first detected
       at or before the segment stage's ``exclude_before``). Colonies
       flagged pre_existing are dropped from the aggregates and plots over
@@ -405,13 +401,10 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
                     base = (frame, t_hours[frame], int(r["area_px"]))
         baseline[key] = base
 
-        reasons = []
+        no_growth = 0
         if not any(int(r["pre_existing"]) for r in crows):
             # pre-existing colonies are excluded from the analysis anyway:
             # no bad flags, so they cannot exclude their well either
-            if base and series_start_frame is not None \
-                    and base[0] < series_start_frame + options.start_frames:
-                reasons.append("from_start")
             # no_growth: each valid frame is compared once, to the earliest
             # valid frame at least 2 images ahead (the second-next image
             # when valid, else the next valid frame after it); the jump is
@@ -429,10 +422,9 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
                                 ((a2 - a1) / a1) / (l2 - l1))
                         break
             if per_image and min(per_image) <= options.min_growth_per_frame:
-                reasons.append("no_growth")
+                no_growth = 1
         for r in crows:
-            r["bad"] = int(bool(reasons))
-            r["bad_reason"] = ";".join(reasons)
+            r["no_growth"] = no_growth
 
     out = []
     for r in order:
@@ -450,7 +442,7 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
             "rim_frac": round(r["rim_frac"], 4) if r["rim_frac"] is not None
             else None,
             "rim_excluded": r["rim_excluded"],
-            "bad": r["bad"], "bad_reason": r["bad_reason"],
+            "no_growth": r["no_growth"],
         })
     return out
 
@@ -461,20 +453,21 @@ def build_trajectories(rows, rim_fracs, options, series_start_frame=None):
 def split_bad(traj, options):
     """Split trajectories into usable rows and the bad-segment bookkeeping.
 
-    Bad segments (colony-level ``bad`` flag) always leave the aggregates and
-    plots. Wells holding at least ``max_bad_segments`` distinct bad segments
-    additionally drop out completely (their remaining colonies are suspect
-    too) unless ``keep_bad_wells`` is set. Returns ``(usable rows, per-well
-    bad colony ids, excluded well names)``.
+    Bad segments (colony-level ``no_growth`` flag) always leave the
+    aggregates and plots. Wells holding at least ``max_bad_segments``
+    distinct bad segments additionally drop out completely (their remaining
+    colonies are suspect too) unless ``keep_bad_wells`` is set. Returns
+    ``(usable rows, per-well bad colony ids, excluded well names)``.
     """
     per_well_bad = {}
     for r in traj:
-        if r["bad"]:
+        if r["no_growth"]:
             per_well_bad.setdefault(r["well"], set()).add(r["colony_id"])
     excluded = {w for w, ids in per_well_bad.items()
                 if len(ids) >= options.max_bad_segments
                 and not options.keep_bad_wells}
-    traj_f = [r for r in traj if r["well"] not in excluded and not r["bad"]]
+    traj_f = [r for r in traj
+              if r["well"] not in excluded and not r["no_growth"]]
     return traj_f, per_well_bad, excluded
 
 
@@ -496,8 +489,8 @@ def growth_rates(traj):
     two-point slope cannot be vetted against the growth floor) gets NaN
     rates (the colony still carries its areas in trajectories.csv and is
     skipped by the aggregates and plots). Bad segments and pre-existing
-    segments keep their rows, flagged ``bad``/``bad_reason`` and
-    ``pre_existing``; the aggregates and plots skip both.
+    segments keep their rows, flagged ``no_growth`` and ``pre_existing``;
+    the aggregates and plots skip both.
     """
     per_colony = {}
     for r in traj:
@@ -517,7 +510,7 @@ def growth_rates(traj):
             "area_last": valid[-1]["area_px"] if valid else None,
             "max_ancestors": max(r["ancestors"] for r in crows),
             "rim_excluded_frame": ex_frame,
-            "bad": crows[0]["bad"], "bad_reason": crows[0]["bad_reason"],
+            "no_growth": crows[0]["no_growth"],
             "pre_existing": crows[0]["pre_existing"],
         }
         rate = abs_rate = None
@@ -855,8 +848,8 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
     Shows the frame with the highest frame number that has rows: fitted well
     circle (blue), rim-zone boundary (orange), colony edges green (valid),
     orange (pre-existing — excluded over its whole lifetime), red
-    (rim-excluded) or magenta (bad segment — from the series start or not
-    growing), bad colonies filled translucent magenta. Stroke widths come from
+    (rim-excluded) or magenta (bad segment — not growing), bad colonies
+    filled translucent magenta. Stroke widths come from
     ``QA_RING_HALF_WIDTH_PX`` / ``QA_EDGE_EROSION``. Saved as a 512x512
     composite.
 
@@ -911,7 +904,7 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
             if not m.any():
                 continue
             edge = m & ~ndi.binary_erosion(m, iterations=QA_EDGE_EROSION)
-            if r["bad"]:
+            if r["no_growth"]:
                 rgb = tint(rgb, m, edge, (190, 60, 220))
             elif r["pre_existing"]:
                 rgb = tint(rgb, m, edge, (255, 160, 0))
@@ -934,24 +927,24 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
 #: The canonical trajectories.csv columns (spec: I/O contract).
 TRAJ_FIELDS = ["well", "frame", "t_hours", "colony_id", "group_id",
                "merged_with", "ancestors", "pre_existing", "area_px",
-               "age_h", "rim_frac", "rim_excluded", "bad", "bad_reason"]
+               "age_h", "rim_frac", "rim_excluded", "no_growth"]
 
 #: Typed columns when reading a trajectories CSV back (``plots_only``);
 #: empty fields come back as None.
 TRAJ_TYPES = {"frame": int, "t_hours": float, "colony_id": int,
               "group_id": int, "ancestors": int, "pre_existing": int,
               "area_px": int, "age_h": float, "rim_frac": float,
-              "rim_excluded": int, "bad": int}
+              "rim_excluded": int, "no_growth": int}
 
 #: The canonical growth_rates.csv columns (spec: I/O contract).
 RATE_FIELDS = ["well", "colony_id", "group_id", "first_frame", "last_frame",
                "n_frames", "n_frames_valid", "area_first", "area_last",
                "max_ancestors", "rim_excluded_frame", "growth_rate_per_h",
                "growth_doublings_per_day", "abs_growth_px_per_h",
-               "bad", "bad_reason", "pre_existing"]
+               "no_growth", "pre_existing"]
 
 #: The canonical bad_segments.csv columns (spec: I/O contract).
-BAD_FIELDS = ["well", "colony_id", "bad_reason", "first_frame", "last_frame",
+BAD_FIELDS = ["well", "colony_id", "first_frame", "last_frame",
               "n_frames_valid", "area_first", "area_last", "n_bad_in_well",
               "well_excluded"]
 
@@ -998,18 +991,9 @@ def process_well(well, seg_root, options, out_dir, geometry):
         r["frame"] = int(r["frame"])
     geo = load_geometry(well, options, geometry)
     rim_fracs = rim_stats(rows, seg_root, geo, options.rim_width_px)
-    # the well's own frame series defines "the beginning" (the earliest frame
-    # with a label image - colonies.csv rows start later wherever growth does)
-    label_frames = [io.parse_frame(p.name)
-                    for p in (Path(seg_root) / well).glob("*__labels.tif")]
-    series_start_frame = min((f for f in label_frames if f is not None),
-                             default=None)
-    traj = build_trajectories(rows, rim_fracs, options, series_start_frame)
+    traj = build_trajectories(rows, rim_fracs, options)
     n_ex = sum(r["rim_excluded"] for r in traj)
-    bad = {}
-    for r in traj:
-        if r["bad"]:
-            bad.setdefault(r["bad_reason"], set()).add(r["colony_id"])
+    bad = {r["colony_id"] for r in traj if r["no_growth"]}
     if geo:
         log.info("[%s] %d rows, %d rim-excluded (R=%.0f, zone>%d px, frac>%g)",
                  well, len(traj), n_ex, geo[2], options.rim_width_px,
@@ -1017,10 +1001,9 @@ def process_well(well, seg_root, options, out_dir, geometry):
     else:
         log.info("[%s] %d rows, rim exclusion unavailable (no well circle)",
                  well, len(traj))
-    for reason, ids in sorted(bad.items()):
-        log.info("[%s] %d bad segment(s) [%s]: ids %s",
-                 well, len(ids), reason,
-                 ",".join(str(i) for i in sorted(ids)))
+    if bad:
+        log.info("[%s] %d bad segment(s) [no_growth]: ids %s",
+                 well, len(bad), ",".join(str(i) for i in sorted(bad)))
     if not options.no_qa and geo:
         qa_dir = Path(out_dir) / "qa"
         qa_dir.mkdir(parents=True, exist_ok=True)
@@ -1046,7 +1029,8 @@ def write_outputs(traj, options, out_dir):
     io.write_csv_rows(out_dir / "growth_rates.csv", rates, RATE_FIELDS)
 
     traj_f, per_well_bad, excluded = split_bad(traj, options)
-    rates_f = [r for r in rates if r["well"] not in excluded and not r["bad"]]
+    rates_f = [r for r in rates
+               if r["well"] not in excluded and not r["no_growth"]]
     if not options.keep_pre_existing:
         pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
         traj_f = [r for r in traj_f if (r["well"], r["colony_id"]) not in pre]
@@ -1065,13 +1049,13 @@ def write_outputs(traj, options, out_dir):
     io.write_csv_rows(
         out_dir / "bad_segments.csv",
         [{"well": r["well"], "colony_id": r["colony_id"],
-          "bad_reason": r["bad_reason"], "first_frame": r["first_frame"],
+          "first_frame": r["first_frame"],
           "last_frame": r["last_frame"],
           "n_frames_valid": r["n_frames_valid"],
           "area_first": r["area_first"], "area_last": r["area_last"],
           "n_bad_in_well": len(per_well_bad[r["well"]]),
           "well_excluded": int(r["well"] in excluded)}
-         for r in rates if r["bad"]],
+         for r in rates if r["no_growth"]],
         BAD_FIELDS)
 
     areas_agg = aggregate_areas(traj_f)

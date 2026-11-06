@@ -127,7 +127,6 @@ trees.
 | `--max-bad-segments` | `2` | A well with at least this many distinct bad colonies is a bad well. |
 | `--keep-bad-wells` | `unset` | Include bad wells in aggregates and plots. |
 | `--keep-pre-existing` | `unset` | Include pre-existing colonies in aggregates and plots. |
-| `--start-frames` | `1` | A colony whose first valid frame lies within this many frames of the series start is bad (from_start); pre-existing colonies are exempt. |
 | `--min-growth-per-frame` | `0.1` | A colony for which any valid frame, compared to the earliest valid frame >= 2 images ahead, grows by this factor or less per image is bad (no_growth); pre-existing colonies are exempt. |
 | `--refresh-geometry` | `unset` | Re-fit the well circles instead of using the cached well_geometry.csv. |
 | `--plots-only` | `unset` | Re-render the plots from the existing trajectories CSV without image IO. |
@@ -358,13 +357,13 @@ frame come out polarity-flipped; that is intended (128 = no change, ADR
 
 - `trajectories.csv`: one row per colony per frame, columns `well, frame,
   t_hours, colony_id, group_id, merged_with, ancestors, pre_existing,
-  area_px, age_h, rim_frac, rim_excluded, bad, bad_reason`
+  area_px, age_h, rim_frac, rim_excluded, no_growth`
 - `growth_rates.csv`: one row per colony, columns `well, colony_id,
   group_id, first_frame, last_frame, n_frames, n_frames_valid,
   area_first, area_last, max_ancestors, rim_excluded_frame,
   growth_rate_per_h, growth_doublings_per_day, abs_growth_px_per_h,
-  bad, bad_reason, pre_existing`
-- `bad_segments.csv`: one row per bad colony (reason, frames, areas)
+  no_growth, pre_existing`
+- `bad_segments.csv`: one row per bad colony (frames, areas)
 - pooled aggregates: `areas_by_ancestors.csv`, `rates_by_ancestors.csv`
 - plots: `growth_curves_by_ancestors.png`, `mean_area_by_ancestors.png`,
   `growth_rates_by_ancestors.png`

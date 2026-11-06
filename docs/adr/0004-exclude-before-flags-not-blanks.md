@@ -1,6 +1,6 @@
 # 0004: `exclude_before` flags pre-existing colonies instead of blanking frames
 
-Status: amended (2026-10-26)
+Status: amended (2026-10-26, 2026-11-06)
 
 ## Context
 
@@ -31,7 +31,8 @@ through the `pre_existing` flag instead.
   aggregates/plots over their whole lifetime (as before, `keep_pre_existing`
   overrides), and never bad-flagged, since `from_start`/`no_growth` do not
   apply and flagged colonies cannot push a well over `max_bad_segments` and
-  exclude it.
+  exclude it. (The `from_start` half is superseded by the 2026-11-06
+  amendment below; the exemption now applies to `no_growth` alone.)
 - Re-ID follows the same rule: saved label images are re-read for all
   frames and tracking re-flags from the first detection.
 
@@ -72,3 +73,18 @@ through the blank reference frame, so their first detection stays ≤ N and
 they drop out of the analysis; a harder exclusion is not available without
 re-running the segment stage with a different `exclude_before` (the reid
 path re-flags from the saved label images without re-segmentation).
+
+## Amendment (2026-11-06)
+
+The analysis-stage `from_start` bad-segment criterion is removed. The
+segment-stage `pre_existing` flag is now the sole label that removes
+colonies because they existed before some point in time; a colony present
+at frame 1 is analyzed normally when `exclude_before` is unset (e.g.
+`reference = "first"`). The per-row bad flag is now the single
+`no_growth` 0/1 column: `bad` and `bad_reason` are gone from
+`trajectories.csv` and `growth_rates.csv`, and `bad_segments.csv` drops
+its now-constant `bad_reason` column. The well-level "bad" umbrella
+(`max_bad_segments`, `keep_bad_wells`, bad wells) is unchanged, and
+pre-existing colonies remain exempt from `no_growth` so they cannot push
+a well over `max_bad_segments`. `start_frames` is no longer an option; a
+config or CLI use of it is an unknown key/flag error.

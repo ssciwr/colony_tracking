@@ -26,8 +26,9 @@ the checkpoint against the held-out wells.
 The `tui` subcommand opens a terminal interface over the same stages
 (see below).
 The `view` subcommand opens a run's wells in
-[napari](https://napari.org): one greyscale time-series stack per well, so
-the QA protocol becomes "look at the run" instead of "open the PNG".
+[napari](https://napari.org): the raw time series, the difference stack, the
+segmentation labels, and the QA overlay of each well side by side, so the QA
+protocol becomes "look at the run" instead of "open the PNG".
 
 ## Install
 
@@ -291,17 +292,36 @@ markers, and the next start resumes where the run left off.
 
 ### view
 
-Open a run's wells in napari: the raw acquisition as one greyscale
-time-series stack, named `<well> raw`, with the frame slider walking the
-series. Several wells at once give several stacks in one session, one per
-well, each layer named after its well. napari ships with micro-sam, so
-`view` needs nothing extra; it is imported only when the command runs.
+Open a run's wells in napari. A well gets up to four layers, one shared
+frame slider, every layer visible:
+
+- `<well> raw` — the acquisition frames as one greyscale image stack;
+- `<well> diff` — the stored difference images as an `uint8` image stack,
+  exactly as written on disk (`128` = no change, ADR 0001; no remapping
+  toward a diverging palette);
+- `<well> labels` — the segmentation label images as a napari `Labels`
+  layer, IDs untouched (`uint32`);
+- `<well> qa` — `qa/<well>_rim.png` from the analysis output of the
+  configured segmentation root, loaded as-is. When a raw stack is loaded
+  it is placed on the raw frame's footprint by a coordinate scale
+  (`H/512`, `W/512` for the 512 px overlay); without a raw stack it is
+  loaded unscaled.
+
+Every source is optional and independent: a run with only segmentations,
+only difference frames, or only a QA overlay is a normal session. A missing
+artifact (no such tree, or a well without its files) drops that one layer
+for that well with an INFO line and the session still opens. napari ships
+with micro-sam, so `view` needs nothing extra; it is imported only when the
+command runs.
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `--wells` | `none` | Wells to display (repeatable, comma-separated), e.g. -A001. Always explicit: every well must exist in the configured sources. |
 | `--config` | `none` | TOML config file to read the paths from (default: pipeline.toml in the current directory, when that file exists). |
 | `--raw-dir` | `none` | Directory of raw plate frames (flat or per-well layout). Overrides the config file's raw directory. |
+| `--diff-dir` | `none` | Difference tree to show (one directory per well of uint8 previews). Overrides the config file's difference.out_dir. |
+| `--seg-dir` | `none` | Segmentation tree to show (one directory per well of label images), and the root whose QA overlay is read. Overrides the config file's segmentation.out_dir. |
+| `--analysis-dir` | `none` | Analysis output root holding the per-root QA overlays. Overrides the config file's analysis.out_root. |
 
 From a run directory that holds a `pipeline.toml`, one flag is enough:
 
@@ -309,20 +329,35 @@ From a run directory that holds a `pipeline.toml`, one flag is enough:
 colony-tracking view --wells=-A001
 ```
 
+Each layer is fed by one path: the raw stack by `[pipeline].raw_dir`
+(`--raw-dir`), the difference stack by `[difference].out_dir`
+(`--diff-dir`), the labels by `[segmentation].out_dir` (`--seg-dir`), and
+the QA overlay by `[analysis].out_root` (`--analysis-dir`) — the overlay is
+read from `<analysis-dir>/<segmentation-root-name>/qa/<well>_rim.png`,
+never by searching across analysis roots for the file name, so an analysis
+root holding several segmentation trees cannot show the wrong one. A
+QA-only session without `--seg-dir` reads a well's overlay from an analysis
+root only when exactly one root's `qa/` directory holds it; otherwise the
+layer is skipped with an INFO line.
+
 Paths resolve in this order: `--config PATH` when given, else the current
 directory's `pipeline.toml` when that file exists, else the explicit path
-flags. An explicit path flag overrides only its own config value, so
-`--raw-dir` alone points at a different raw plate while the rest of the
-config stays in force; with neither a config file nor `--raw-dir`, the
-command exits 2 naming both ways to provide paths.
+flags. The config's paths are its resolved stages, so the derived tree
+names follow its reference frame (`difference_LO005`, ...). An explicit
+path flag overrides only its own config value, so `--raw-dir` alone points
+at a different raw plate while the rest of the config stays in force; with
+neither a config file nor any path flag, the command exits 2 naming the
+flags.
 
 Wells are always named on the command line — `--wells` is never inherited
 from the config's `[pipeline].wells`. Well names start with a dash, so the
 value stays inside the flag: `--wells=-A001,-B004` (or `--wells -A001`
-once, repeatable). A missing `--wells`, a well the configured sources do
-not hold, or a session with nothing to load exits 2 with the wells that
-are available. `view` writes nothing and performs no pixel conversion: the
-stack keeps the raw uint16 counts.
+once, repeatable). A well qualifies when any configured source has it. A
+missing `--wells`, a well that none of the configured sources holds, or a
+session with nothing to load exits 2 with the wells that are available.
+`view` writes nothing and performs no pixel conversion: the raw stack keeps
+the raw uint16 counts, the difference stack the stored uint8 values, and
+the label images their `uint32` IDs.
 
 ## Python API
 

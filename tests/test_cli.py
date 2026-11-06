@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
+from PIL import Image
 
 import colony_tracking.cli as cli
 from colony_tracking import (
@@ -388,10 +390,126 @@ def test_view_reads_the_cwd_pipeline_toml(monkeypatch, tmp_path, capsys):
     assert cli.main(["view", "--wells=-A001"]) == 0
 
     (options,) = calls
-    assert options == ViewOptions(wells=["-A001"], raw_dir=Path("raw"))
+    # The resolved config fills every path: the run-level raw directory and
+    # the three derived trees.
+    assert options == ViewOptions(
+        wells=["-A001"], raw_dir=Path("raw"),
+        diff_dir=Path("out/difference"),
+        seg_dir=Path("out/seg_growth_diff"),
+        analysis_dir=Path("out/analysis"),
+    )
     assert options.wells == ["-A001"]  # from the flag, never [pipeline].wells
     assert runs == [True]  # the CLI owns the event loop
     assert capsys.readouterr().out == ""  # nothing ever prints
+
+
+def test_view_derived_paths_follow_the_config_reference(
+        monkeypatch, tmp_path):
+    """The derived tree names come from the resolved config, never from the
+    viewer."""
+    _view_plate(tmp_path)
+    config = _write_config(
+        tmp_path,
+        '[pipeline]\nraw_dir = "raw"\nout_root = "out"\nreference = 5\n',
+    )
+    monkeypatch.chdir(tmp_path)
+    calls, _ = _view_seams(monkeypatch)
+
+    assert cli.main(["view", "--config", str(config), "--wells=-A001"]) == 0
+
+    (options,) = calls
+    assert options.diff_dir == Path("out/difference_LO005")
+    assert options.seg_dir == Path("out/seg_growth_diff_LO005")
+    assert options.analysis_dir == Path("out/analysis")
+
+
+def test_view_path_flags_override_only_their_own_directory(
+        monkeypatch, tmp_path):
+    plate = _view_plate(tmp_path)
+    config = _write_config(
+        tmp_path,
+        f'[pipeline]\nraw_dir = "{plate.root}"\nout_root = "out"\n',
+    )
+    other = tmp_path / "elsewhere"
+    monkeypatch.chdir(tmp_path)
+    calls, _ = _view_seams(monkeypatch)
+
+    assert cli.main([
+        "view", "--config", str(config), "--seg-dir", str(other / "seg"),
+        "--wells=-A001",
+    ]) == 0
+    options = calls[-1]
+    assert options.seg_dir == other / "seg"
+    assert options.raw_dir == plate.root  # the config stays in force
+    assert options.diff_dir == Path("out/difference")
+    assert options.analysis_dir == Path("out/analysis")
+
+    assert cli.main([
+        "view", "--config", str(config), "--diff-dir", str(other / "diff"),
+        "--analysis-dir", str(other / "analysis"), "--wells=-A001",
+    ]) == 0
+    options = calls[-1]
+    assert options.diff_dir == other / "diff"
+    assert options.analysis_dir == other / "analysis"
+    assert options.seg_dir == Path("out/seg_growth_diff")
+    assert options.raw_dir == plate.root
+
+
+def _derived_tree(tmp_path, kind):
+    """A minimal tree of each kind, holding well -A001 only."""
+    well = "-A001"
+    if kind == "diff":
+        root = tmp_path / "difference"
+        well_dir = root / well
+        well_dir.mkdir(parents=True)
+        tifffile.imwrite(well_dir / f"{well}--LO001--T0--WE1_diff_uint8.tif",
+                         np.full((4, 4), 128, dtype=np.uint8))
+        return root, "--diff-dir"
+    if kind == "seg":
+        root = tmp_path / "seg_growth_diff"
+        well_dir = root / well
+        well_dir.mkdir(parents=True)
+        tifffile.imwrite(well_dir / f"{well}--LO001--T0--WE1__labels.tif",
+                         np.ones((4, 4), dtype=np.uint32))
+        return root, "--seg-dir"
+    root = tmp_path / "analysis"
+    qa_dir = root / "seg_growth_diff" / "qa"
+    qa_dir.mkdir(parents=True)
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(
+        qa_dir / f"{well}_rim.png")
+    return root, "--analysis-dir"
+
+
+@pytest.mark.parametrize("kind", ("diff", "seg", "analysis"))
+def test_view_one_derived_dir_alone_opens_a_session(
+        monkeypatch, tmp_path, kind):
+    """No config file, no raw stack: any single derived source is a session."""
+    root, flag = _derived_tree(tmp_path, kind)
+    monkeypatch.chdir(tmp_path)  # no pipeline.toml here
+    calls, runs = _view_seams(monkeypatch)
+
+    assert cli.main(["view", flag, str(root), "--wells=-A001"]) == 0
+
+    (options,) = calls
+    field = {"--diff-dir": "diff_dir", "--seg-dir": "seg_dir",
+             "--analysis-dir": "analysis_dir"}[flag]
+    assert getattr(options, field) == root
+    assert options.raw_dir is None
+    assert runs == [True]
+
+
+def test_view_unknown_well_is_a_usage_error_across_every_source(
+        monkeypatch, tmp_path, caplog):
+    """Well validation follows the configured sources, not just raw."""
+    root, flag = _derived_tree(tmp_path, "seg")
+    monkeypatch.chdir(tmp_path)
+    calls, runs = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", flag, str(root), "--wells=-B002"]) == 2
+
+    assert "-B002" in caplog.text and "-A001" in caplog.text
+    assert calls == [] and runs == []
 
 
 def test_view_raw_dir_alone_works_without_a_config_file(monkeypatch, tmp_path):

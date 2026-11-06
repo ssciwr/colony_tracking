@@ -280,12 +280,18 @@ def _add_pipeline_flags(parser: argparse.ArgumentParser) -> None:
 #: exists in the current directory.
 _VIEW_CONFIG = Path("pipeline.toml")
 
+#: The viewer's path fields, in the order the error message names them.
+_VIEW_PATH_FIELDS = ("raw_dir", "diff_dir", "seg_dir", "analysis_dir")
+
 
 def _view_options(args: argparse.Namespace) -> ViewOptions:
     """The viewer options: the config file's paths (``--config``, or the
     current directory's ``pipeline.toml`` when it exists) with the explicit
-    path flags overriding single values. Wells are never taken from the
-    config's ``[pipeline].wells`` — ``--wells`` is the only source."""
+    path flags overriding single values. Each path flag overrides only its
+    own directory; a config's resolved stages supply the derived trees
+    (``difference.out_dir``, ``segmentation.out_dir``, ``analysis.out_root``).
+    Wells are never taken from the config's ``[pipeline].wells`` —
+    ``--wells`` is the only source."""
     options = ViewOptions(**_stage_kwargs(args, ViewOptions))
     path = options.config
     if path is None and _VIEW_CONFIG.exists():
@@ -294,12 +300,21 @@ def _view_options(args: argparse.Namespace) -> ViewOptions:
         if not Path(path).is_file():
             raise _UsageError(f"no such config file: {path}")
         config = read_config(path)
-        if options.raw_dir is None:
-            options.raw_dir = config.raw_dir
-    if options.raw_dir is None:
+        for name, value in (
+            ("raw_dir", config.raw_dir),
+            ("diff_dir", config.difference.out_dir),
+            ("seg_dir", config.segmentation.out_dir),
+            ("analysis_dir", config.analysis.out_root),
+        ):
+            if getattr(options, name) is None:
+                setattr(options, name, Path(value))
+    if not any(getattr(options, name) is not None
+               for name in _VIEW_PATH_FIELDS):
+        flags = ", ".join(f"--{name.replace('_', '-')}"
+                          for name in _VIEW_PATH_FIELDS)
         raise _UsageError(
-            "no paths to read: pass --config PATH (a pipeline TOML) or "
-            "--raw-dir DIR"
+            "no paths to read: pass --config PATH (a pipeline TOML) or any "
+            f"of {flags} DIR"
         )
     return options
 
@@ -420,12 +435,14 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_flags(
         subparsers.add_parser(
             "view",
-            help="Open a run's wells in napari as image layers.",
-            description="Open a run's wells in napari: one greyscale "
-            "time-series stack per well, named '<well> raw'. Paths come from "
-            "the config file (--config, or pipeline.toml in the current "
-            "directory when it exists) or from --raw-dir alone; wells are "
-            "always explicit via --wells (see --help for every flag).",
+            help="Open a run's wells in napari as layers.",
+            description="Open a run's wells in napari: the raw stack, the "
+            "difference stack, the segmentation labels, and the QA overlay "
+            "of each well, each optional, named '<well> raw', '<well> diff', "
+            "'<well> labels', '<well> qa'. Paths come from the config file "
+            "(--config, or pipeline.toml in the current directory when it "
+            "exists) or from the path flags alone; wells are always explicit "
+            "via --wells (see --help for every flag).",
         ),
         ViewOptions,
     )

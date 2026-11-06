@@ -1,4 +1,4 @@
-"""The viewer: open a run's wells in napari as image layers.
+"""The viewer: open a run's wells in napari as layers.
 
 :func:`view_wells` loads every requested well from every *configured
 source* — one layer per (well, source), named ``"<well> <kind>"`` (``-A001
@@ -6,15 +6,30 @@ raw``), all visible — and adds it to a napari session; it returns the
 viewer and never calls ``napari.run()`` (the caller owns the event loop;
 the CLI runs it).
 
+Four sources exist, each optional and skipped when its path is unset:
+
+``raw``
+    the acquisition frames, one greyscale image stack (``add_image``);
+``diff``
+    the stored difference previews, an ``uint8`` image stack (``128`` = no
+    change, ADR 0001) shown as written;
+``labels``
+    the segmentation label images, an ``uint32`` napari ``Labels`` layer
+    (a rendering mode, not a data conversion);
+``qa``
+    the analysis stage's ``qa/<well>_rim.png`` overlay, loaded as a bitmap
+    and placed on the raw frame's footprint by a coordinate ``scale``
+    (``H/512``, ``W/512``) when a raw stack is loaded, unscaled otherwise.
+
+Missing artifacts (an absent tree, a well without its files) never fail the
+command: that one layer is dropped with an INFO line and the rest opens.
+
 The module is deliberately thin. Beyond the package logger, it imports
-only :mod:`colony_tracking.io` (discovery and the frame records) and
+only :mod:`colony_tracking.io` (discovery and the frame records),
 :mod:`colony_tracking._options` (the resolved
-:class:`~colony_tracking._options.ViewOptions`): the CLI has
-already resolved every path, so the viewer holds no knowledge of the
-pipeline's tree naming and derives nothing. Raw is the only source today;
-the derived kinds (difference, labels, QA overlays) join
-:func:`configured_sources`, each optional and skipped when its path is
-unset.
+:class:`~colony_tracking._options.ViewOptions`), and PIL (the QA bitmap):
+the CLI has already resolved every path, so the viewer holds no knowledge
+of the pipeline's tree naming and derives nothing.
 
 napari is an implicit dependency (it ships with micro-sam): it is imported
 lazily inside :func:`_new_viewer`, so importing the package — or this
@@ -30,44 +45,165 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+from PIL import Image
 
-from . import log
+from . import io, log
 from ._options import ViewOptions
-from .io import Frame, discover_wells
+from .io import FRAME_SUFFIXES, discover_wells, read_label_image
 
-#: Loader of one well's source: its frames (in time order) → the stack the
-#: layer shows. No pixel conversion happens here — the stack keeps the
-#: files' dtype exactly.
-Loader = Callable[[list[Frame]], np.ndarray]
+#: Discovery of one source's wells, sorted (a missing tree holds none).
+Discover = Callable[[], list[str]]
+#: Loader of one well's layer data: the stack (or bitmap) the layer shows,
+#: or None when the well's artifact is missing. No pixel conversion happens
+#: here — the data keeps the files' dtype exactly.
+Load = Callable[[str], np.ndarray | None]
+
+#: The QA overlays' directory name, inside one segmentation root's analysis
+#: output (``<analysis root>/<segmentation root>/qa/<well>_rim.png``).
+QA_DIR = "qa"
 
 
 @dataclass(frozen=True)
 class _Source:
-    """One configured source: the layer kind, the tree it lives in, and how
-    one well's frames become the layer's data."""
+    """One configured source: the layer kind, the tree it lives in, how its
+    wells are discovered, and how one well becomes the layer's data."""
 
     kind: str
     #: The resolved directory of this source (never a derived tree name).
     root: Path
-    load: Loader
+    discover: Discover
+    load: Load
+    #: Whether the layer renders as a napari ``Labels`` layer (label images).
+    as_labels: bool = False
 
 
-def _load_raw(frames: list[Frame]) -> np.ndarray:
-    """One well's raw acquisition as a ``(T, H, W)`` stack (frames are
-    time, not depth, so napari's 2D display gives the frame slider)."""
-    return np.stack([tifffile.imread(frame.path) for frame in frames])
+@dataclass(frozen=True)
+class _Layer:
+    """One layer to add: its name, its data, its layer type, and its
+    coordinate scale (None = napari's default)."""
+
+    name: str
+    data: np.ndarray
+    as_labels: bool = False
+    scale: tuple[float, ...] | None = None
+
+
+# --- the per-source loaders --------------------------------------------------
+
+
+def _tree_wells(root: Path, suffixes=FRAME_SUFFIXES) -> list[str]:
+    """The wells of a per-well input tree, sorted; a missing tree has none."""
+    if not root.is_dir():
+        return []
+    return sorted(discover_wells(root, suffixes=suffixes))
+
+
+def _tree_stack(root: Path, well: str, read, suffixes=FRAME_SUFFIXES):
+    """One well's frames of a tree as a ``(T, H, W)`` stack read by ``read``,
+    in the files' frame order; None when the tree or the well is absent."""
+    if not root.is_dir():
+        return None
+    frames = discover_wells(root, suffixes=suffixes, wells=[well]).get(well)
+    if not frames:
+        return None
+    return np.stack([read(frame.path) for frame in frames])
+
+
+def _stack_source(kind: str, root: Path, read, *, as_labels=False) -> _Source:
+    """A per-well frame-series source (raw, diff, labels)."""
+    return _Source(
+        kind=kind,
+        root=root,
+        discover=lambda: _tree_wells(root),
+        load=lambda well: _tree_stack(root, well, read),
+        as_labels=as_labels,
+    )
+
+
+def _qa_roots(analysis_dir: Path, seg_dir: Path | None) -> list[Path]:
+    """The analysis-output directories that hold this session's QA overlays.
+
+    With a segmentation root, the precise path — the analysis output of
+    that root alone, so an analysis root holding several segmentation trees
+    never shows the wrong one. Without one (a QA-only session) every
+    immediate subdirectory of the analysis root is a candidate;
+    :func:`_qa_image` shows a well's overlay only when exactly one candidate
+    holds it.
+    """
+    if seg_dir is not None:
+        return [analysis_dir / Path(seg_dir).name]
+    if not analysis_dir.is_dir():
+        return []
+    return [entry for entry in sorted(analysis_dir.iterdir())
+            if entry.is_dir()]
+
+
+def _qa_paths(analysis_dir: Path, seg_dir: Path | None,
+              well: str) -> list[Path]:
+    """The existing ``qa/<well>_rim.png`` overlays, in root order."""
+    return [
+        path
+        for root in _qa_roots(analysis_dir, seg_dir)
+        if (path := root / QA_DIR / f"{well}_rim.png").is_file()
+    ]
+
+
+def _qa_wells(analysis_dir: Path, seg_dir: Path | None) -> list[str]:
+    """The wells with a QA overlay, sorted."""
+    wells = set()
+    for root in _qa_roots(analysis_dir, seg_dir):
+        qa_dir = root / QA_DIR
+        if not qa_dir.is_dir():
+            continue
+        for entry in sorted(qa_dir.iterdir()):
+            well = io.parse_well(entry.name)
+            if well is not None and entry.name == f"{well}_rim.png":
+                wells.add(well)
+    return sorted(wells)
+
+
+def _qa_image(analysis_dir: Path, seg_dir: Path | None,
+              well: str) -> np.ndarray | None:
+    """One well's QA overlay as the PNG's pixels, or None when absent."""
+    paths = _qa_paths(analysis_dir, seg_dir, well)
+    if len(paths) > 1:
+        roots = ", ".join(str(path.parent.parent) for path in paths)
+        log.info(
+            "viewer: %s qa: ambiguous, %d analysis roots hold it (%s); "
+            "skipping (name the segmentation root with --seg-dir)",
+            well, len(paths), roots,
+        )
+        return None
+    if not paths:
+        return None
+    with Image.open(paths[0]) as image:
+        return np.asarray(image)
 
 
 def configured_sources(options: ViewOptions) -> list[_Source]:
     """The sources ``options`` configures, in layer order.
 
     A source whose path the options do not carry is not configured (and is
-    skipped). Raw is always the first source; the derived image kinds are
-    added here as their tickets land.
+    skipped), so any non-empty subset of the four kinds is a session. Raw is
+    always the first source, then the derived kinds.
     """
     sources: list[_Source] = []
     if options.raw_dir is not None:
-        sources.append(_Source("raw", options.raw_dir, _load_raw))
+        sources.append(_stack_source("raw", options.raw_dir, tifffile.imread))
+    if options.diff_dir is not None:
+        sources.append(_stack_source("diff", options.diff_dir,
+                                     tifffile.imread))
+    if options.seg_dir is not None:
+        sources.append(_stack_source("labels", options.seg_dir,
+                                     read_label_image, as_labels=True))
+    if options.analysis_dir is not None:
+        analysis_dir, seg_dir = options.analysis_dir, options.seg_dir
+        sources.append(_Source(
+            kind="qa",
+            root=analysis_dir,
+            discover=lambda: _qa_wells(analysis_dir, seg_dir),
+            load=lambda well: _qa_image(analysis_dir, seg_dir, well),
+        ))
     return sources
 
 
@@ -79,7 +215,7 @@ def available_wells(options: ViewOptions) -> list[str]:
     """
     wells: set[str] = set()
     for source in configured_sources(options):
-        wells.update(discover_wells(source.root))
+        wells.update(source.discover())
     return sorted(wells)
 
 
@@ -96,23 +232,52 @@ def _requested_wells(options: ViewOptions, available: list[str]) -> list[str]:
     return list(options.wells)
 
 
-def _layers(options: ViewOptions) -> list[tuple[str, np.ndarray]]:
-    """``(layer name, data)`` for every requested well and configured
-    source that holds it: ``"<well> <kind>"``, raw before the derived
-    kinds."""
+def _log_layer(well: str, kind: str, data: np.ndarray) -> None:
+    """The INFO line of one loaded layer (a frame stack or a bitmap)."""
+    if data.ndim == 3:
+        log.info("viewer: %s %s: %d frame(s), %dx%d",
+                 well, kind, *data.shape)
+    else:
+        log.info("viewer: %s %s: %dx%d image", well, kind, *data.shape)
+
+
+def _qa_scale(qa_shape: tuple[int, int],
+              raw_shape: tuple[int, int] | None) -> tuple[float, float]:
+    """The QA bitmap's coordinate scale: the raw frame's footprint over the
+    bitmap (``H/512``, ``W/512`` for the 512 px overlays), or napari's
+    default when no raw stack is loaded to size it against."""
+    if raw_shape is None:
+        return (1.0, 1.0)
+    return (raw_shape[0] / qa_shape[0], raw_shape[1] / qa_shape[1])
+
+
+def _layers(options: ViewOptions) -> list[_Layer]:
+    """The layers for every requested well and configured source that holds
+    it: ``"<well> <kind>"``, raw before the derived kinds."""
     available = available_wells(options)
-    layers: list[tuple[str, np.ndarray]] = []
+    sources = configured_sources(options)
+    layers: list[_Layer] = []
     for well in _requested_wells(options, available):
-        for source in configured_sources(options):
-            frames = discover_wells(source.root, wells=[well]).get(well)
-            if not frames:
+        loaded: list[tuple[_Source, np.ndarray]] = []
+        for source in sources:
+            data = source.load(well)
+            if data is None:
+                log.info("viewer: %s %s: no artifact under %s, skipping",
+                         well, source.kind, source.root)
                 continue
-            data = source.load(frames)
-            log.info(
-                "viewer: %s %s: %d frame(s), %dx%d",
-                well, source.kind, data.shape[0], data.shape[1], data.shape[2],
-            )
-            layers.append((f"{well} {source.kind}", data))
+            _log_layer(well, source.kind, data)
+            loaded.append((source, data))
+        raw_shape = next(
+            (data.shape[-2:] for source, data in loaded
+             if source.kind == "raw"),
+            None,
+        )
+        for source, data in loaded:
+            scale = None
+            if source.kind == "qa":
+                scale = _qa_scale(data.shape[:2], raw_shape)
+            layers.append(_Layer(f"{well} {source.kind}", data,
+                                 source.as_labels, scale))
     if not layers:
         raise ValueError(
             "nothing to load: available wells: "
@@ -136,8 +301,10 @@ def _new_viewer():
 def view_wells(options: ViewOptions, viewer=None):
     """Open ``options``' wells in a napari session and return the viewer.
 
-    Builds one greyscale layer per well and configured source, named
-    ``"<well> <kind>"`` (``-A001 raw``), and adds it visible. Never calls
+    Builds one layer per well and configured source, named ``"<well>
+    <kind>"`` (``-A001 raw``): greyscale image stacks for raw and diff, a
+    ``Labels`` layer for the segmentation, and the QA overlay bitmap scaled
+    onto the raw frame. Adds every layer visible. Never calls
     ``napari.run()``: the caller runs the event loop (the CLI does), which
     also lets a test pass a recording stub as ``viewer`` and keep napari,
     PyQt, and any display out of the test. An unknown or missing well, or a
@@ -147,6 +314,11 @@ def view_wells(options: ViewOptions, viewer=None):
     layers = _layers(options)
     if viewer is None:
         viewer = _new_viewer()
-    for name, data in layers:
-        viewer.add_image(data, name=name, colormap="gray")
+    for layer in layers:
+        if layer.as_labels:
+            viewer.add_labels(layer.data, name=layer.name)
+        elif layer.scale is not None:
+            viewer.add_image(layer.data, name=layer.name, scale=layer.scale)
+        else:
+            viewer.add_image(layer.data, name=layer.name, colormap="gray")
     return viewer

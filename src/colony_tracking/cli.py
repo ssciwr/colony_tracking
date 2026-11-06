@@ -31,12 +31,14 @@ from typing import get_args, get_origin, get_type_hints
 
 from . import log
 from ._options import (
+    VIEW_PATH_FIELDS,
     AnalysisOptions,
     DifferenceOptions,
     Reference,
     SegmentationOptions,
     ViewOptions,
     _union_members,
+    viewer_path,
 )
 from .analysis import run_analysis
 from .difference import run_difference
@@ -280,18 +282,16 @@ def _add_pipeline_flags(parser: argparse.ArgumentParser) -> None:
 #: exists in the current directory.
 _VIEW_CONFIG = Path("pipeline.toml")
 
-#: The viewer's path fields, in the order the error message names them.
-_VIEW_PATH_FIELDS = ("raw_dir", "diff_dir", "seg_dir", "analysis_dir")
-
 
 def _view_options(args: argparse.Namespace) -> ViewOptions:
     """The viewer options: the config file's paths (``--config``, or the
     current directory's ``pipeline.toml`` when it exists) with the explicit
     path flags overriding single values. Each path flag overrides only its
     own directory; a config's resolved stages supply the derived trees
-    (``difference.out_dir``, ``segmentation.out_dir``, ``analysis.out_root``).
-    Wells are never taken from the config's ``[pipeline].wells`` —
-    ``--wells`` is the only source."""
+    (``difference.out_dir``, ``segmentation.out_dir``, ``analysis.out_root``,
+    see :data:`~colony_tracking._options.VIEW_PATH_FIELDS`). Wells are never
+    taken from the config's ``[pipeline].wells`` — ``--wells`` is the only
+    source."""
     options = ViewOptions(**_stage_kwargs(args, ViewOptions))
     path = options.config
     if path is None and _VIEW_CONFIG.exists():
@@ -300,18 +300,13 @@ def _view_options(args: argparse.Namespace) -> ViewOptions:
         if not Path(path).is_file():
             raise _UsageError(f"no such config file: {path}")
         config = read_config(path)
-        for name, value in (
-            ("raw_dir", config.raw_dir),
-            ("diff_dir", config.difference.out_dir),
-            ("seg_dir", config.segmentation.out_dir),
-            ("analysis_dir", config.analysis.out_root),
-        ):
+        for name in VIEW_PATH_FIELDS:
             if getattr(options, name) is None:
-                setattr(options, name, Path(value))
+                setattr(options, name, Path(viewer_path(config, name)))
     if not any(getattr(options, name) is not None
-               for name in _VIEW_PATH_FIELDS):
+               for name in VIEW_PATH_FIELDS):
         flags = ", ".join(f"--{name.replace('_', '-')}"
-                          for name in _VIEW_PATH_FIELDS)
+                          for name in VIEW_PATH_FIELDS)
         raise _UsageError(
             "no paths to read: pass --config PATH (a pipeline TOML) or any "
             f"of {flags} DIR"

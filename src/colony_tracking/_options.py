@@ -534,3 +534,26 @@ class ViewOptions:
             "Overrides the config file's analysis.out_root."
         },
     )
+
+
+#: The viewer's path fields, in layer order: each :class:`ViewOptions` field
+#: and the dotted attribute path of the resolved
+#: :class:`~colony_tracking.pipeline.PipelineConfig` value it mirrors
+#: (``raw_dir`` is the run level's own field, the others a stage's output).
+#: The CLI's ``--config`` resolution, the TUI launch's argument vector, and
+#: the viewer all read this one table, so a fifth layer is one edit.
+VIEW_PATH_FIELDS: dict[str, str] = {
+    "raw_dir": "raw_dir",
+    "diff_dir": "difference.out_dir",
+    "seg_dir": "segmentation.out_dir",
+    "analysis_dir": "analysis.out_root",
+}
+
+
+def viewer_path(config: object, name: str) -> Any:
+    """The value of one viewer path field ``name`` in the resolved
+    ``config``, walking :data:`VIEW_PATH_FIELDS`' dotted attribute path."""
+    value: Any = config
+    for part in VIEW_PATH_FIELDS[name].split("."):
+        value = getattr(value, part)
+    return value

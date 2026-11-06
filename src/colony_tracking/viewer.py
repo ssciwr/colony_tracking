@@ -25,11 +25,15 @@ Missing artifacts (an absent tree, a well without its files) never fail the
 command: that one layer is dropped with an INFO line and the rest opens.
 
 The module is deliberately thin. Beyond the package logger, it imports
-only :mod:`colony_tracking.io` (discovery and the frame records),
+numpy and tifffile (the frame stacks), PIL (the QA bitmap),
+:mod:`colony_tracking.io` (discovery and the frame records), and
 :mod:`colony_tracking._options` (the resolved
-:class:`~colony_tracking._options.ViewOptions`), and PIL (the QA bitmap):
-the CLI has already resolved every path, so the viewer holds no knowledge
-of the pipeline's tree naming and derives nothing.
+:class:`~colony_tracking._options.ViewOptions`). Every path reaches the
+viewer already resolved — the CLI and the TUI read them from the config —
+so it derives no pipeline tree name. The one layout it does know is the
+analysis stage's QA output, where the overlay bitmap lives:
+``<analysis dir>/<segmentation root name>/qa/<well>_rim.png`` — the names
+:data:`QA_DIR` and :func:`_qa_paths` build.
 
 napari is an implicit dependency (it ships with micro-sam): it is imported
 lazily inside :func:`_new_viewer`, so importing the package — or this
@@ -49,7 +53,7 @@ from PIL import Image
 
 from . import io, log
 from ._options import ViewOptions
-from .io import FRAME_SUFFIXES, discover_wells, read_label_image
+from .io import discover_wells, read_label_image
 
 #: Discovery of one source's wells, sorted (a missing tree holds none).
 Discover = Callable[[], list[str]]
@@ -91,19 +95,19 @@ class _Layer:
 # --- the per-source loaders --------------------------------------------------
 
 
-def _tree_wells(root: Path, suffixes=FRAME_SUFFIXES) -> list[str]:
+def _tree_wells(root: Path) -> list[str]:
     """The wells of a per-well input tree, sorted; a missing tree has none."""
     if not root.is_dir():
         return []
-    return sorted(discover_wells(root, suffixes=suffixes))
+    return sorted(discover_wells(root))
 
 
-def _tree_stack(root: Path, well: str, read, suffixes=FRAME_SUFFIXES):
+def _tree_stack(root: Path, well: str, read):
     """One well's frames of a tree as a ``(T, H, W)`` stack read by ``read``,
     in the files' frame order; None when the tree or the well is absent."""
     if not root.is_dir():
         return None
-    frames = discover_wells(root, suffixes=suffixes, wells=[well]).get(well)
+    frames = discover_wells(root, wells=[well]).get(well)
     if not frames:
         return None
     return np.stack([read(frame.path) for frame in frames])
@@ -287,15 +291,18 @@ def _layers(options: ViewOptions) -> list[_Layer]:
 
 
 def _new_viewer():
-    """A napari ``Viewer``; the import is lazy (see the module docstring)."""
+    """A napari ``Viewer``; the import and the viewer construction are lazy
+    (see the module docstring). A failed import — napari itself, or its Qt
+    binding — is one clear RuntimeError, never a traceback."""
     try:
         import napari
+
+        return napari.Viewer()
     except ImportError as exc:
         raise RuntimeError(
             "napari is not installed: the view command needs it (it ships "
             "with micro-sam); install micro-sam in this environment"
         ) from exc
-    return napari.Viewer()
 
 
 def view_wells(options: ViewOptions, viewer=None):

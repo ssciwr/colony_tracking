@@ -17,12 +17,13 @@ The child runs on a worker thread (``app.run_worker(..., thread=True)``
 when a running textual ``App`` is given, a plain daemon thread
 otherwise) that spawns it and watches it to completion, so the UI thread
 never blocks. Its output is captured and logged back through the package
-logger :data:`colony_tracking.log`; :func:`start` attaches the shared
-record forwarder (:func:`~colony_tracking.tui.runner.record_forwarder`)
-around the launch's own messages, so the screen's log pane shows the
-child's lines and — when it exits non-zero (napari missing, no display) —
-the failure, instead of a silent orphan. A failed spawn is stored on the
-handle too: nothing about a launch is fatal to the TUI.
+logger :data:`colony_tracking.log`; :func:`start` wraps the launch's own
+messages in the shared record-forwarding seam
+(:func:`~colony_tracking.tui.records.forwarding`), so the screen's log
+pane shows the child's lines and — when it exits non-zero (napari
+missing, no display) — the failure, instead of a silent orphan. A failed
+spawn is stored on the handle too: nothing about a launch is fatal to
+the TUI.
 
 Tests replace :data:`SPAWN` with a stub process, so no real viewer is
 ever started and no display is needed.
@@ -34,16 +35,15 @@ import logging
 import subprocess
 import sys
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Sequence
 
 from textual.app import App
 
 from .. import log
-from .._options import ViewOptions
+from .._options import VIEW_PATH_FIELDS, ViewOptions, viewer_path
 from ..pipeline import PipelineConfig
-from .runner import _deliverer, record_forwarder
+from .records import deliverer, forwarding
 
 #: The package's module entry point (``python -m colony_tracking``) the
 #: child runs; see ``src/colony_tracking/__main__.py``.
@@ -54,17 +54,6 @@ VIEW_MODULE = "colony_tracking"
 #: keyword arguments), so a test never starts a real viewer.
 SPAWN: Callable[..., Any] = subprocess.Popen
 
-#: The viewer's path flags: the CLI flag and the :class:`ViewOptions` field
-#: it carries. Every set path is passed explicitly, so the child resolves
-#: the same session the draft did (`--config` is not used: the draft is
-#: not necessarily on disk).
-_PATH_FLAGS: tuple[tuple[str, str], ...] = (
-    ("--raw-dir", "raw_dir"),
-    ("--diff-dir", "diff_dir"),
-    ("--seg-dir", "seg_dir"),
-    ("--analysis-dir", "analysis_dir"),
-)
-
 
 def view_options(config: PipelineConfig) -> ViewOptions:
     """The viewer session the chain config describes.
@@ -73,13 +62,11 @@ def view_options(config: PipelineConfig) -> ViewOptions:
     :class:`~colony_tracking._options.ViewOptions`: the run level's raw
     directory and each stage's output tree — the derived names follow the
     chain's reference frame, exactly as the CLI's ``--config`` resolution
-    would read them.
+    would read them (both walk
+    :data:`~colony_tracking._options.VIEW_PATH_FIELDS`).
     """
     return ViewOptions(
-        raw_dir=config.raw_dir,
-        diff_dir=config.difference.out_dir,
-        seg_dir=config.segmentation.out_dir,
-        analysis_dir=config.analysis.out_root,
+        **{name: viewer_path(config, name) for name in VIEW_PATH_FIELDS}
     )
 
 
@@ -88,7 +75,11 @@ def command(wells: Sequence[str], options: ViewOptions) -> list[str]:
 
     The wells go as one comma-separated ``--wells=`` value (well names
     start with a dash, so the value must stay inside the flag), every set
-    path as ``--<flag>=<path>``.
+    path as ``--<flag>=<path>`` — one flag per
+    :data:`~colony_tracking._options.VIEW_PATH_FIELDS` entry, spelled from
+    the field name (``raw_dir`` → ``--raw-dir``). Every set path is passed
+    explicitly, so the child resolves the same session the draft did
+    (``--config`` is not used: the draft is not necessarily on disk).
     """
     argv = [
         sys.executable,
@@ -97,10 +88,10 @@ def command(wells: Sequence[str], options: ViewOptions) -> list[str]:
         "view",
         "--wells=" + ",".join(wells),
     ]
-    for flag, name in _PATH_FLAGS:
+    for name in VIEW_PATH_FIELDS:
         value = getattr(options, name)
         if value is not None:
-            argv.append(f"{flag}={value}")
+            argv.append(f"--{name.replace('_', '-')}={value}")
     return argv
 
 
@@ -144,28 +135,6 @@ def _log_child_output(stdout: str | None, stderr: str | None) -> None:
                 log.info("viewer: %s", line)
 
 
-@contextmanager
-def _forwarding(
-    deliver: Callable[..., None],
-    on_record: Callable[[logging.LogRecord], None] | None,
-) -> Iterator[None]:
-    """Route the package logger's records to the screen for the block's
-    duration, through the shared per-run forwarder seam.
-
-    Attached only around the launch's own messages — the opening lines and
-    the outcome — never while the viewer runs: a napari session is open
-    for as long as the user keeps it, and forwarding every other screen's
-    records to it meanwhile would be noise (and an ever-growing pane).
-    """
-    handler = record_forwarder(deliver, on_record)
-    log.setLevel(logging.INFO)
-    log.addHandler(handler)
-    try:
-        yield
-    finally:
-        log.removeHandler(handler)
-
-
 def _run(
     handle: ViewHandle,
     deliver: Callable[..., None],
@@ -177,10 +146,13 @@ def _run(
 
     The child outlives the launch handshake — the viewer stays open until
     the user closes it — so the record forwarder is attached only around
-    the messages this launch logs, not for the child's lifetime.
+    the messages this launch logs (:func:`~colony_tracking.tui.records.
+    forwarding`), not for the child's lifetime: a napari session is open
+    for as long as the user keeps it, and forwarding every other screen's
+    records to it meanwhile would be noise (and an ever-growing pane).
     """
     try:
-        with _forwarding(deliver, on_record):
+        with forwarding(deliver, on_record):
             log.info(
                 "viewer: opening %s in a separate process",
                 ", ".join(handle.wells),
@@ -197,10 +169,10 @@ def _run(
         handle.returncode = process.returncode
     except Exception as exc:  # noqa: BLE001 — a launch failure is not fatal
         handle.error = exc
-        with _forwarding(deliver, on_record):
+        with forwarding(deliver, on_record):
             log.error("viewer: could not start the viewer process: %s", exc)
     else:
-        with _forwarding(deliver, on_record):
+        with forwarding(deliver, on_record):
             _log_child_output(stdout, stderr)
             if handle.failed:
                 log.error(
@@ -238,7 +210,7 @@ def start(
     keeps running.
     """
     handle = ViewHandle(wells=list(wells), argv=command(wells, options))
-    deliver = _deliverer(app)
+    deliver = deliverer(app)
 
     def body() -> None:
         _run(handle, deliver, on_record, on_done)

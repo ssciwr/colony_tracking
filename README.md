@@ -364,8 +364,10 @@ Wells are always named on the command line — `--wells` is never inherited
 from the config's `[pipeline].wells`. Well names start with a dash, so the
 value stays inside the flag: `--wells=-A001,-B004` (or `--wells -A001`
 once, repeatable). A well qualifies when any configured source has it. A
-missing `--wells`, a well that none of the configured sources holds, or a
-session with nothing to load exits 2 with the wells that are available.
+missing `--wells` and a well that none of the configured sources holds are
+usage errors (exit 2) naming the wells that are available; a session with
+nothing to load is reported as an error naming the wells that are
+available.
 `view` writes nothing and performs no pixel conversion: the raw stack keeps
 the raw uint16 counts, the difference stack the stored uint8 values, and
 the label images their `uint32` IDs.

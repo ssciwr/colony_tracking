@@ -374,8 +374,8 @@ def test_reader_maps_analysis_legacy_column_names(tmp_path):
     traj = tmp_path / "trajectories.csv"
     traj.write_text(
         "well,lo,t_hours,colony_id,group_id,merged_with,n_merged,pre_existing,"
-        "area_px,age_h,rim_frac,rim_excluded,bad,bad_reason\n"
-        "-A001,7,6.0,1,1,,1,0,5706,,1.0,1,0,\n"
+        "area_px,age_h,rim_frac,rim_excluded,no_growth\n"
+        "-A001,7,6.0,1,1,,1,0,5706,,1.0,1,0\n"
     )
     rows = io.read_csv_rows(traj)
     assert rows[0]["frame"] == "7"
@@ -387,8 +387,8 @@ def test_reader_maps_analysis_legacy_column_names(tmp_path):
     rates.write_text(
         "well,colony_id,group_id,first_lo,last_lo,n_frames,n_frames_valid,"
         "area_first,area_last,max_n_merged,rim_excluded_lo,growth_rate_per_h,"
-        "growth_doublings_per_day,abs_growth_px_per_h,bad,bad_reason,pre_existing\n"
-        "-A002,1,1,11,19,9,9,3202,123328,1,7,0.46984,16.268,15015.8,0,,0\n"
+        "growth_doublings_per_day,abs_growth_px_per_h,no_growth,pre_existing\n"
+        "-A002,1,1,11,19,9,9,3202,123328,1,7,0.46984,16.268,15015.8,0,0\n"
     )
     rows = io.read_csv_rows(rates)
     assert rows[0]["first_frame"] == "11"
@@ -488,7 +488,7 @@ def test_mini_plate_flat_layout_and_ground_truth(tmp_path):
     # The default "full" well planting: a growing pair, a static disk, one
     # present from frame 1, and one that grows into the rim.
     assert [d.name for d in plate.disks["-A001"]] == [
-        "pair_a", "pair_b", "static", "from_start", "rim",
+        "pair_a", "pair_b", "static", "at_start", "rim",
     ]
     for d in plate.disks["-A001"]:  # last_frame resolves to the plate's end
         assert d.last_frame == 8
@@ -508,9 +508,9 @@ def test_mini_plate_flat_layout_and_ground_truth(tmp_path):
     assert (disk_mask(plate, "-A001", "static", 8).sum()
             == pytest.approx(static.area_at(8), rel=0.02))
 
-    from_start = plate.disk("-A001", "from_start")
-    assert from_start.radius_at(1) == 30.0  # present from frame 1
-    assert disk_mask(plate, "-A001", "from_start", 1) is not None
+    at_start = plate.disk("-A001", "at_start")
+    assert at_start.radius_at(1) == 30.0  # present from frame 1
+    assert disk_mask(plate, "-A001", "at_start", 1) is not None
     assert disk_mask(plate, "-A001", "pair_a", 1) is None
 
     rim = plate.disk("-A001", "rim")

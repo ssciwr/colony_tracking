@@ -169,7 +169,7 @@ def test_analyze_flags_map_kebab_case(monkeypatch, tmp_path):
         "--wells", "-A001,-B002", "--rim-width-px", "40",
         "--rim-overlap-max", "0.2", "--max-bad-segments", "3",
         "--keep-bad-wells", "--keep-pre-existing",
-        "--start-frames", "2", "--min-growth-per-frame", "0.5",
+        "--min-growth-per-frame", "0.5",
         "--refresh-geometry", "--plots-only", "--no-plots", "--no-qa",
         "--no-group-alpha",
     ])
@@ -180,7 +180,7 @@ def test_analyze_flags_map_kebab_case(monkeypatch, tmp_path):
         seg_dirs=[seg_a, seg_b], raw_dir=raw, out_root=out_root,
         wells=["-A001", "-B002"], rim_width_px=40, rim_overlap_max=0.2,
         max_bad_segments=3, keep_bad_wells=True, keep_pre_existing=True,
-        min_growth_per_frame=0.5, start_frames=2, refresh_geometry=True,
+        min_growth_per_frame=0.5, refresh_geometry=True,
         plots_only=True, no_plots=True, no_qa=True, no_group_alpha=True,
     )
 
@@ -202,7 +202,7 @@ def test_analyze_seg_dir_comma_separated_defaults(monkeypatch, tmp_path):
     assert options.seg_dirs == [seg, tmp_path / "seg_b"]
     # The defaults the spec lists for the analyze stage.
     assert options.rim_width_px == 60 and options.rim_overlap_max == 0.1
-    assert options.max_bad_segments == 2 and options.start_frames == 1
+    assert options.max_bad_segments == 2
     assert options.min_growth_per_frame == 0.1
     assert not (options.keep_bad_wells or options.keep_pre_existing)
     assert not (options.plots_only or options.no_plots or options.no_qa
@@ -303,6 +303,26 @@ def test_pipeline_unknown_config_key_is_usage_error(tmp_path, caplog):
 
     assert code == 2
     assert "nonsense" in caplog.text
+
+
+def test_start_frames_is_rejected(tmp_path, caplog):
+    """The removed from_start option is a hard error, not a deprecation."""
+    config = _write_config(
+        tmp_path,
+        _CONFIG.replace("rim_width_px = 40",
+                        "rim_width_px = 40\nstart_frames = 2"),
+    )
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["pipeline", "--config", str(config)]) == 2
+    assert "start_frames" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main([
+            "analyze", "--seg-dir", "seg", "--raw-dir", "raw",
+            "--out-root", "out", "--start-frames", "2",
+        ]) == 2
+    assert "start-frames" in caplog.text
 
 
 def test_pipeline_without_config_file(monkeypatch):

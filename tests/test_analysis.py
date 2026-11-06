@@ -104,7 +104,7 @@ def test_circle_fit_rejects_broken_ring(tmp_path):
     assert analysis.fit_well_circle(paths) is None
 
 
-# --- time, ancestors, rim exclusion, bad flags ---------------------------------
+# --- time, ancestors, rim exclusion, no_growth flags ---------------------------
 
 
 def _row(well, frame, t_seconds, colony_id, area, group_id=None, merged="",
@@ -127,8 +127,7 @@ def test_transitive_ancestors(tmp_path):
         _row("-A001", 7, 2 * 3_600_000, 1, 300, merged="2"),
         _row("-A001", 7, 2 * 3_600_000, 2, 200, merged="3"),
     ]
-    traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
     by = {(r["frame"], r["colony_id"]): r for r in traj}
     assert by[(5, 1)]["ancestors"] == 1
     assert by[(5, 2)]["ancestors"] == 1
@@ -139,10 +138,10 @@ def test_transitive_ancestors(tmp_path):
     assert set(by[(7, 1)]) == {
         "well", "frame", "t_hours", "colony_id", "group_id", "merged_with",
         "ancestors", "pre_existing", "area_px", "age_h", "rim_frac",
-        "rim_excluded", "bad", "bad_reason",
+        "rim_excluded", "no_growth",
     }
     # none of these colonies is bad
-    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in traj)
+    assert all(r["no_growth"] == 0 for r in traj)
 
 
 def test_rim_exclusion_monotone_from_right_frame(tmp_path):
@@ -192,8 +191,7 @@ def test_rim_exclusion_monotone_from_right_frame(tmp_path):
     assert first_excluded is not None  # the disk does reach the rim
 
     rim_fracs = analysis.rim_stats(rows, seg_root, (cy, cx, R), 60)
-    traj = analysis.build_trajectories(
-        rows, rim_fracs, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, rim_fracs, _options(tmp_path))
     excluded = {r["frame"]: r["rim_excluded"] for r in traj}
     for f in range(3, plate.n_frames + 1):
         expected = 0 if f < first_excluded else 1
@@ -202,11 +200,11 @@ def test_rim_exclusion_monotone_from_right_frame(tmp_path):
     assert all(r["rim_frac"] is not None for r in traj)
 
 
-def test_bad_flags(tmp_path):
-    """from_start (first valid frame at the series start) and no_growth
-    (any per-image comparison of a valid frame to the earliest valid frame
-    >= 2 images ahead at or below min_growth_per_frame) are flagged; a
-    clean grower is not."""
+def test_no_growth_flags(tmp_path):
+    """no_growth (any per-image comparison of a valid frame to the earliest
+    valid frame >= 2 images ahead at or below min_growth_per_frame) is
+    flagged; a clean grower is not. A colony present from frame 1 is
+    analyzed normally (no bad flag) when exclude_before is unset."""
     well = "-A001"
     rows = []
     # colony 1: present from frame 1 (series start), growing 1.25/frame
@@ -220,38 +218,34 @@ def test_bad_flags(tmp_path):
     for f in range(3, 9):
         rows.append(_row(well, f, (f - 1) * 3_600_000, 3,
                          int(100 * 1.35 ** (f - 3))))
-    traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
     by_cid = {}
     for r in traj:
         by_cid.setdefault(r["colony_id"], []).append(r)
-    assert {r["bad_reason"] for r in by_cid[1]} == {"from_start"}
-    assert all(r["bad"] == 1 for r in by_cid[1])
-    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
-    assert all(r["bad"] == 1 for r in by_cid[2])
-    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[3])
+    assert all(r["no_growth"] == 0 for r in by_cid[1])
+    assert all(r["no_growth"] == 1 for r in by_cid[2])
+    assert all(r["no_growth"] == 0 for r in by_cid[3])
 
 
 def test_pre_existing_colonies_are_never_bad(tmp_path):
-    """A pre-existing colony gets no bad flags (from_start/no_growth): it is
-    excluded from the analysis anyway and must not exclude its well."""
+    """A pre-existing colony gets no bad flag (no_growth): it is excluded
+    from the analysis anyway and must not exclude its well."""
     well = "-A001"
     rows = []
-    # colony 1: present from frame 1, stationary -> would be from_start +
-    # no_growth, but it is pre-existing
+    # colony 1: present from frame 1, stationary -> would be no_growth, but
+    # it is pre-existing
     for f in range(1, 6):
         rows.append(_row(well, f, (f - 1) * 3_600_000, 1, 500, pre=1))
     # colony 2: appears at frame 2, stationary debris -> no_growth applies
     for f in range(2, 7):
         rows.append(_row(well, f, (f - 1) * 3_600_000, 2, 500))
-    traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
     by_cid = {}
     for r in traj:
         by_cid.setdefault(r["colony_id"], []).append(r)
-    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[1])
+    assert all(r["no_growth"] == 0 for r in by_cid[1])
     assert all(r["pre_existing"] == 1 for r in by_cid[1])
-    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
+    assert all(r["no_growth"] == 1 for r in by_cid[2])
 
 
 def test_no_growth_per_frame_comparisons(tmp_path):
@@ -284,18 +278,15 @@ def test_no_growth_per_frame_comparisons(tmp_path):
     for f in range(3, 9):
         rows.append(_row(well, f, (f - 1) * 3_600_000, 5,
                          int(100 * 1.35 ** (f - 3))))
-    traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
     by_cid = {}
     for r in traj:
         by_cid.setdefault(r["colony_id"], []).append(r)
-    assert {r["bad_reason"] for r in by_cid[1]} == {"no_growth"}
-    assert all(r["bad"] == 1 for r in by_cid[1])
-    assert {r["bad_reason"] for r in by_cid[2]} == {""}
-    assert all(r["bad"] == 0 for r in by_cid[2])
-    assert {r["bad_reason"] for r in by_cid[3]} == {"no_growth"}
-    assert {r["bad_reason"] for r in by_cid[4]} == {"no_growth"}
-    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[5])
+    assert all(r["no_growth"] == 1 for r in by_cid[1])
+    assert all(r["no_growth"] == 0 for r in by_cid[2])
+    assert all(r["no_growth"] == 1 for r in by_cid[3])
+    assert all(r["no_growth"] == 1 for r in by_cid[4])
+    assert all(r["no_growth"] == 0 for r in by_cid[5])
 
 
 def test_no_growth_gap_span_normalized(tmp_path):
@@ -314,27 +305,25 @@ def test_no_growth_gap_span_normalized(tmp_path):
         _row(well, 5, 4 * 3_600_000, 2, 2000),
         _row(well, 8, 7 * 3_600_000, 2, 2000),
     ]
-    traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    traj = analysis.build_trajectories(rows, {}, _options(tmp_path))
     by_cid = {}
     for r in traj:
         by_cid.setdefault(r["colony_id"], []).append(r)
-    assert all(r["bad"] == 0 and r["bad_reason"] == "" for r in by_cid[1])
-    assert {r["bad_reason"] for r in by_cid[2]} == {"no_growth"}
+    assert all(r["no_growth"] == 0 for r in by_cid[1])
+    assert all(r["no_growth"] == 1 for r in by_cid[2])
 
 
 # --- bad-well split ------------------------------------------------------------
 
 
 def _traj_for_split(tmp_path):
-    """Two wells for the bad-well split: -A001 holds two bad colonies
-    (from_start, no_growth) plus one clean grower; -A002 holds one bad colony
-    plus one clean grower."""
+    """Two wells for the bad-well split: -A001 holds two no_growth colonies
+    plus one clean grower; -A002 holds one bad colony plus one clean
+    grower."""
     well_a, well_b = "-A001", "-A002"
     rows = []
-    for f in range(1, 6):  # -A001/1: present from the series start
-        rows.append(_row(well_a, f, (f - 1) * 3_600_000, 1,
-                         int(100 * 1.25 ** (f - 1))))
+    for f in range(1, 6):  # -A001/1: stationary debris
+        rows.append(_row(well_a, f, (f - 1) * 3_600_000, 1, 500))
     for f in range(2, 7):  # -A001/2: stationary debris
         rows.append(_row(well_a, f, (f - 1) * 3_600_000, 2, 500))
     for f in range(3, 9):  # -A001/3: healthy grower
@@ -345,8 +334,7 @@ def _traj_for_split(tmp_path):
                          int(100 * 1.35 ** (f - 3))))
     for f in range(2, 7):  # -A002/2: stationary debris
         rows.append(_row(well_b, f, (f - 1) * 3_600_000, 2, 500))
-    return analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+    return analysis.build_trajectories(rows, {}, _options(tmp_path))
 
 
 def test_split_bad_excludes_overloaded_wells(tmp_path):
@@ -383,11 +371,11 @@ def test_growth_rates_exponential_fit(tmp_path):
     growth = (last - first) valid area over elapsed hours."""
     well = "-A001"
     areas = [int(100 * 1.35 ** (f - 1)) for f in range(1, 9)]
-    # frames 3..10 (a colony at the series start would be bad/from_start)
+    # frames 3..10
     rows = [_row(well, f, (f - 1) * 3_600_000, 1, a)
             for f, a in zip(range(3, 11), areas)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     (rate,) = analysis.growth_rates(traj)
     # expected: the fit over the exact integer areas the function sees
     k, _ = np.polyfit(np.arange(len(areas), dtype=float), np.log(areas), 1)
@@ -403,7 +391,7 @@ def test_growth_rates_exponential_fit(tmp_path):
     assert rate["area_first"] == areas[0] and rate["area_last"] == areas[-1]
     assert rate["max_ancestors"] == 1
     assert rate["rim_excluded_frame"] is None
-    assert rate["bad"] == 0 and rate["bad_reason"] == ""
+    assert rate["no_growth"] == 0
     assert rate["pre_existing"] == 0
 
 
@@ -412,7 +400,7 @@ def test_growth_rates_single_valid_frame_gets_nan(tmp_path):
     field) but keeps its areas and frame bounds."""
     rows = [_row("-A001", 5, 4 * 3_600_000, 1, 500)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     (rate,) = analysis.growth_rates(traj)
     assert rate["growth_rate_per_h"] is None
     assert rate["growth_doublings_per_day"] is None
@@ -430,7 +418,7 @@ def test_growth_rates_adjacent_two_frame_window_gets_nan(tmp_path):
     rows = [_row("-A001", 11, 10 * 3_600_000, 1, 1000),
             _row("-A001", 12, 11 * 3_600_000, 1, 2400)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     (rate,) = analysis.growth_rates(traj)
     assert rate["growth_rate_per_h"] is None
     assert rate["growth_doublings_per_day"] is None
@@ -448,7 +436,7 @@ def test_growth_rates_valid_window_two_apart_fits(tmp_path):
     rows = [_row("-A001", 11, 10 * 3_600_000, 1, 1000),
             _row("-A001", 13, 12 * 3_600_000, 1, 2400)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     (rate,) = analysis.growth_rates(traj)
     k = np.log(2400 / 1000) / 2  # two-point slope over 2 h
     assert rate["growth_rate_per_h"] == round(k, 5)
@@ -465,7 +453,7 @@ def test_growth_rates_valid_window_narrowed_by_rim_exclusion(tmp_path):
     rows = [_row(well, f, (f - 1) * 3_600_000, 1, int(100 * 1.35 ** (f - 3)))
             for f in range(3, 9)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     for r in traj:  # simulate exclusion: only frames 4 and 5 stay valid
         if r["frame"] <= 3 or r["frame"] >= 6:
             r["rim_excluded"] = 1
@@ -485,7 +473,7 @@ def test_growth_rates_uses_valid_frames_only(tmp_path):
     rows = [_row(well, f, (f - 1) * 3_600_000, 1, int(100 * 1.35 ** (f - 1)))
             for f in range(1, 9)]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     for r in traj:  # simulate exclusion from frame 7
         if r["frame"] >= 7:
             r["rim_excluded"] = 1
@@ -502,7 +490,7 @@ def test_growth_rates_uses_valid_frames_only(tmp_path):
 
 
 def test_growth_rates_carries_flags_and_max_ancestors(tmp_path):
-    """bad/bad_reason and pre_existing come from the colony's first row;
+    """no_growth and pre_existing come from the colony's first row;
     max_ancestors is the largest ancestor count over the lifetime; output
     is ordered by (well, colony_id)."""
     well = "-A001"
@@ -517,12 +505,12 @@ def test_growth_rates_carries_flags_and_max_ancestors(tmp_path):
         _row(well, 9, 8 * 3_600_000, 2, 900),
     ]
     traj = analysis.build_trajectories(
-        rows, {}, _options(tmp_path), series_start_frame=1)
+        rows, {}, _options(tmp_path))
     rates = analysis.growth_rates(traj)
     assert [r["colony_id"] for r in rates] == [1, 2]
     r1, r2 = rates
-    assert r1["bad"] == 1 and r1["bad_reason"] == "no_growth"
-    assert r2["bad"] == 0 and r2["bad_reason"] == ""
+    assert r1["no_growth"] == 1
+    assert r2["no_growth"] == 0
     assert r2["max_ancestors"] == 2
     assert r2["group_id"] == 2
 
@@ -540,10 +528,12 @@ E2E_DISKS = {
                  first_frame=2),
         DiskSpec("static", cy=1450.0, cx=1450.0, r0=50.0, growth=1.0,
                  first_frame=2),
-        DiskSpec("from_start", cy=600.0, cx=1500.0, r0=30.0, growth=1.25,
+        DiskSpec("at_start", cy=600.0, cx=1500.0, r0=30.0, growth=1.25,
                  first_frame=1),
         DiskSpec("rim", cy=1024.0, cx=1824.0, r0=40.0, growth=1.35,
                  first_frame=3),
+        DiskSpec("static2", cy=1450.0, cx=600.0, r0=50.0, growth=1.0,
+                 first_frame=2),
     ],
     "-A002": [
         DiskSpec("growing", cy=1024.0, cx=600.0, r0=40.0, growth=1.35,
@@ -562,12 +552,13 @@ def _build_e2e(tmp_path, seg_name="seg_growth"):
     """The 3-well e2e fixture: mini plate + synthetic segmentation tree.
 
     -A001: two disks that grow until they touch (merged into one colony with
-    ``merged_with`` at the first overlap frame), a static disk (no_growth),
-    one present from frame 1 (from_start), one growing into the rim
-    (monotone rim exclusion). -A002: one clean exponential disk. -A003: a
-    pre-existing-flagged disk and a single-frame colony. Colony IDs are the
-    disk order per well (1..n). Label images exist 1:1 for every frame,
-    including empty ones (the segment stage writes them).
+    ``merged_with`` at the first overlap frame), two static disks
+    (no_growth), one present from frame 1 and growing (analyzed normally),
+    one growing into the rim (monotone rim exclusion). -A002: one clean
+    exponential disk. -A003: a pre-existing-flagged disk and a single-frame
+    colony. Colony IDs are the disk order per well (1..n). Label images
+    exist 1:1 for every frame, including empty ones (the segment stage
+    writes them).
     """
     plate = build_mini_plate(
         tmp_path / "raw", layout="flat", wells=E2E_WELLS, n_frames=8,
@@ -575,8 +566,8 @@ def _build_e2e(tmp_path, seg_name="seg_growth"):
         noise_sigma=0.0)
     seg_root = tmp_path / "seg" / seg_name
     ids = {
-        "-A001": {"pair_a": 1, "pair_b": 2, "static": 3, "from_start": 4,
-                  "rim": 5},
+        "-A001": {"pair_a": 1, "pair_b": 2, "static": 3, "at_start": 4,
+                  "rim": 5, "static2": 6},
         "-A002": {"growing": 1},
         "-A003": {"pre": 1, "single": 2},
     }
@@ -623,12 +614,15 @@ def _build_e2e(tmp_path, seg_name="seg_growth"):
 
 TRAJ_HEADER = ["well", "frame", "t_hours", "colony_id", "group_id",
                "merged_with", "ancestors", "pre_existing", "area_px", "age_h",
-               "rim_frac", "rim_excluded", "bad", "bad_reason"]
+               "rim_frac", "rim_excluded", "no_growth"]
 RATE_HEADER = ["well", "colony_id", "group_id", "first_frame", "last_frame",
                "n_frames", "n_frames_valid", "area_first", "area_last",
                "max_ancestors", "rim_excluded_frame", "growth_rate_per_h",
                "growth_doublings_per_day", "abs_growth_px_per_h",
-               "bad", "bad_reason", "pre_existing"]
+               "no_growth", "pre_existing"]
+BAD_HEADER = ["well", "colony_id", "first_frame", "last_frame",
+              "n_frames_valid", "area_first", "area_last", "n_bad_in_well",
+              "well_excluded"]
 
 
 def test_run_analysis_end_to_end(tmp_path):
@@ -642,10 +636,10 @@ def test_run_analysis_end_to_end(tmp_path):
     (root,) = summary.roots.values()
     assert root.name == "seg_growth"
     assert root.wells == 3
-    assert root.colonies == 8          # 5 in -A001 (pair counts once), 1, 2
-    assert root.rows == 46             # 33 + 6 + 7
+    assert root.colonies == 9          # 6 in -A001 (pair counts once), 1, 2
+    assert root.rows == 53             # 40 + 6 + 7
     assert root.rim_excluded == 3      # the rim colony, frames 6-8
-    assert root.bad_segments == 2      # static (no_growth), from_start
+    assert root.bad_segments == 2      # static and static2 (no_growth)
     assert root.excluded_wells == ["-A001"]
     assert root.pre_existing == 1      # the -A003 pre-flagged colony
     assert summary.failures == []
@@ -672,7 +666,7 @@ def test_run_analysis_end_to_end(tmp_path):
     # -- trajectories ------------------------------------------------------------
     traj = io.read_csv_rows(out / "trajectories.csv")
     assert list(traj[0]) == TRAJ_HEADER
-    assert len(traj) == 46
+    assert len(traj) == 53
     by = {(r["well"], int(r["colony_id"]), int(r["frame"])): r for r in traj}
     for f in range(3, 9):  # the rim colony: monotone exclusion from frame 6
         assert by[("-A001", 5, f)]["rim_excluded"] == ("0" if f < 6 else "1")
@@ -680,8 +674,10 @@ def test_run_analysis_end_to_end(tmp_path):
     assert by[("-A001", 1, 6)]["ancestors"] == "1"
     assert by[("-A001", 1, 7)]["ancestors"] == "2"  # the pair merges at f7
     assert by[("-A001", 1, 7)]["merged_with"] == "2"
-    assert by[("-A001", 3, 2)]["bad_reason"] == "no_growth"
-    assert by[("-A001", 4, 1)]["bad_reason"] == "from_start"
+    assert by[("-A001", 3, 2)]["no_growth"] == "1"
+    assert by[("-A001", 6, 2)]["no_growth"] == "1"
+    # present from frame 1 but growing: analyzed normally, not bad
+    assert by[("-A001", 4, 1)]["no_growth"] == "0"
     assert by[("-A003", 1, 3)]["pre_existing"] == "1"
     assert by[("-A003", 2, 8)]["area_px"] != ""
     assert (by[("-A003", 2, 8)]["age_h"]) == "0.0"  # first valid frame
@@ -689,7 +685,7 @@ def test_run_analysis_end_to_end(tmp_path):
     # -- growth rates ------------------------------------------------------------
     rates = io.read_csv_rows(out / "growth_rates.csv")
     assert list(rates[0]) == RATE_HEADER
-    assert len(rates) == 8
+    assert len(rates) == 9
     rate_by = {(r["well"], int(r["colony_id"])): r for r in rates}
     # the planted disk grows 1.35x in radius per hour, so its AREA grows
     # 1.35^2: the specific rate is 2 ln(1.35) h^-1
@@ -703,7 +699,8 @@ def test_run_analysis_end_to_end(tmp_path):
     assert rate_by[("-A001", 1)]["max_ancestors"] == "2"
     assert rate_by[("-A001", 5)]["rim_excluded_frame"] == "6"
     assert rate_by[("-A001", 5)]["last_frame"] == "5"  # valid frames only
-    assert rate_by[("-A001", 3)]["bad"] == "1"
+    assert rate_by[("-A001", 3)]["no_growth"] == "1"
+    assert rate_by[("-A001", 4)]["no_growth"] == "0"
     assert rate_by[("-A003", 1)]["pre_existing"] == "1"
     single = rate_by[("-A003", 2)]  # one valid frame -> NaN rates
     assert single["growth_rate_per_h"] == ""
@@ -713,10 +710,10 @@ def test_run_analysis_end_to_end(tmp_path):
 
     # -- bad segments ------------------------------------------------------------
     bads = io.read_csv_rows(out / "bad_segments.csv")
+    assert list(bads[0]) == BAD_HEADER
     assert len(bads) == 2
     bad_by = {(r["well"], int(r["colony_id"])): r for r in bads}
-    assert bad_by[("-A001", 3)]["bad_reason"] == "no_growth"
-    assert bad_by[("-A001", 4)]["bad_reason"] == "from_start"
+    assert set(bad_by) == {("-A001", 3), ("-A001", 6)}
     assert all(r["n_bad_in_well"] == "2" and r["well_excluded"] == "1"
                for r in bads)
 
@@ -759,22 +756,23 @@ def test_run_analysis_keep_bad_wells(tmp_path):
         tmp_path / "out" / "seg_growth" / "areas_by_ancestors.csv")
     got = {(int(r["frame"]), int(r["ancestors"])): int(r["n_colonies"])
            for r in areas}
-    # -A001: pair (f2+), rim (f3-5 only, excluded from f6), the pair merges
-    # at f7 (ancestors 2); -A002 grower f3-8; -A003 single at f8. The two bad
-    # -A001 colonies (static, from_start) are still out.
+    # -A001: pair (f2+), at_start (f1+), rim (f3-5 only, excluded from f6),
+    # the pair merges at f7 (ancestors 2); -A002 grower f3-8; -A003 single
+    # at f8. The two bad -A001 colonies (static, static2) are still out.
     assert got == {
-        (2, 1): 2,  # pair_a, pair_b
-        (3, 1): 4,  # + rim, + -A002's grower
-        (4, 1): 4,
-        (5, 1): 4,
-        (6, 1): 3,  # the rim colony is excluded
-        (7, 1): 1,  # -A002's grower
+        (1, 1): 1,  # at_start
+        (2, 1): 3,  # pair_a, pair_b, at_start
+        (3, 1): 5,  # + rim, + -A002's grower
+        (4, 1): 5,
+        (5, 1): 5,
+        (6, 1): 4,  # the rim colony is excluded
+        (7, 1): 2,  # -A002's grower + at_start
         (7, 2): 1,  # the merged pair
-        (8, 1): 2,  # grower + -A003's single
+        (8, 1): 3,  # grower + -A003's single + at_start
         (8, 2): 1,  # the merged pair
     }
     assert len(areas) == len(got)  # one row per (frame, ancestors)
-    assert all(int(r["n_wells"]) <= 2 for r in areas)
+    assert all(int(r["n_wells"]) <= 3 for r in areas)
 
 
 def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
@@ -790,7 +788,7 @@ def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
             "colony_id": 1, "group_id": 1, "merged_with": "",
             "ancestors": 1, "pre_existing": 0, "area_px": area,
             "age_h": float(i), "rim_frac": 0.0, "rim_excluded": 0,
-            "bad": 0, "bad_reason": "",
+            "no_growth": 0,
         })
     io.write_csv_rows(out / "trajectories.csv", rows,
                       analysis.TRAJ_FIELDS)
@@ -830,7 +828,7 @@ def test_run_analysis_reads_legacy_tree(tmp_path):
                    "merged_with", "pre_existing", "area_px", "centroid_y",
                    "centroid_x"]
     rows = []
-    for f in range(2, 5):  # the colony starts at frame 2 (not from_start)
+    for f in range(2, 5):  # the colony starts at frame 2
         rows.append({"well": "-A001", "lo": f,
                      "t_seconds": (f - 1) * 3_600_000,
                      "image": plate.wells["-A001"][f - 1], "colony_id": 1,
@@ -851,7 +849,7 @@ def test_run_analysis_reads_legacy_tree(tmp_path):
     assert list(traj[0]) == TRAJ_HEADER
     assert [r["frame"] for r in traj] == ["2", "3", "4"]
     assert [r["area_px"] for r in traj] == ["100", "200", "400"]
-    assert all(r["ancestors"] == "1" and r["bad"] == "0" for r in traj)
+    assert all(r["ancestors"] == "1" and r["no_growth"] == "0" for r in traj)
     rates = io.read_csv_rows(out / "growth_rates.csv")
     assert list(rates[0]) == RATE_HEADER
     assert rates[0]["first_frame"] == "2" and rates[0]["last_frame"] == "4"
@@ -862,8 +860,7 @@ def test_run_analysis_reads_legacy_tree(tmp_path):
     out2.mkdir(parents=True)
     legacy_traj_cols = ["well", "lo", "t_hours", "colony_id", "group_id",
                         "merged_with", "n_merged", "pre_existing", "area_px",
-                        "age_h", "rim_frac", "rim_excluded", "bad",
-                        "bad_reason"]
+                        "age_h", "rim_frac", "rim_excluded", "no_growth"]
     legacy_rows = []
     for i, (f, area) in enumerate(((2, 100), (3, 200), (4, 400))):
         legacy_rows.append({
@@ -871,7 +868,7 @@ def test_run_analysis_reads_legacy_tree(tmp_path):
             "colony_id": 1, "group_id": 1, "merged_with": "",
             "n_merged": 1, "pre_existing": 0, "area_px": area,
             "age_h": float(i), "rim_frac": 0.0, "rim_excluded": 0,
-            "bad": 0, "bad_reason": "",
+            "no_growth": 0,
         })
     with open(out2 / "trajectories.csv", "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=legacy_traj_cols)

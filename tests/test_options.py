@@ -96,7 +96,6 @@ def test_analysis_options_fields_match_contract():
         "max_bad_segments",
         "keep_bad_wells",
         "keep_pre_existing",
-        "start_frames",
         "min_growth_per_frame",
         "refresh_geometry",
         "plots_only",
@@ -171,7 +170,6 @@ def test_analysis_options_defaults():
     assert opts.max_bad_segments == 2
     assert opts.keep_bad_wells is False
     assert opts.keep_pre_existing is False
-    assert opts.start_frames == 1
     assert opts.min_growth_per_frame == 0.1
     assert opts.refresh_geometry is False
     assert opts.plots_only is False

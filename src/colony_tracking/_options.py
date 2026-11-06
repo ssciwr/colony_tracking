@@ -289,14 +289,6 @@ class AnalysisOptions(Options):
         default=False,
         metadata={"help": "Include pre-existing colonies in aggregates and plots."},
     )
-    start_frames: int = field(
-        default=1,
-        metadata={
-            "help": "A colony whose first valid frame lies within this many frames "
-            "of the series start is bad (from_start); pre-existing colonies "
-            "are exempt."
-        },
-    )
     min_growth_per_frame: float = field(
         default=0.1,
         metadata={

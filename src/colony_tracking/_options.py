@@ -484,8 +484,10 @@ class ViewOptions:
     options to :func:`~colony_tracking.viewer.view_wells`, so a
     ``ViewOptions`` the viewer sees is resolved: every path it loads from
     is already set, and the viewer never reads a config file or derives a
-    tree name. Not an :class:`Options`: the viewer writes nothing and has
-    no config section of its own.
+    tree name. Each of the four path fields (raw, difference, segmentation,
+    analysis) is optional and independent: a session may carry any
+    non-empty subset. Not an :class:`Options`: the viewer writes nothing and
+    has no config section of its own.
     """
 
     wells: list[str] | None = field(
@@ -508,5 +510,27 @@ class ViewOptions:
         metadata={
             "help": "Directory of raw plate frames (flat or per-well layout). "
             "Overrides the config file's raw directory."
+        },
+    )
+    diff_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Difference tree to show (one directory per well of "
+            "uint8 previews). Overrides the config file's difference.out_dir."
+        },
+    )
+    seg_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Segmentation tree to show (one directory per well of "
+            "label images), and the root whose QA overlay is read. Overrides "
+            "the config file's segmentation.out_dir."
+        },
+    )
+    analysis_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Analysis output root holding the per-root QA overlays. "
+            "Overrides the config file's analysis.out_root."
         },
     )

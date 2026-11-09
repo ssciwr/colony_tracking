@@ -9,10 +9,22 @@ root under ``<out_root>/<name of the root>/``:
 - ``trajectories.csv`` — one row per colony per frame:
   ``well, frame, t_hours, colony_id, group_id, merged_with, ancestors,
   pre_existing, area_px, age_h, rim_frac, rim_excluded, no_growth``;
+- ``trajectories_good.csv`` — the good trajectory rows: not ``no_growth``,
+  not from an excluded bad well, not ``pre_existing`` (unless
+  ``keep_pre_existing``), and not ``rim_excluded`` (the rows the pooled
+  aggregates and plots draw from);
+- ``trajectories_ancestors_<n>.csv`` — the same good rows, one file per
+  row-level ``ancestors`` count present (a colony that later merges appears
+  in several buckets);
 - ``growth_rates.csv`` — one row per colony: specific rate (h⁻¹),
   doublings/day, absolute growth (px/h), first/last frame, areas,
   ``max_ancestors``, first rim-excluded frame, ``no_growth``,
   ``pre_existing``;
+- ``rates_good.csv`` — every good colony that has a computed rate (the
+  rows the rate aggregates draw from);
+- ``rates_ancestors_<n>.csv`` — the same good rate rows, one file per
+  colony-level ``max_ancestors`` value present (each colony lands entirely
+  in one bucket);
 - ``bad_segments.csv`` — one row per bad colony: frames, areas,
   per-well bad count, and whether the well was excluded from the aggregates;
 - ``areas_by_ancestors.csv`` / ``rates_by_ancestors.csv`` — the pooled
@@ -469,6 +481,97 @@ def split_bad(traj, options):
     traj_f = [r for r in traj
               if r["well"] not in excluded and not r["no_growth"]]
     return traj_f, per_well_bad, excluded
+
+
+# ------------------------------------------------------- good-set CSVs ------
+
+#: Glob of the per-ancestor good-row files (stale ones are removed on write).
+GOOD_ANCESTORS_GLOB = "trajectories_ancestors_*.csv"
+
+#: Glob of the per-max-ancestors good-rate files (stale ones swept on write).
+GOOD_RATES_ANCESTORS_GLOB = "rates_ancestors_*.csv"
+
+
+def _sweep_stale(out_dir, name, pattern):
+    """Remove the file ``name`` and every stale file matching ``pattern``."""
+    for path in [out_dir / name, *out_dir.glob(pattern)]:
+        path.unlink(missing_ok=True)
+
+
+def good_rows(traj_f):
+    """The good trajectory rows: the usable pool minus rim-excluded rows.
+
+    ``traj_f`` is the post-:func:`split_bad`, post-pre-existing-filter pool
+    built by :func:`write_outputs`: no ``no_growth`` rows, nothing from an
+    excluded bad well, and no pre-existing colony unless ``keep_pre_existing``.
+    Dropping the ``rim_excluded`` rows leaves exactly the per-colony rows the
+    pooled aggregates and plots use. Source order is kept.
+    """
+    return [r for r in traj_f if not r["rim_excluded"]]
+
+
+def write_good_trajectories(traj_f, out_dir):
+    """Write ``trajectories_good.csv`` and the per-ancestor buckets.
+
+    ``trajectories_good.csv`` holds every good row (see :func:`good_rows`) in
+    source order; ``trajectories_ancestors_<n>.csv`` holds one ancestor-count
+    bucket each, split by the row's own ``ancestors`` (a colony that later
+    merges appears in several files). Both keep ``TRAJ_FIELDS`` unchanged, so
+    the trajectories CSV reader works as-is and the buckets are a straight
+    partition of the good file. Only non-empty buckets are written; stale
+    files from an earlier run are removed first. Returns the bucket count.
+    """
+    out_dir = Path(out_dir)
+    _sweep_stale(out_dir, "trajectories_good.csv", GOOD_ANCESTORS_GLOB)
+    good = good_rows(traj_f)
+    io.write_csv_rows(out_dir / "trajectories_good.csv", good, TRAJ_FIELDS)
+    buckets = {}
+    for r in good:
+        buckets.setdefault(int(r["ancestors"]), []).append(r)
+    for n, rows in sorted(buckets.items()):
+        io.write_csv_rows(out_dir / f"trajectories_ancestors_{n}.csv",
+                          rows, TRAJ_FIELDS)
+    log.info("%d good row(s) in %d ancestor bucket(s) written",
+             len(good), len(buckets))
+    return len(buckets)
+
+
+def good_rates(rates_f):
+    """The good rate rows: the usable pool minus rate-less colonies.
+
+    ``rates_f`` is the post-:func:`split_bad`, post-pre-existing-filter rate
+    pool built by :func:`write_outputs`. Colonies whose rate window is too
+    narrow carry a blank ``growth_doublings_per_day`` and are skipped here,
+    exactly as :func:`aggregate_rates` skips them. Source order is kept.
+    """
+    return [r for r in rates_f if r["growth_doublings_per_day"] is not None]
+
+
+def write_good_rates(rates_f, out_dir):
+    """Write ``rates_good.csv`` and the per-max-ancestors buckets.
+
+    ``rates_good.csv`` holds every good colony with a computed rate (see
+    :func:`good_rates`) in source order; ``rates_ancestors_<n>.csv`` holds
+    one bucket each, split by the colony-level ``max_ancestors`` — the rate
+    rows carry no per-row ancestor count, so each colony lands entirely in
+    one file. Both keep ``RATE_FIELDS`` unchanged and the source row order,
+    so the buckets are a straight partition of the good file. Only non-empty
+    buckets are written; stale files from an earlier run are removed first.
+    Returns the bucket count.
+    """
+    out_dir = Path(out_dir)
+    _sweep_stale(out_dir, "rates_good.csv", GOOD_RATES_ANCESTORS_GLOB)
+    good = good_rates(rates_f)
+    io.write_csv_rows(out_dir / "rates_good.csv", good, RATE_FIELDS)
+    buckets = {}
+    for r in good:
+        buckets.setdefault(int(r["max_ancestors"]), []).append(r)
+    for n, rows in sorted(buckets.items()):
+        io.write_csv_rows(out_dir / f"rates_ancestors_{n}.csv", rows,
+                          RATE_FIELDS)
+    log.info("%d good rate row(s) in %d max-ancestors bucket(s) written",
+             len(good), len(buckets))
+    return len(buckets)
 
 
 # ---------------------------------------------------------------- rates ------
@@ -1019,7 +1122,11 @@ def write_outputs(traj, options, out_dir):
     flagged, pre-existing ones via the pre_existing column); the pooled
     aggregates and the plots use only rows from wells that are not excluded
     for repeated bad segments, that are not bad, and that are not
-    pre-existing (unless ``keep_pre_existing``). Returns (rates, areas_agg,
+    pre-existing (unless ``keep_pre_existing``). trajectories_good.csv and
+    the per-ancestor buckets (``trajectories_ancestors_<n>.csv``) hold that
+    same usable pool minus the rim-excluded rows; rates_good.csv and the
+    per-max-ancestors buckets (``rates_ancestors_<n>.csv``) hold that pool's
+    colonies that have a computed rate. Returns (rates, areas_agg,
     per_well_bad, excluded) — the ``split_bad`` results for the summary.
     """
     out_dir = Path(out_dir)
@@ -1045,6 +1152,8 @@ def write_outputs(traj, options, out_dir):
              f"{sorted(excluded)}" if excluded else "",
              " (--keep_bad_wells set)" if excluded and options.keep_bad_wells
              else "")
+    write_good_trajectories(traj_f, out_dir)
+    write_good_rates(rates_f, out_dir)
 
     io.write_csv_rows(
         out_dir / "bad_segments.csv",

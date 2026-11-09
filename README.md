@@ -497,11 +497,22 @@ frame come out polarity-flipped; that is intended (128 = no change, ADR
 - `trajectories.csv`: one row per colony per frame, columns `well, frame,
   t_hours, colony_id, group_id, merged_with, ancestors, pre_existing,
   area_px, age_h, rim_frac, rim_excluded, no_growth`
+- `trajectories_good.csv`: the good trajectory rows — not `no_growth`, not
+  from an excluded bad well, not `pre_existing` (unless `keep_pre_existing`),
+  and not `rim_excluded` (the rows the pooled aggregates and plots use)
+- `trajectories_ancestors_<n>.csv`: the same good rows, one file per
+  row-level `ancestors` count present, so a colony that later merges appears
+  in several buckets
 - `growth_rates.csv`: one row per colony, columns `well, colony_id,
   group_id, first_frame, last_frame, n_frames, n_frames_valid,
   area_first, area_last, max_ancestors, rim_excluded_frame,
   growth_rate_per_h, growth_doublings_per_day, abs_growth_px_per_h,
   no_growth, pre_existing`
+- `rates_good.csv`: every good colony that has a computed rate (colonies
+  whose rate window is too narrow have blank rate cells and are skipped)
+- `rates_ancestors_<n>.csv`: the same good rate rows, one file per
+  colony-level `max_ancestors` value present (each colony lands entirely in
+  one bucket)
 - `bad_segments.csv`: one row per bad colony (frames, areas)
 - pooled aggregates: `areas_by_ancestors.csv`, `rates_by_ancestors.csv`
 - plots: `growth_curves_by_ancestors.png`, `mean_area_by_ancestors.png`,

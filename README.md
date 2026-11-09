@@ -516,7 +516,8 @@ frame come out polarity-flipped; that is intended (128 = no change, ADR
 - `bad_segments.csv`: one row per bad colony (frames, areas)
 - pooled aggregates: `areas_by_ancestors.csv`, `rates_by_ancestors.csv`
 - plots: `growth_curves_by_ancestors.png`, `mean_area_by_ancestors.png`,
-  `growth_rates_by_ancestors.png`
+  `growth_rates_by_ancestors.png`, and one `growth_curves_<n>_ancestor(s).png`
+  growth-curve plot per ancestor count
 - per-well QA overlays: `qa/<well>_rim.png`
 
 `well_geometry.csv` (the fitted well circles, `well, cy, cx, R`) is a

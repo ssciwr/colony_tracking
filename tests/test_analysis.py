@@ -786,6 +786,42 @@ def test_good_rates_stale_files_removed_and_keep_bad_wells(tmp_path):
     assert buckets[1] == good
 
 
+# --- per-well absolute-growth grid ---------------------------------------------
+
+
+def test_well_grid_cell_maps_plate_layout():
+    """Wells map to (row, column) on the 96-well plate grid; names outside
+    the -A001..-H012 layout are rejected."""
+    assert analysis.well_grid_cell("-A001") == (0, 0)
+    assert analysis.well_grid_cell("-A012") == (0, 11)
+    assert analysis.well_grid_cell("-H001") == (7, 0)
+    assert analysis.well_grid_cell("-H012") == (7, 11)
+    assert analysis.well_grid_cell("-A013") is None
+    assert analysis.well_grid_cell("A001") is None
+    assert analysis.well_grid_cell("foo") is None
+
+
+def test_plot_abs_growth_grid_writes_one_panel_per_well(tmp_path):
+    """The per-well grid plot writes its figure for a partial plate, handles
+    a well with no computed rate, and accepts bad/excluded well markers."""
+    rates = [
+        {"well": "-A001", "abs_growth_px_per_h": 12.0},
+        {"well": "-A001", "abs_growth_px_per_h": 20.0},
+        {"well": "-A002", "abs_growth_px_per_h": -3.0},
+        {"well": "-A002", "abs_growth_px_per_h": 1.0},
+        {"well": "-A003", "abs_growth_px_per_h": None},
+    ]
+    out = tmp_path / "abs_growth_by_well.png"
+    analysis.plot_abs_growth_grid(
+        rates,
+        ["-A001", "-A002", "-A003"],
+        out,
+        excluded={"-A002"},
+        per_well_bad={"-A001": {1}, "-A002": {2}},
+    )
+    assert out.exists() and out.stat().st_size > 0
+
+
 # --- end-to-end (run_analysis) -------------------------------------------------
 
 import csv  # noqa: E402  (legacy-tree tests write prototype-style CSVs)
@@ -992,6 +1028,7 @@ def test_run_analysis_end_to_end(tmp_path):
         "growth_curves_1_ancestor.png",
         "mean_area_by_ancestors.png",
         "growth_rates_by_ancestors.png",
+        "abs_growth_by_well.png",
     ):
         assert (out / name).exists() and (out / name).stat().st_size > 0, name
     for well in E2E_WELLS:
@@ -1251,6 +1288,7 @@ def test_run_analysis_plots_only_uses_no_image_io(tmp_path, caplog):
         "growth_curves_1_ancestor.png",
         "mean_area_by_ancestors.png",
         "growth_rates_by_ancestors.png",
+        "abs_growth_by_well.png",
     ):
         assert (out / name).exists() and (out / name).stat().st_size > 0, name
     # the re-plot leaves trajectories.csv byte-identical, replaces the good

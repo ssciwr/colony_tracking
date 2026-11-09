@@ -137,6 +137,14 @@ colonies restricted to those with a computed rate (blank-rate colonies
 with a too-narrow window are skipped), written as `rates_good.csv` and
 split by colony-level `max_ancestors` into `rates_ancestors_<n>.csv`.
 
+**per-well growth grid** — The `abs_growth_by_well.png` plot: one box plot
+of the colonies' absolute growth (`abs_growth_px_per_h`) per well, placed at
+the well's 96-well plate position (rows A-H, columns 1-12) with a shared,
+identically limited y-axis. It deliberately includes every computed rate
+(bad and pre-existing colonies, excluded wells too) so misbehaving wells
+stand out; red titles mark excluded bad wells and orange ones wells with
+bad segments below the exclusion threshold.
+
 ## Configuration
 
 **default** — The value an option takes when the draft leaves it unset;

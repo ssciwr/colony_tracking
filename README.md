@@ -520,6 +520,13 @@ frame come out polarity-flipped; that is intended (128 = no change, ADR
   growth-curve plot per ancestor count
 - per-well QA overlays: `qa/<well>_rim.png`
 
+`abs_growth_by_well.png` puts one absolute-growth box plot per well on the
+96-well plate grid (rows A-H, columns 1-12) with a shared y-axis, so a well
+whose colonies grow differently stands out by its position on the plate.
+Red titles mark wells excluded as bad wells, orange titles wells with bad
+segments below that threshold; this overview deliberately includes every
+computed rate (bad and pre-existing colonies too), unlike the pooled plots.
+
 `well_geometry.csv` (the fitted well circles, `well, cy, cx, R`) is a
 shared cache in the analysis out root; `--refresh-geometry` re-fits it.
 

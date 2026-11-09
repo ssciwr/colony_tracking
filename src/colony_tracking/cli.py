@@ -483,7 +483,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="train_command", required=True, metavar="command")
     _add_flags(train_subparsers.add_parser(
         "prepare",
-        help="Build the well-split h5 training set from raw frames and labels.",
+        help="Build the well-split h5 training set from input frames and labels.",
     ), PrepareOptions)
     _add_flags(train_subparsers.add_parser(
         "train",

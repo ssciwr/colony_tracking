@@ -622,9 +622,9 @@ def test_train_prepare_flags_and_defaults(monkeypatch, tmp_path):
         cli, "run_prepare",
         lambda options: (calls.append(options), PrepareSummary())[1],
     )
-    raw, label, out = (tmp_path / p for p in ("raw", "labels", "h5"))
+    raw, label, out = (tmp_path / p for p in ("images", "labels", "h5"))
     code = cli.main([
-        "train", "prepare", "--raw-dir", str(raw), "--label-dir", str(label),
+        "train", "prepare", "--image-dir", str(raw), "--label-dir", str(label),
         "--out-dir", str(out), "--val-fraction", "0.3", "--max-val-wells", "2",
         "--min-instances", "2", "--n-workers", "4", "--val-wells=-C006,-D007",
     ])
@@ -632,7 +632,7 @@ def test_train_prepare_flags_and_defaults(monkeypatch, tmp_path):
     assert code == 0
     (options,) = calls
     assert options == PrepareOptions(
-        raw_dir=raw, label_dir=label, out_dir=out, val_fraction=0.3,
+        image_dir=raw, label_dir=label, out_dir=out, val_fraction=0.3,
         max_val_wells=2, min_instances=2, n_workers=4,
         val_wells=["-C006", "-D007"],
     )
@@ -645,7 +645,7 @@ def test_train_prepare_spec_defaults(monkeypatch, tmp_path):
         lambda options: (calls.append(options), PrepareSummary())[1],
     )
     code = cli.main([
-        "train", "prepare", "--raw-dir", str(tmp_path / "raw"),
+        "train", "prepare", "--image-dir", str(tmp_path / "images"),
         "--label-dir", str(tmp_path / "labels"),
         "--out-dir", str(tmp_path / "h5"),
     ])
@@ -687,7 +687,7 @@ def test_train_train_flags_and_defaults(monkeypatch, tmp_path):
         "--out-dir", str(tmp_path / "model"),
     ])
     (defaults,) = calls[-1:]
-    assert defaults.model_type == "vit_t" and defaults.configuration == "Minimal"
+    assert defaults.model_type == "vit_b_lm" and defaults.configuration == "Minimal"
     assert defaults.samples_per_image == 3 and defaults.val_samples_per_image == 2
     assert defaults.n_objects_per_batch == 2
     assert defaults.patch_shape == (512, 512)
@@ -903,7 +903,7 @@ def test_finetune_error_is_runtime_error(monkeypatch, caplog, tmp_path):
         lambda options: PrepareSummary(error="no such label directory: x"),
     )
     with caplog.at_level(logging.ERROR, logger="colony_tracking"):
-        code = cli.main(["train", "prepare", "--raw-dir", "raw",
+        code = cli.main(["train", "prepare", "--image-dir", "images",
                          "--label-dir", "labels", "--out-dir", "h5"])
 
     assert code == 1 and "no such label directory" in caplog.text
@@ -947,6 +947,11 @@ def test_top_level_and_train_help(capsys):
         cli.main(["train", "train", "--help"])
     out = capsys.readouterr().out
     assert "--patch-shape" in out and "--early-stopping" in out
+
+    with pytest.raises(SystemExit):
+        cli.main(["train", "prepare", "--help"])
+    out = capsys.readouterr().out
+    assert "--image-dir" in out and "--raw-dir" not in out
 
     with pytest.raises(SystemExit):
         cli.main(["view", "--help"])

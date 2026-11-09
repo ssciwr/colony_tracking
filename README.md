@@ -20,7 +20,7 @@ Three stages make up the standard chain:
 The `pipeline` subcommand runs the three stages, configured by one TOML
 config file or by command-line flags alone.
 The `train` subcommands (`prepare`, `train`, `evaluate`) are the finetuning
-track: they convert raw frames plus ground-truth label images into a
+track: they convert input frames plus ground-truth label images into a
 well-split h5 training set, run micro-sam decoder training, and benchmark
 the checkpoint against the held-out wells.
 The `tui` subcommand opens a terminal interface over the same stages
@@ -208,14 +208,24 @@ frame number.
 The finetuning track. Three steps, each with its own flags: prepare the
 data, train the decoder, evaluate the result.
 
+Input frames may be raw frames or difference frames (the `difference`
+stage's output): they are interchangeable, and every frame goes through the
+same 1/99 uint8 stretch. Labels pair with input frames by well and frame
+number (`--LO<nnn>--`), not by file name, so a segment-stage output tree can
+be passed directly as `--label-dir`. Only files whose stem ends in `_labels`
+are labels (`<frame-stem>__labels.tif`); other TIFFs in the label tree are
+ignored, and the label set defines the image set. In the h5 files the image
+dataset is named `raw`: that is micro-sam's input contract, not a statement
+about the source modality.
+
 #### prepare
 
-Build the well-split h5 training set from raw frames and label images.
+Build the well-split h5 training set from input frames and label images.
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `--raw-dir` | `required` | Directory of raw plate frames (flat or per-well layout). |
-| `--label-dir` | `required` | Directory of ground-truth label images (same layout, file names matching the raw frames); the label set defines the image set. |
+| `--image-dir` | `required` | Directory of input frames (raw or difference frames; flat or per-well layout). |
+| `--label-dir` | `required` | Directory of ground-truth label images; labels pair with input frames by well and frame, and files whose stem ends in _labels (e.g. <frame-stem>__labels.tif) are the label set (the label set defines the image set). |
 | `--out-dir` | `required` | Directory to write the well-split h5 set (train/ and val/) into. |
 | `--val-fraction` | `0.2` | Approximate fraction of instances to hold out for validation (rounded to whole wells). |
 | `--max-val-wells` | `3` | Upper bound on the number of wells moved into the validation split. |
@@ -233,7 +243,7 @@ Run micro-sam decoder training on the prepared split.
 | --- | --- | --- |
 | `--data-dir` | `required` | Directory with the train/ and val/ h5 subfolders (the train prepare output). |
 | `--out-dir` | `required` | Directory for the checkpoints and TensorBoard logs. |
-| `--model-type` | `vit_t` | SAM variant ('vit_t' is MobileSAM and the lightest option; the laptop GPU OOMs on vit_b). |
+| `--model-type` | `vit_b_lm` | SAM variant; 'vit_b_lm' is the default and matches the segment stage. 'vit_t' (MobileSAM) is the lightest option but needs the optional mobile_sam package and its weights. |
 | `--configuration` | `Minimal` | micro-sam hardware preset (Minimal, gtx1080, gtx3080, ...). |
 | `--samples-per-image` | `3` | Crops drawn per training image per epoch (micro-sam defaults to 16, which makes one epoch take ~90 min on a laptop GPU). |
 | `--val-samples-per-image` | `2` | Crops drawn per validation image per epoch. |
@@ -253,7 +263,7 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 | `--data-dir` | `required` | Directory with the train/ and val/ h5 subfolders (the train prepare output). |
 | `--split` | `val` | Split to evaluate (val / train). |
 | `--checkpoint` | `none` | Finetuned checkpoint; omit to evaluate the pretrained base model. |
-| `--model-type` | `vit_t` | SAM variant the checkpoint was trained with. |
+| `--model-type` | `vit_b_lm` | SAM variant the checkpoint was trained with; 'vit_b_lm' is the default and matches the segment stage. 'vit_t' (MobileSAM) is the lightest option but needs the optional mobile_sam package and its weights. |
 | `--patch-shape` | `512 512` | Tile size in px, (height, width); instances larger than a tile are flagged clipped. |
 | `--n-max-images` | `none` | Evaluate only the first N h5 images of the split (a quick smoke run); 0 = uncapped. |
 | `--n-max-instances` | `none` | Score only the first N instances per image. |

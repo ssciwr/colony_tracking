@@ -26,6 +26,10 @@ shown verbatim by a screen's action gate). :meth:`ConfigDraft.load`
 replaces the draft with a config TOML of its run type and validates
 structure only; owned keys, missing requireds, and mistyped values pass
 and surface verbatim at the next resolve.
+:func:`resolve_loaded_paths` is the load dialogs' follow-up: it rebases a
+loaded draft's relative path values onto the directory they were written
+from, so a file saved from one working directory keeps working when the
+TUI runs in another.
 """
 
 from __future__ import annotations
@@ -33,7 +37,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import MISSING, fields
 from pathlib import Path
-from typing import Any, get_type_hints
+from typing import Any, get_args, get_origin, get_type_hints
 
 import tomli_w
 
@@ -45,6 +49,7 @@ from .._options import (
     SegmentationOptions,
     _from_plain,
     _to_plain,
+    _union_members,
 )
 from ..pipeline import (
     ConfigError,
@@ -100,6 +105,134 @@ def _copy_value(value: Any) -> Any:
     """A copy of one plain draft value (a list value must not alias the
     draft's own, or editing a document copy could corrupt the draft)."""
     return list(value) if isinstance(value, list) else value
+
+
+def _is_path_hint(hint: Any) -> bool:
+    """Whether a declared field type is ``Path`` or a list of ``Path``."""
+    members = _union_members(hint)
+    if members is not None and len(members) == 1:
+        return _is_path_hint(members[0])
+    origin, args = get_origin(hint), get_args(hint)
+    if origin is list and args:
+        return _is_path_hint(args[0])
+    return hint is Path
+
+
+def _path_hints(run_type: str) -> dict[str, dict[str, Any]]:
+    """The declared types of the draft's fields, by section: the run level
+    and every stage section for the pipeline draft, the own section for a
+    stage draft (which has no run level)."""
+    if run_type != "pipeline":
+        return {run_type: get_type_hints(_STAGE_OPTIONS[run_type])}
+    hints = {"pipeline": get_type_hints(PipelineConfig)}
+    for stage, options in _STAGE_OPTIONS.items():
+        hints[stage] = get_type_hints(options)
+    return hints
+
+
+def _path_slots(
+    draft: ConfigDraft,
+) -> list[tuple[dict[str, Any], str, int | None, str]]:
+    """Every relative path value in ``draft``, as ``(section, key, index,
+    text)`` slots (``index`` is set for one entry of a path list)."""
+    hints = _path_hints(draft.run_type)
+    if draft.is_pipeline:
+        sections = [(RUN_LEVEL, draft.run_level)]
+        sections.extend((stage, draft.stages[stage]) for stage in STAGES)
+    else:
+        sections = [(draft.run_type, draft.stages[draft.run_type])]
+    slots: list[tuple[dict[str, Any], str, int | None, str]] = []
+    for name, section in sections:
+        for key, value in section.items():
+            hint = hints.get(name, {}).get(key)
+            if hint is None or not _is_path_hint(hint):
+                continue
+            if isinstance(value, str):
+                values: list[tuple[int | None, Any]] = [(None, value)]
+            elif isinstance(value, list):
+                values = list(enumerate(value))
+            else:
+                continue
+            for index, text in values:
+                if isinstance(text, str) and not Path(text).is_absolute():
+                    slots.append((section, key, index, text))
+    return slots
+
+
+def _candidate_bases(config_path: Path) -> list[Path]:
+    """The directories a loaded config's relative paths may have been
+    written from, nearest first: the config's own directory and its
+    ancestors, then the process's working directory."""
+    bases: list[Path] = []
+    path = Path(config_path)
+    for base in (path.parent, *path.parent.parents, Path.cwd()):
+        resolved = base.resolve()
+        if resolved not in bases:
+            bases.append(resolved)
+    return bases
+
+
+def _choose_base(
+    slots: list[tuple[dict[str, Any], str, int | None, str]],
+    bases: list[Path],
+) -> Path | None:
+    """The directory the draft's relative paths were written from.
+
+    A relative ``raw_dir`` names the run's input tree, so the first base
+    (nearest first) where it exists wins. Without one (or when it exists
+    nowhere), the base resolving the most slots wins; when no base
+    resolves any, the config is left untouched.
+    """
+    raw = next(
+        (
+            value
+            for _section, key, index, value in slots
+            if key == "raw_dir" and index is None
+        ),
+        None,
+    )
+    if raw is not None:
+        for base in bases:
+            if (base / raw).is_dir():
+                return base
+
+    def score(base: Path) -> int:
+        return sum((base / value).exists() for _s, _k, _i, value in slots)
+
+    best = max(bases, key=score)
+    return best if score(best) > 0 else None
+
+
+def resolve_loaded_paths(draft: ConfigDraft, config_path: Path | str) -> Path | None:
+    """Resolve the relative paths of a just-loaded draft to absolute ones.
+
+    A config written by the TUI keeps paths as they were typed — often
+    relative to the directory the TUI was started in — while the file
+    itself sits next to the run's outputs. Loading that file later from a
+    different directory would otherwise point every source at the wrong
+    place (the viewer then finds no wells). Each relative path value is
+    rebased onto :func:`_choose_base`; absolute values, non-path values,
+    and a config whose paths resolve nowhere are left as written. Returns
+    the base used, or ``None`` when nothing was rebased.
+    """
+    slots = _path_slots(draft)
+    if not slots:
+        return None
+    base = _choose_base(slots, _candidate_bases(Path(config_path)))
+    if base is None:
+        log.info(
+            "%s config: relative paths resolve nowhere — left as written",
+            draft.run_type,
+        )
+        return None
+    for section, key, index, value in slots:
+        resolved = str((base / value).resolve())
+        if index is None:
+            section[key] = resolved
+        else:
+            section[key][index] = resolved
+    log.info("%s config: relative paths resolved against %s", draft.run_type, base)
+    return base
 
 
 def _unknown_run_type(run_type: str) -> ConfigError:

@@ -27,6 +27,7 @@ def test_all_is_exactly_the_public_api():
         "PrepareSummary", "TrainSummary", "EvaluateSummary",
         "run_prepare", "run_train", "run_evaluate",
         "PipelineConfig", "PipelineSummary", "run_pipeline",
+        "ViewOptions", "view_wells",
     ])
     for name in colony_tracking.__all__:
         assert hasattr(colony_tracking, name)
@@ -42,6 +43,7 @@ def test_all_modules_import():
         pipeline,
         segmentation,
         tracking,
+        viewer,
     )
     from colony_tracking.finetune import _convert
 
@@ -55,5 +57,6 @@ def test_all_modules_import():
         pipeline,
         segmentation,
         tracking,
+        viewer,
     ):
         assert module is not None

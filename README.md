@@ -25,6 +25,10 @@ well-split h5 training set, run micro-sam decoder training, and benchmark
 the checkpoint against the held-out wells.
 The `tui` subcommand opens a terminal interface over the same stages
 (see below).
+The `view` subcommand opens a run's wells in
+[napari](https://napari.org): the raw time series, the difference stack, the
+segmentation labels, and the QA overlay of each well side by side, so the QA
+protocol becomes "look at the run" instead of "open the PNG".
 
 ## Install
 
@@ -59,7 +63,7 @@ source [path/to/repo/].venv/bin/activate
 colony-tracking
 ```
 
-The `colony-tracking` console script has six subcommands, which are explained below.
+The `colony-tracking` console script has seven subcommands, which are explained below.
 
 Runs can be resumed after stopping, a well with a complete done marker is
 skipped on a re-run unless `redo` is set.
@@ -261,11 +265,36 @@ live into the run screen. The home menu offers:
   settings, the per-stage sections (the fields the chain wiring derives
   within one run shown read-only), and the effective TOML preview;
   *Write TOML…* / *Load TOML…* for `pipeline.toml`.
+- **View wells in napari** — the wells the chain's resolved sources
+  contain: the pipeline draft's raw directory and its three derived
+  output trees (difference, segmentation, analysis), discovered exactly
+  as the `view` command discovers them, so a well none of them holds is
+  never offered. Select one or more and *Open in napari*: the TUI starts
+  `colony-tracking view` as a separate process with the wells and the
+  draft's resolved paths, so the viewer shows the same layers the command
+  produces by hand for those wells. The well box is a multi-selection
+  list (arrow keys move, space toggles), not a text field; selecting from
+  the discovered wells is the input, because `view` only opens wells that
+  its sources actually hold. *Load pipeline TOML…* opens the same file
+  dialog as Pipeline config, so the viewer can pick which `pipeline.toml`
+  to read even when no draft has been configured yet; the wells refresh
+  from the loaded file. When discovery finds nothing, the hint above the
+  list names every source directory it checked. The TUI never imports
+  napari and stays usable while the viewer is open; the child's lines and
+  any launch failure (napari missing, no display) appear in the screen's
+  log pane, never as a crash.
 - **Train** — shown disabled (no training screen).
 
 Path fields (the raw directory, the out root, output directories, and
 similar) carry a *browse* button that opens a directory picker; the
-choice lands in the field like typed text.
+choice lands in the field like typed text. The *Load TOML…* and *Write
+TOML…* dialogs carry the same button for their config-file path: it opens
+a file picker that prefers `*.toml` (with an all-files fallback), and the
+choice is loaded or written at once. A loaded config's relative paths are
+resolved against the directory it was written from (the config's own
+directory or nearest ancestor where its raw tree exists), so a
+`pipeline.toml` saved while the TUI ran in a project directory still finds
+its data when the TUI is started elsewhere.
 
 Each run type is a decision point: after its options are filled, either
 *Write TOML…* or a direct start — and a direct start writes that run
@@ -286,6 +315,83 @@ error panel and the app stays alive. There is no cancellation: quitting
 (Ctrl-Q) mid-run is safe, the stages are crash-safe via their done
 markers, and the next start resumes where the run left off.
 
+### view
+
+Open a run's wells in napari. A well gets up to four layers, one shared
+frame slider, every layer visible:
+
+- `<well> raw` — the acquisition frames as one greyscale image stack;
+- `<well> diff` — the stored difference images as an `uint8` image stack,
+  exactly as written on disk (`128` = no change, ADR 0001; no remapping
+  toward a diverging palette);
+- `<well> labels` — the segmentation label images as a napari `Labels`
+  layer, IDs untouched (`uint32`);
+- `<well> qa` — `qa/<well>_rim.png` from the analysis output of the
+  configured segmentation root, loaded as-is. When a raw stack is loaded
+  it is placed on the raw frame's footprint by a coordinate scale
+  (`H/512`, `W/512` for the 512 px overlay); without a raw stack it is
+  loaded unscaled.
+
+Every source is optional and independent: a run with only segmentations,
+only difference frames, or only a QA overlay is a normal session. A missing
+artifact (no such tree, or a well without its files) drops that one layer
+for that well with an INFO line and the session still opens. napari ships
+with micro-sam, so `view` needs nothing extra; it is imported only when the
+command runs.
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `--wells` | `none` | Wells to display (repeatable, comma-separated), e.g. -A001. Always explicit: every well must exist in the configured sources. |
+| `--config` | `none` | TOML config file to read the paths from (default: pipeline.toml in the current directory, when that file exists). |
+| `--raw-dir` | `none` | Directory of raw plate frames (flat or per-well layout). Overrides the config file's raw directory. |
+| `--diff-dir` | `none` | Difference tree to show (one directory per well of uint8 previews). Overrides the config file's difference.out_dir. |
+| `--seg-dir` | `none` | Segmentation tree to show (one directory per well of label images), and the root whose QA overlay is read. Overrides the config file's segmentation.out_dir. |
+| `--analysis-dir` | `none` | Analysis output root holding the per-root QA overlays. Overrides the config file's analysis.out_root. |
+
+From a run directory that holds a `pipeline.toml`, one flag is enough:
+
+```
+colony-tracking view --wells=-A001
+```
+
+Each layer is fed by one path: the raw stack by `[pipeline].raw_dir`
+(`--raw-dir`), the difference stack by `[difference].out_dir`
+(`--diff-dir`), the labels by `[segmentation].out_dir` (`--seg-dir`), and
+the QA overlay by `[analysis].out_root` (`--analysis-dir`) — the overlay is
+read from `<analysis-dir>/<segmentation-root-name>/qa/<well>_rim.png`,
+never by searching across analysis roots for the file name, so an analysis
+root holding several segmentation trees cannot show the wrong one. A
+QA-only session without `--seg-dir` reads a well's overlay from an analysis
+root only when exactly one root's `qa/` directory holds it; otherwise the
+layer is skipped with an INFO line.
+
+Paths resolve in this order: `--config PATH` when given, else the current
+directory's `pipeline.toml` when that file exists, else the explicit path
+flags. The config's paths are its resolved stages, so the derived tree
+names follow its reference frame (`difference_LO005`, ...). An explicit
+path flag overrides only its own config value, so `--raw-dir` alone points
+at a different raw plate while the rest of the config stays in force; with
+neither a config file nor any path flag, the command exits 2 naming the
+flags.
+
+Wells are always named on the command line — `--wells` is never inherited
+from the config's `[pipeline].wells`. Well names start with a dash, so the
+value stays inside the flag: `--wells=-A001,-B004` (or `--wells -A001`
+once, repeatable). A well qualifies when any configured source has it. A
+missing `--wells` and a well that none of the configured sources holds are
+usage errors (exit 2) naming the wells that are available; a session with
+nothing to load is reported as an error naming the wells that are
+available.
+`view` writes nothing and performs no pixel conversion: the raw stack keeps
+the raw uint16 counts, the difference stack the stored uint8 values, and
+the label images their `uint32` IDs.
+
+The TUI offers the same session: **View wells in napari** on the home menu
+lists the wells the chain draft's resolved sources hold and starts this
+command as a separate process (see [tui](#tui)); *Load pipeline TOML…*
+there picks the pipeline file when the draft is still empty. The TUI
+itself never imports napari.
+
 ## Python API
 
 ```python
@@ -305,6 +411,12 @@ and `write_config(config, path)`, module-level functions in
 `colony_tracking.pipeline`, round-trip it as TOML. The finetune track
 exposes `PrepareOptions`/`TrainOptions`/`EvaluateOptions` with their
 `run_*` functions the same way; the conversion module is private.
+
+The viewer follows the same shape: `view_wells(ViewOptions(...), viewer=None)`
+builds the layers and returns the viewer without starting napari's event
+loop (the CLI starts it). `view_wells` and `ViewOptions` are exported from
+the package root; `viewer` accepts a napari session of the caller's own
+(the tests pass a recording stub, so they never touch napari).
 
 ## Input trees
 

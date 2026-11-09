@@ -40,6 +40,7 @@ SECTION_HEADING = {
     ("train", "prepare"): "#### prepare",
     ("train", "train"): "#### train",
     ("train", "evaluate"): "#### evaluate",
+    ("view",): "### view",
 }
 
 

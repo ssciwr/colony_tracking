@@ -6,7 +6,9 @@ three stages (Difference, Segment, Analyze), each startable on its own
 and re-runnable (per-well done markers make a re-run a resume), each on
 its own independent config (its run type's own draft and TOML — nothing
 derived from another run); Pipeline config (the chain's run-level
-settings, stage sections, and TOML); and the disabled Train entry.
+settings, stage sections, and TOML); View wells in napari (the wells the
+chain's sources hold, opened as a separate viewer process); and the
+disabled Train entry.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ ENTRIES: tuple[tuple[str, str, str | None], ...] = (
     ("segmentation", "Segment", "segmentation"),
     ("analysis", "Analyze", "analysis"),
     ("config", "Pipeline config", "config"),
+    ("viewer", "View wells in napari", "viewer"),
     ("train", "Train — planned", None),
 )
 

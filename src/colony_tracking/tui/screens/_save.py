@@ -110,18 +110,18 @@ def default_toml_path(draft: ConfigDraft) -> Path | None:
 
     - the pipeline draft: ``<out_root>/pipeline.toml`` from the run
       level, ``None`` without an out root (unchanged);
-    - ``difference`` / ``segmentation`` / ``prepare``: the ``out_dir``'s
-      parent with the run type's
-      :data:`~colony_tracking.tui.draft.TOML_NAMES` name (the trees and
-      the h5 set are written into the ``out_dir``, the config sits beside
-      them), ``None`` without an out_dir;
+    - ``difference`` / ``segmentation`` / ``prepare`` / ``train``: the
+      ``out_dir``'s parent with the run type's
+      :data:`~colony_tracking.tui.draft.TOML_NAMES` name (the trees, the
+      h5 set, and the checkpoints/logs are written into the ``out_dir``,
+      the config sits beside them), ``None`` without an out_dir;
     - ``analysis``: the stage's own ``out_root`` with ``analysis.toml``,
       ``None`` without one.
 
     ``None`` starts the input empty (the user types a path).
     """
     run_type = draft.run_type
-    if run_type in ("difference", "segmentation", "prepare"):
+    if run_type in ("difference", "segmentation", "prepare", "train"):
         out_dir = draft.get(run_type, "out_dir")
         if not out_dir:
             return None

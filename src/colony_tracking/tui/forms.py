@@ -266,6 +266,7 @@ REQUIRED_EXAMPLES: Final[dict[str, str]] = {
     "seg_dirs": "/path/to/segmentation-trees",
     "image_dir": "/path/to/input-frames",
     "label_dir": "/path/to/label-images",
+    "data_dir": "/path/to/h5-dataset",
 }
 
 #: The gray text of a field whose declared default is ``None``.

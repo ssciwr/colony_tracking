@@ -947,5 +947,5 @@ def test_open_stage_run_rejects_unknown_stages():
 
 def test_the_run_screen_rejects_unknown_kinds(tmp_path):
     """An unknown run kind is a programming error, raised up front."""
-    with pytest.raises(ValueError, match="unknown run kind 'train'"):
-        RunScreen("train", _config(tmp_path, tmp_path))
+    with pytest.raises(ValueError, match="unknown run kind 'bogus'"):
+        RunScreen("bogus", _config(tmp_path, tmp_path))

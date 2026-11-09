@@ -9,7 +9,10 @@ UI: the app survives any run failure.
 
 The screen starts its own run on mount — ``runner.start`` with the
 screen's app — so the log handler attaches before the worker thread
-spawns and no record is lost. Status comes from the summary objects
+spawns and no record is lost. A finetune step's printed stdout/stderr
+(the micro-sam/torch_em progress and tqdm bar) arrives through the same
+seam as plain unprefixed lines; the stage kinds never produce them.
+Status comes from the summary objects
 alone (log text is never parsed for status); the single exception is
 the current-stage hint during a pipeline run, which recognizes the
 exact structured marker ``run_pipeline`` emits as it starts a chain
@@ -56,7 +59,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
 from ..._options import Options
-from ...finetune import PrepareSummary
+from ...finetune import PrepareSummary, TrainSummary
 from ...pipeline import (
     AnalysisSummary,
     ConfigError,
@@ -76,6 +79,10 @@ from ._save import SaveConfigDialog
 #: marker, never its formatted text — drives the status line's
 #: current-stage hint without parsing log text.
 _STAGE_START_TEMPLATE = "pipeline: %s → %s"
+
+#: The indent of a summary block's continuation lines (under the
+#: left-aligned stage/step name column).
+_CONTINUATION = " " * 13
 
 #: Rich style per log level for the pane's records (INFO stays plain).
 _LEVEL_STYLES: dict[int, str] = {
@@ -154,9 +161,27 @@ def _prepare_summary_lines(summary: PrepareSummary) -> list[str]:
     )
     lines = [f"prepare      {detail}"]
     if summary.train_wells:
-        lines.append(f"{'':<13}train wells: {', '.join(summary.train_wells)}")
+        lines.append(f"{_CONTINUATION}train wells: {', '.join(summary.train_wells)}")
     if summary.val_wells:
-        lines.append(f"{'':<13}val wells: {', '.join(summary.val_wells)}")
+        lines.append(f"{_CONTINUATION}val wells: {', '.join(summary.val_wells)}")
+    return lines
+
+
+def _train_summary_lines(summary: TrainSummary) -> list[str]:
+    """The train step's summary block: the split's image counts, the
+    smoke-test shapes when one ran, and the best checkpoint when it
+    exists — from the summary object alone."""
+    lines = [
+        f"train        train {summary.n_train_images} images · "
+        f"val {summary.n_val_images} images"
+    ]
+    if summary.smoke_test:
+        lines.append(
+            f"{_CONTINUATION}smoke test: raw {summary.smoke_raw_shape} · "
+            f"label {summary.smoke_label_shape}"
+        )
+    if summary.checkpoint is not None:
+        lines.append(f"{_CONTINUATION}checkpoint: {summary.checkpoint}")
     return lines
 
 
@@ -187,6 +212,8 @@ def _summary_lines(kind: str, summary: object) -> list[str]:
         return _pipeline_summary_lines(summary)
     if isinstance(summary, PrepareSummary):
         return _prepare_summary_lines(summary)
+    if isinstance(summary, TrainSummary):
+        return _train_summary_lines(summary)
     return [f"{kind:<13}{_stage_detail(summary)}"]
 
 
@@ -307,6 +334,7 @@ class RunScreen(Screen[None]):
                     self.config,
                     on_done=self._on_done,
                     on_record=self._on_record,
+                    on_output=self._on_output,
                     app=self.app,
                 )
             except RuntimeError as err:  # a run slipped in meanwhile
@@ -336,6 +364,11 @@ class RunScreen(Screen[None]):
         if marker is not None:
             self._current_stage = f"{marker[0]} → {marker[1]}"
             self._refresh_running_status()
+
+    def _on_output(self, line: str) -> None:
+        """One plain stdout/stderr line of a finetune step: into the pane
+        unprefixed (the step's own output, not a log record)."""
+        self.query_one("#run-log", RichLog).write(line)
 
     def _refresh_running_status(self) -> None:
         """The live status line: what is running, since when, the

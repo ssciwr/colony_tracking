@@ -47,6 +47,8 @@ from colony_tracking import (
     PrepareSummary,
     SegmentationOptions,
     SegmentationSummary,
+    TrainOptions,
+    TrainSummary,
     log,
 )
 from colony_tracking.difference import WellResult
@@ -65,6 +67,7 @@ _RUN_FUNCTION = {
     "analysis": "run_analysis",
     "pipeline": "run_pipeline",
     "prepare": "run_prepare",
+    "train": "run_train",
 }
 
 
@@ -111,6 +114,14 @@ def _prepare_options(tmp_path: Path) -> PrepareOptions:
     )
 
 
+def _train_options(tmp_path: Path) -> TrainOptions:
+    """A minimal resolved train step config (its own flat document)."""
+    return TrainOptions(
+        data_dir=tmp_path / "h5",
+        out_dir=tmp_path / "train_out",
+    )
+
+
 def _diff_summary(failed: int = 0) -> DifferenceSummary:
     return DifferenceSummary(wells={}, processed=1, skipped=0, failed=failed)
 
@@ -126,6 +137,7 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
         "analysis": _ana_options(tmp_path),
         "pipeline": _config(tmp_path),
         "prepare": _prepare_options(tmp_path),
+        "train": _train_options(tmp_path),
     }[kind]
     summaries = {
         "difference": _diff_summary(),
@@ -133,6 +145,7 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
         "analysis": AnalysisSummary(),
         "pipeline": PipelineSummary(status="ok"),
         "prepare": PrepareSummary(),
+        "train": TrainSummary(),
     }
     calls = []
 
@@ -158,8 +171,8 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
 
 
 def test_unknown_kind_is_rejected(tmp_path):
-    with pytest.raises(ValueError, match="unknown run kind 'train'"):
-        runner.start("train", _config(tmp_path), on_done=lambda handle: None)
+    with pytest.raises(ValueError, match="unknown run kind 'bogus'"):
+        runner.start("bogus", _config(tmp_path), on_done=lambda handle: None)
 
 
 # --- one run at a time ------------------------------------------------------------
@@ -235,6 +248,8 @@ def test_summary_failed_maps_the_cli_exit_1_semantics():
     )
     assert not runner.summary_failed(PrepareSummary())
     assert runner.summary_failed(PrepareSummary(error="no labels found"))
+    assert not runner.summary_failed(TrainSummary())
+    assert runner.summary_failed(TrainSummary(error="no training files"))
 
 
 def test_failed_summary_lines_are_the_cli_wording():
@@ -283,7 +298,12 @@ def test_failed_summary_lines_are_the_cli_wording():
     assert runner.failed_summary_lines("prepare", prepare) == [
         "train prepare: no such label directory: x"
     ]
+    train = TrainSummary(error="no training files in x/train")
+    assert runner.failed_summary_lines("train", train) == [
+        "train train: no training files in x/train"
+    ]
     assert runner.failed_summary_lines("prepare", PrepareSummary()) == []
+    assert runner.failed_summary_lines("train", TrainSummary()) == []
     assert runner.failed_summary_lines("difference", _diff_summary()) == []
 
 

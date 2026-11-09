@@ -5,18 +5,23 @@ Seams under test:
 - navigation: the home menu's ``Finetune`` row opens the registered
   submenu, whose rows are ``Prepare data`` / ``Train decoder`` /
   ``Evaluate checkpoint`` — only the steps with a registered screen are
-  live in this ticket (``Prepare data``);
-- the prepare step screen: every field of
-  :class:`~colony_tracking._options.PrepareOptions` renders as its widget
-  with the declared gray, the actions gate on the prepare draft's own
+  live in this ticket (``Prepare data`` and ``Train decoder``);
+- the prepare and train step screens: every field of
+  :class:`~colony_tracking._options.PrepareOptions` /
+  :class:`~colony_tracking._options.TrainOptions` renders as its widget
+  with the declared gray, the actions gate on the draft's own
   ``ConfigError`` (resolved through
-  :mod:`colony_tracking.finetune.config`), *Write TOML…* suggests
-  ``prepare.toml`` beside the h5 output directory, and *Load TOML…* fills
-  the form back;
-- the run flow: *Run this step* writes the TOML first, then runs
-  ``run_prepare`` in-process with the live log; the summary block reports
-  the prepare counters, and a summary carrying an ``error`` becomes the
-  error panel with the CLI's exit-1 wording (``train prepare: …``).
+  :mod:`colony_tracking.finetune.config`), *Write TOML…* suggests the
+  step's TOML beside its output directory, and *Load TOML…* fills the
+  form back;
+- the run flow: *Run this step* writes the TOML first, then runs the
+  step in-process with the live log; a finetune step's printed output and
+  tqdm repaints (stdout/stderr) reach the pane as plain unprefixed lines,
+  collapsing a write's carriage-return repaints to its last segment,
+  while the stage path keeps its logger-only routing; the summary blocks
+  report the step's numbers, and a summary carrying an ``error`` becomes
+  the error panel with the CLI's exit-1 wording (``train prepare: …`` /
+  ``train train: …``).
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
 plugin in the dev group; the suite stays dependency-free). Assertions run
@@ -25,6 +30,7 @@ ends.
 """
 
 import asyncio
+import sys
 import time
 import tomllib
 from pathlib import Path
@@ -33,8 +39,14 @@ from typing import get_type_hints
 import pytest
 from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 
-from colony_tracking._options import Options, PrepareOptions, _union_members
-from colony_tracking.finetune import PrepareSummary
+from colony_tracking import DifferenceOptions, DifferenceSummary, log
+from colony_tracking._options import (
+    Options,
+    PrepareOptions,
+    TrainOptions,
+    _union_members,
+)
+from colony_tracking.finetune import PrepareSummary, TrainSummary
 from colony_tracking.finetune.config import read_step_options
 from colony_tracking.tui import runner
 from colony_tracking.tui.app import ColonyTuiApp
@@ -57,11 +69,15 @@ _TIMEOUT = 10.0
 #: The prepare step's required fields, in declaration order.
 _MISSING_REQUIRED = "missing required key(s): ['image_dir', 'label_dir', 'out_dir']"
 
+#: The train step's required fields, in declaration order.
+_TRAIN_MISSING_REQUIRED = "missing required key(s): ['data_dir', 'out_dir']"
+
 #: The required fields' example texts (the forms module's copy table).
 _REQUIRED = {
     "image_dir": "/path/to/input-frames",
     "label_dir": "/path/to/label-images",
     "out_dir": "/path/to/output-dir",
+    "data_dir": "/path/to/h5-dataset",
 }
 
 
@@ -71,6 +87,14 @@ def _prepare_options(tmp_path: Path) -> PrepareOptions:
         image_dir=tmp_path / "images",
         label_dir=tmp_path / "labels",
         out_dir=tmp_path / "h5",
+    )
+
+
+def _train_options(tmp_path: Path) -> TrainOptions:
+    """A minimal resolved train config (its own flat document)."""
+    return TrainOptions(
+        data_dir=tmp_path / "h5",
+        out_dir=tmp_path / "train_out",
     )
 
 
@@ -88,6 +112,20 @@ def _prepare_summary(**overrides) -> PrepareSummary:
     }
     values.update(overrides)
     return PrepareSummary(**values)
+
+
+def _train_summary(**overrides) -> TrainSummary:
+    """A representative train summary: both splits, smoke shapes, ckpt."""
+    values = {
+        "smoke_test": True,
+        "smoke_raw_shape": (1, 3, 8, 8),
+        "smoke_label_shape": (1, 1, 8, 8),
+        "n_train_images": 4,
+        "n_val_images": 2,
+        "checkpoint": Path("/models/sam_colony/best.pt"),
+    }
+    values.update(overrides)
+    return TrainSummary(**values)
 
 
 def _expected_widget(hint) -> type:
@@ -153,10 +191,10 @@ async def _await_done(pilot, screen: RunScreen):
 # --- navigation: home → Finetune → Prepare data -------------------------------------
 
 
-def test_home_opens_the_finetune_submenu_with_the_prepare_row_live():
+def test_home_opens_the_finetune_submenu_with_the_live_rows_enabled():
     """The home menu's Finetune row opens a registered submenu whose rows
-    are the spec's three names; only the step with a registered screen is
-    live in this ticket."""
+    are the spec's three names; the steps registered in this ticket are
+    live."""
 
     async def scenario() -> None:
         app = ColonyTuiApp()
@@ -180,7 +218,7 @@ def test_home_opens_the_finetune_submenu_with_the_prepare_row_live():
                 "Evaluate checkpoint",
             ]
             assert not submenu.get_option("prepare").disabled
-            assert submenu.get_option("train").disabled
+            assert not submenu.get_option("train").disabled
             assert submenu.get_option("evaluate").disabled
             await pilot.press("escape")
             await pilot.pause()
@@ -210,16 +248,39 @@ def test_prepare_row_opens_the_step_screen():
     asyncio.run(scenario())
 
 
+def test_train_row_opens_the_step_screen():
+    """Selecting the live Train decoder row opens the train step screen,
+    generated from the same registry-driven screen class."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.push_screen(FinetuneScreen())
+            await pilot.pause()
+            submenu = app.screen.query_one("#finetune-menu", OptionList)
+            submenu.focus()
+            submenu.highlighted = 1
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, StepScreen)
+            assert app.screen.step == "train"
+
+    asyncio.run(scenario())
+
+
 # --- the step registry --------------------------------------------------------------
 
 
-def test_registry_covers_prepare():
-    """One registry entry for the live step, pointing at the prepare
-    options dataclass — the screen is generated, not hardcoded. Tickets
-    03/04 extend this registry."""
-    assert set(STEPS) == {"prepare"}
+def test_registry_covers_the_live_steps():
+    """One registry entry per live step, pointing at its options dataclass
+    — the screens are generated, not hardcoded. Ticket 04 extends this
+    registry with evaluate."""
+    assert set(STEPS) == {"prepare", "train"}
     assert STEPS["prepare"].options is PrepareOptions
     assert STEPS["prepare"].title == "Prepare data"
+    assert STEPS["train"].options is TrainOptions
+    assert STEPS["train"].title == "Train decoder"
 
 
 def test_the_finetune_registries_agree_on_the_live_steps():
@@ -234,8 +295,9 @@ def test_the_finetune_registries_agree_on_the_live_steps():
     assert live <= set(TOML_NAMES)
     labels = dict(ENTRIES)
     assert live <= set(labels)
-    assert labels["prepare"] == STEPS["prepare"].title
-    assert TOML_NAMES["prepare"] == "prepare.toml"
+    for step in live:
+        assert labels[step] == STEPS[step].title
+        assert TOML_NAMES[step] == f"{step}.toml"
 
 
 def test_a_new_registry_entry_slots_in(monkeypatch):
@@ -390,6 +452,82 @@ def test_an_unparseable_field_closes_the_gate():
     asyncio.run(scenario())
 
 
+# --- the train screen: every field, the gate, the resume note -----------------------
+
+
+def test_the_train_screen_renders_every_option_field():
+    """One widget per field of ``TrainOptions``, in declaration order,
+    with the form's ids prefixed by the step name."""
+    hints = get_type_hints(TrainOptions)
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            shown = {
+                widget.id: type(widget)
+                for widget in screen.form.query("Input, Select, Checkbox")
+            }
+            assert set(shown) == {f"train-{kebab(key)}" for key in hints}
+            for key, hint in hints.items():
+                assert shown[f"train-{kebab(key)}"] is _expected_widget(hint), key
+
+    asyncio.run(scenario())
+
+
+def test_the_train_gate_uses_the_train_drafts_exact_message():
+    """The actions start disabled with the finetune machinery's own
+    missing-required wording for the train document; filling only the two
+    required directories opens them."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            status = app.screen.query_one("#resolve-status", Static)
+            assert str(status.render()) == _TRAIN_MISSING_REQUIRED
+            assert app.screen.query_one("#run-step", Button).disabled
+            assert app.screen.query_one("#write-toml", Button).disabled
+            screen.form.query_one("#train-data-dir", Input).value = "/data/h5"
+            await pilot.pause()
+            assert not screen.gate_open
+            screen.form.query_one("#train-out-dir", Input).value = "/data/train"
+            await pilot.pause()
+            assert screen.gate_open
+            assert str(status.render()) == ""
+
+    asyncio.run(scenario())
+
+
+def test_the_train_screen_explains_resume_and_has_no_start_over_control():
+    """The train screen states the CLI's resume behaviour: the same output
+    directory resumes, or returns cleanly when training already finished.
+    There is no confirmation prompt and no start-over action."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            note = str(screen.query_one("#train-note", Static).render())
+            assert "resume" in note.lower()
+            assert "already reached" in note.lower()
+            assert "n_epochs" in note
+            labels = [
+                str(button.label).lower()
+                for button in screen.query(Button)
+            ]
+            assert not any("start over" in label for label in labels)
+            assert not any("overwrite" in label for label in labels)
+
+    asyncio.run(scenario())
+
+
 # --- write / load doors -------------------------------------------------------------
 
 
@@ -425,6 +563,41 @@ def test_write_toml_suggests_prepare_toml_beside_the_h5_directory(tmp_path):
             path = tmp_path / "prepare.toml"
             assert path.exists()
             options = read_step_options("prepare", path)
+            assert options == draft.resolve()
+
+    asyncio.run(scenario())
+
+
+def test_write_toml_suggests_train_toml_beside_the_checkpoint_directory(tmp_path):
+    """*Write TOML…* suggests ``<out_dir parent>/train.toml`` — the
+    checkpoint/log directory's neighbour — and the file is the flat
+    document the CLI's ``train train --config`` accepts."""
+    out_dir = tmp_path / "run" / "checkpoints"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            draft = app.drafts["train"]
+            draft.set("train", "data_dir", str(tmp_path / "h5"))
+            draft.set("train", "out_dir", str(out_dir))
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.click("#write-toml")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            expected = out_dir.parent / "train.toml"
+            assert dialog.query_one("#toml-path", Input).value == str(expected)
+            assert (
+                dialog.query_one("#toml-path", Input).placeholder
+                == "/path/to/train.toml"
+            )
+            await pilot.press("enter")
+            await pilot.pause()
+            assert expected.exists()
+            options = read_step_options("train", expected)
+            assert isinstance(options, TrainOptions)
             assert options == draft.resolve()
 
     asyncio.run(scenario())
@@ -471,6 +644,43 @@ def test_load_toml_fills_the_prepare_form_back(tmp_path):
                 screen.form.query_one("#prepare-val-fraction", Input).value
                 == "0.3"
             )
+            assert screen.gate_open
+
+    asyncio.run(scenario())
+
+
+def test_load_toml_fills_the_train_form_back(tmp_path):
+    """A written train TOML loads back through *Load TOML…*: the draft is
+    replaced by the file's flat document and the form shows its values."""
+    path = tmp_path / "train.toml"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            draft = app.drafts["train"]
+            draft.set("train", "data_dir", str(tmp_path / "h5"))
+            draft.set("train", "out_dir", str(tmp_path / "train_out"))
+            draft.set("train", "n_epochs", 7)
+            draft.write(path)
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.form.query_one("#train-n-epochs", Input).value = "99"
+            await pilot.pause()
+            assert draft.get("train", "n_epochs") == 99
+            await pilot.click("#load-toml")
+            await pilot.pause()
+            loader = app.screen
+            assert isinstance(loader, LoadConfigDialog)
+            loader.query_one("#toml-path", Input).value = str(path)
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is screen
+            with open(path, "rb") as handle:
+                file_doc = tomllib.load(handle)
+            assert draft.document() == file_doc  # a load resets, never merges
+            assert screen.form.query_one("#train-n-epochs", Input).value == "7"
             assert screen.gate_open
 
     asyncio.run(scenario())
@@ -580,6 +790,172 @@ def test_a_prepare_summary_error_becomes_the_error_panel_with_the_cli_wording(
     asyncio.run(scenario())
 
 
+def test_run_this_step_writes_the_toml_then_runs_train_with_the_live_log(
+    monkeypatch, tmp_path
+):
+    """*Run this step* on the train screen: ``train.toml`` is written
+    first; the run screen streams both the package logger and the step's
+    own stdout/stderr, collapsing one write's carriage-return repaints to
+    their last segment, and shows the train counters, smoke shapes, and
+    checkpoint."""
+    toml_path = tmp_path / "train.toml"
+    at_call: dict[str, object] = {}
+
+    def recording_run_train(options):
+        at_call["toml"] = (
+            tomllib.loads(toml_path.read_text()) if toml_path.exists() else None
+        )
+        log.info("finetune test: training")
+        sys.stdout.write("loading dataset...\n")
+        # The shape real tqdm writes: one repaint per write, then a
+        # newline when the bar closes — only the last segment may reach
+        # the pane.
+        for percent, bar in ((10, "#"), (20, "##"), (30, "###")):
+            sys.stdout.write(f"\r {percent}%|{bar} |")
+        sys.stdout.write("\n")
+        sys.stderr.write("val loader ready\n")
+        return _train_summary()
+
+    monkeypatch.setattr(runner, "run_train", recording_run_train)
+
+    async def scenario() -> None:
+        from textual.widgets import RichLog
+
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = StepScreen("train")
+            app.push_screen(screen)
+            await pilot.pause()
+            screen.form.query_one("#train-data-dir", Input).value = str(
+                tmp_path / "h5"
+            )
+            screen.form.query_one("#train-out-dir", Input).value = str(
+                tmp_path / "train_out"
+            )
+            await pilot.pause()
+            assert screen.gate_open
+            await pilot.click("#run-step")
+            await pilot.pause()
+            dialog = app.screen
+            assert isinstance(dialog, SaveConfigDialog)
+            assert dialog.query_one("#toml-path", Input).value == str(toml_path)
+            await pilot.press("enter")
+            run_screen = await _await_run_screen(pilot, app)
+            handle = await _await_done(pilot, run_screen)
+
+            assert isinstance(handle.config, TrainOptions)
+            assert handle.config.data_dir == tmp_path / "h5"
+            assert handle.config.out_dir == tmp_path / "train_out"
+            assert run_screen.toml_path == toml_path
+            lines = [
+                strip.text
+                for strip in run_screen.query_one("#run-log", RichLog).lines
+            ]
+            assert "finetune test: training" in "\n".join(lines)
+            # printed stdout/stderr lines are plain: no level tag prefix
+            assert "loading dataset..." in lines
+            assert "val loader ready" in lines
+            assert " 30%|### |" in lines
+            assert not any("10%" in line for line in lines)  # collapsed
+            assert not any("20%" in line for line in lines)
+            assert "finished — ok" in str(
+                run_screen.query_one("#run-status", Static).render()
+            )
+            block = str(run_screen.query_one("#run-summary", Static).render())
+            assert "train 4 images" in block
+            assert "val 2 images" in block
+            assert "smoke test" in block
+            assert "raw (1, 3, 8, 8)" in block
+            assert "label (1, 1, 8, 8)" in block
+            assert "checkpoint: /models/sam_colony/best.pt" in block
+            assert not run_screen.query_one("#run-error", Static).display
+
+    asyncio.run(scenario())
+    assert at_call["toml"] is not None  # written before the run started
+    written = read_step_options("train", toml_path)
+    assert written.data_dir == tmp_path / "h5"
+
+
+def test_a_train_summary_error_becomes_the_error_panel_with_the_cli_wording(
+    monkeypatch, tmp_path
+):
+    """A train summary carrying ``error`` is a failed run: the panel shows
+    the CLI's exit-1 line (``train train: …``), the runner logged the same
+    line, and the app stays alive."""
+    message = "no training files in /nowhere/train"
+    monkeypatch.setattr(
+        runner, "run_train", lambda options: TrainSummary(error=message)
+    )
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.push_screen(RunScreen("train", _train_options(tmp_path)))
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, RunScreen)
+            await _await_done(pilot, screen)
+            line = f"train train: {message}"
+            assert line in _log_text(screen)  # the runner logged it
+            panel = screen.query_one("#run-error", Static)
+            assert panel.display
+            assert line in str(panel.render())
+            status = str(screen.query_one("#run-status", Static).render())
+            assert "train finished with failures" in status
+            assert app.screen is screen  # the app survived
+
+    asyncio.run(scenario())
+
+
+def test_printed_output_capture_is_finetune_only(monkeypatch, tmp_path):
+    """The stdout/stderr capture is a finetune-step behaviour: a stage run
+    keeps the logger-only routing (its ``sys.stdout`` untouched, no output
+    callback), while a train run forwards printed lines and restores the
+    streams afterwards."""
+    original_stdout = sys.stdout
+    seen: dict[str, object] = {}
+
+    def fake_difference(options):
+        seen["difference_stdout"] = sys.stdout
+        print("difference printed line")
+        log.info("difference logged line")
+        return DifferenceSummary(wells={}, processed=1, skipped=0, failed=0)
+
+    monkeypatch.setattr(runner, "run_difference", fake_difference)
+    stage_output: list[str] = []
+    stage_records = []
+    stage = runner.start(
+        "difference",
+        DifferenceOptions(raw_dir=tmp_path / "raw", out_dir=tmp_path / "diff"),
+        on_done=lambda handle: None,
+        on_record=stage_records.append,
+        on_output=stage_output.append,
+    )
+    assert stage.done.wait(_TIMEOUT)
+    assert seen["difference_stdout"] is original_stdout
+    assert stage_output == []
+    assert "difference logged line" in [r.getMessage() for r in stage_records]
+    assert sys.stdout is original_stdout
+
+    def fake_train(options):
+        seen["train_stdout"] = sys.stdout
+        print("train printed line")
+        return TrainSummary()
+
+    monkeypatch.setattr(runner, "run_train", fake_train)
+    train_output: list[str] = []
+    train = runner.start(
+        "train",
+        _train_options(tmp_path),
+        on_done=lambda handle: None,
+        on_output=train_output.append,
+    )
+    assert train.done.wait(_TIMEOUT)
+    assert seen["train_stdout"] is not original_stdout
+    assert train_output == ["train printed line"]
+    assert sys.stdout is original_stdout  # restored after the run
+
+
 def test_open_step_run_reports_the_prepare_drafts_invalid_message(tmp_path):
     """``open_step_run``'s own config check is the prepare draft's
     ``resolve`` — the finetune machinery's wording, reported in the UI,
@@ -598,8 +974,8 @@ def test_open_step_run_reports_the_prepare_drafts_invalid_message(tmp_path):
 
 
 def test_open_step_run_rejects_steps_without_a_live_screen():
-    """``train`` / ``evaluate`` are registered finetune configs but not
-    live TUI run types yet: passing one is a programming error up front,
-    not a save dialog followed by an unknown run kind."""
-    with pytest.raises(ValueError, match="unknown finetune step 'train'"):
-        open_step_run(ColonyTuiApp(), ConfigDraft("prepare"), "train")
+    """``evaluate`` is a registered finetune config but not a live TUI run
+    type yet: passing it is a programming error up front, not a save
+    dialog followed by an unknown run kind."""
+    with pytest.raises(ValueError, match="unknown finetune step 'evaluate'"):
+        open_step_run(ColonyTuiApp(), ConfigDraft("prepare"), "evaluate")

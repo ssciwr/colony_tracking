@@ -320,12 +320,12 @@ def test_stage_drafts_store_their_owned_keys(run_type, key, value, plain):
 
 
 def test_unknown_run_type_is_refused():
-    """A run type no registry knows refuses to construct a draft (``train``
-    is not a config section any more — a run type would own one)."""
+    """A run type no registry knows refuses to construct a draft (a name
+    that is neither a stage, the chain, nor a live finetune step)."""
     with pytest.raises(ConfigError) as info:
-        ConfigDraft("train")
+        ConfigDraft("bogus")
     assert str(info.value) == (
-        f"unknown run type 'train' — expected one of {list(RUN_TYPES)}"
+        f"unknown run type 'bogus' — expected one of {list(RUN_TYPES)}"
     )
 
 
@@ -650,12 +650,27 @@ def _complete_prepare_draft() -> ConfigDraft:
     return draft
 
 
-def test_prepare_is_a_registered_run_type():
-    """``prepare`` is one of the TUI's run types, with its own flat config
-    TOML name and options dataclass — the pattern tickets 03/04 extend."""
+def test_the_live_steps_are_registered_run_types():
+    """``prepare`` and ``train`` are the TUI's finetune run types, each
+    with its own flat config TOML name and options dataclass — the pattern
+    ticket 04 extends with evaluate."""
     assert "prepare" in RUN_TYPES
+    assert "train" in RUN_TYPES
     assert TOML_NAMES["prepare"] == "prepare.toml"
+    assert TOML_NAMES["train"] == "train.toml"
     assert ConfigDraft("prepare").run_type == "prepare"
+    assert ConfigDraft("train").run_type == "train"
+
+
+def test_train_resolve_uses_the_shared_finetune_machinery(caplog):
+    """The train draft resolves through ``colony_tracking.finetune.config``
+    with that machinery's own wordings: the missing requireds in
+    declaration order, logged under the step's prefix."""
+    expected = "missing required key(s): ['data_dir', 'out_dir']"
+    with pytest.raises(ConfigError) as info:
+        ConfigDraft("train").resolve()
+    assert str(info.value) == expected
+    assert f"train config: {expected}" in caplog.text
 
 
 def test_prepare_document_is_flat_and_detached():

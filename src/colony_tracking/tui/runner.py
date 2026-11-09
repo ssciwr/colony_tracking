@@ -1,13 +1,13 @@
-"""StageRunner: run the stages in-process from the TUI.
+"""StageRunner: run the stages and finetune steps in-process from the TUI.
 
 :func:`start` runs one of ``run_difference`` / ``run_segmentation`` /
-``run_analysis`` / ``run_pipeline`` / ``run_prepare`` on its kind's
-resolved config in a thread — the stage functions are called unchanged,
-so a TUI run behaves exactly like a CLI run of the same config (resume
-via done markers included). One run at a time: starting a second run while one is active
-is an error the UI reports, and there is no cancellation — stopping
-means quitting the TUI with Ctrl-Q, and the stages' done markers make
-the next start a resume.
+``run_analysis`` / ``run_pipeline`` / ``run_prepare`` / ``run_train`` on
+its kind's resolved config in a thread — the stage functions are called
+unchanged, so a TUI run behaves exactly like a CLI run of the same config
+(resume via done markers included). One run at a time: starting a second
+run while one is active is an error the UI reports, and there is no
+cancellation — stopping means quitting the TUI with Ctrl-Q, and the
+stages' done markers make the next start a resume.
 
 Each run kind carries its run type's own resolved config: a stage or
 finetune kind receives that run type's own
@@ -17,11 +17,16 @@ chain's :class:`~colony_tracking.pipeline.PipelineConfig`.
 Log routing: while a run is active, a :class:`logging.Handler` attached
 to the package logger :data:`colony_tracking.log` forwards every record
 to the UI, and :func:`~colony_tracking.tui.records.forwarding` owns that
-attach/detach for the run's block. With a running textual ``App`` (the
-normal TUI case) records and the completion callback are marshalled onto
-the UI thread via ``App.call_from_thread``; without one (tests, scripts)
-they run directly on the worker thread. The handler is attached on start
-and detached on completion — exactly what was attached, so repeated runs
+attach/detach for the run's block. A finetune step additionally prints
+its progress to stdout/stderr (micro-sam/torch_em and their tqdm bar), so
+its run block also redirects those streams into the same UI:
+:func:`~colony_tracking.tui.records.output_capture` owns that, and only
+:data:`OUTPUT_KINDS` use it — the stage path keeps its logger-only
+routing. With a running textual ``App`` (the normal TUI case) records,
+output lines, and the completion callback are marshalled onto the UI
+thread via ``App.call_from_thread``; without one (tests, scripts) they run
+directly on the worker thread. The handler is attached on start and
+detached on completion — exactly what was attached, so repeated runs
 cannot stack handlers.
 
 Failures are never fatal: an exception escaping a stage is caught,
@@ -38,6 +43,7 @@ from __future__ import annotations
 import logging
 import threading
 import traceback
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -47,20 +53,27 @@ from .. import log
 from .._options import Options
 from ..analysis import AnalysisSummary, run_analysis
 from ..difference import DifferenceSummary, run_difference
-from ..finetune import PrepareSummary, run_prepare
+from ..finetune import PrepareSummary, TrainSummary, run_prepare, run_train
 from ..pipeline import PipelineConfig, PipelineSummary, run_pipeline
 from ..segmentation import SegmentationSummary, run_segmentation
-from .records import deliverer, forwarding
+from .records import deliverer, forwarding, output_capture
 
 #: The kinds :func:`start` can run: one per stage, the whole chain, and the
-#: live finetune steps (tickets 03/04 add ``train`` / ``evaluate``).
+#: live finetune steps (ticket 04 adds ``evaluate``).
 KINDS: tuple[str, ...] = (
     "difference",
     "segmentation",
     "analysis",
     "pipeline",
     "prepare",
+    "train",
 )
+
+#: The kinds whose runs also print progress to stdout/stderr (the live
+#: finetune steps); their output is forwarded to the run screen as plain
+#: lines. Ticket 04 adds ``evaluate``. The stage kinds keep the package
+#: logger as their only route.
+OUTPUT_KINDS: frozenset[str] = frozenset({"prepare", "train"})
 
 #: The runner's table: kind -> the run to make on the kind's resolved
 #: config — a stage kind takes that stage's own
@@ -74,6 +87,7 @@ _RUNNERS: dict[str, Callable[[PipelineConfig | Options], Any]] = {
     "analysis": lambda options: run_analysis(options),
     "pipeline": lambda config: run_pipeline(config),
     "prepare": lambda options: run_prepare(options),
+    "train": lambda options: run_train(options),
 }
 
 #: The run in progress, if any (one run at a time; guarded by ``_LOCK``).
@@ -99,7 +113,7 @@ def summary_failed(summary: object) -> bool:
         return bool(summary.failed)
     if isinstance(summary, AnalysisSummary):
         return bool(summary.failures or summary.failed_wells)
-    if isinstance(summary, PrepareSummary):
+    if isinstance(summary, (PrepareSummary, TrainSummary)):
         return summary.error is not None
     return False
 
@@ -143,11 +157,12 @@ def failed_summary_lines(kind: str, summary: Any) -> list[str]:
         return lines
     if kind == "pipeline":
         return [f"pipeline: the {summary.failed_stage} stage failed"]
-    if kind == "prepare":
+    if kind in ("prepare", "train"):
         if summary.error is None:
             return []
-        # The CLI's exit-1 line for a finetune step (``train prepare: …``).
-        return [f"train prepare: {summary.error}"]
+        # The CLI's exit-1 line for a finetune step (``train prepare: …``,
+        # ``train train: …``).
+        return [f"train {kind}: {summary.error}"]
     return []
 
 
@@ -201,18 +216,29 @@ def _run(
     handle: RunHandle,
     deliver: Callable[..., None],
     on_record: Callable[[logging.LogRecord], None] | None,
+    on_output: Callable[[str], None] | None,
     on_done: Callable[[RunHandle], None],
 ) -> None:
     """The thread body of one run: attach the forwarder, run the stage,
     capture the outcome, detach, and report.
 
-    Ordering matters at the end: the handler is detached and the runner
-    freed *before* ``done`` is set and ``on_done`` fires, so a completion
-    callback that immediately starts the next run can never stack
-    handlers or trip the one-run-at-a-time check.
+    A finetune kind with an ``on_output`` callback also redirects
+    stdout/stderr into that callback for the run's block
+    (:func:`~colony_tracking.tui.records.output_capture`); the stage kinds
+    never do.
+
+    Ordering matters at the end: the handler and the stream redirect are
+    detached and the runner freed *before* ``done`` is set and ``on_done``
+    fires, so a completion callback that immediately starts the next run
+    can never stack handlers or trip the one-run-at-a-time check.
     """
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
-    with forwarding(deliver, on_record):
+    capture = (
+        output_capture(deliver, on_output)
+        if on_output is not None and handle.kind in OUTPUT_KINDS
+        else nullcontext()
+    )
+    with forwarding(deliver, on_record), capture:
         try:
             summary = _RUNNERS[handle.kind](handle.config)
         except Exception as exc:  # noqa: BLE001 — a stage failure is not fatal
@@ -242,6 +268,7 @@ def start(
     *,
     on_done: Callable[[RunHandle], None],
     on_record: Callable[[logging.LogRecord], None] | None = None,
+    on_output: Callable[[str], None] | None = None,
     app: App[Any] | None = None,
 ) -> RunHandle:
     """Start one run of ``kind`` on the resolved ``config``.
@@ -255,9 +282,12 @@ def start(
     :class:`~colony_tracking.pipeline.PipelineConfig`.
 
     ``on_done(handle)`` fires when the run is finished; ``on_record``
-    optionally receives every log record of the run live. With ``app``
-    set, both are marshalled onto the UI thread via
-    ``app.call_from_thread``.
+    optionally receives every log record of the run live. For
+    :data:`OUTPUT_KINDS`, ``on_output`` optionally receives each plain
+    stdout/stderr line of the run live (see
+    :func:`~colony_tracking.tui.records.output_capture`); stage kinds never
+    produce output lines. With ``app`` set, all three are marshalled onto
+    the UI thread via ``app.call_from_thread``.
 
     Starting a second run while one is active raises :class:`RuntimeError`
     (the UI reports it; there is no cancellation — quitting and
@@ -271,7 +301,13 @@ def start(
             raise RuntimeError(ACTIVE_MESSAGE.format(kind=_ACTIVE.kind))
         handle = RunHandle(kind=kind, config=config)
         _ACTIVE = handle
-    _spawn(handle, on_done=on_done, on_record=on_record, app=app)
+    _spawn(
+        handle,
+        on_done=on_done,
+        on_record=on_record,
+        on_output=on_output,
+        app=app,
+    )
     return handle
 
 
@@ -280,13 +316,14 @@ def _spawn(
     *,
     on_done: Callable[[RunHandle], None],
     on_record: Callable[[logging.LogRecord], None] | None,
+    on_output: Callable[[str], None] | None,
     app: App[Any] | None,
 ) -> None:
     """Start :func:`_run` for ``handle`` in the right kind of thread."""
     deliver = deliverer(app)
 
     def body() -> None:
-        _run(handle, deliver, on_record, on_done)
+        _run(handle, deliver, on_record, on_output, on_done)
 
     if app is None:
         threading.Thread(

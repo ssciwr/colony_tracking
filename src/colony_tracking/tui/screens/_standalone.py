@@ -46,6 +46,11 @@ class StandaloneRunScreen(FormScreen):
         """The registry entry: ``.title`` and ``.options`` (subclass hook)."""
         raise NotImplementedError
 
+    def screen_note(self) -> str | None:
+        """A behavioural note shown above the form, or ``None`` (subclass
+        hook; stage screens have none)."""
+        return None
+
     def compose_body(self) -> ComposeResult:
         entry = self._entry()
         self._form = OptionForm(
@@ -58,6 +63,9 @@ class StandaloneRunScreen(FormScreen):
         # terminal whatever the form's height.
         with VerticalScroll(id=self.BODY_ID):
             yield Static(f"{entry.title} — options", id=self.TITLE_ID)
+            note = self.screen_note()
+            if note is not None:
+                yield Static(note, id=f"{self.run_type}-note", markup=False)
             yield self._form
 
     def compose_actions(self) -> ComposeResult:

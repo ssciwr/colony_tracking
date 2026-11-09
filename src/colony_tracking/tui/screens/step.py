@@ -25,11 +25,11 @@ exact :class:`~colony_tracking.pipeline.ConfigError` message instead. The
 load action is never gated — loading works on an incomplete draft, and the
 loaded document is reported at the next resolve either way.
 
-Adding a step — ticket 03's ``train`` or ticket 04's ``evaluate`` — means
-registering its :class:`StepSpec` here and its name in the draft's live
-finetune run types; the app registers the screen and the finetune submenu
-makes the row live from that registry. The step's draft, TOML name, title,
-and run kind are registered alongside it.
+Adding a step — ticket 04's ``evaluate`` — means registering its
+:class:`StepSpec` here and its name in the draft's live finetune run
+types; the app registers the screen and the finetune submenu makes the
+row live from that registry. The step's draft, TOML name, title, and run
+kind are registered alongside it.
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from typing import Callable, ClassVar
 
 from textual.binding import Binding
 
-from ..._options import Options, PrepareOptions
+from ..._options import Options, PrepareOptions, TrainOptions
 from ..draft import ConfigDraft
 from ._standalone import StandaloneRunScreen
 from .run import open_step_run
@@ -48,8 +48,9 @@ from .run import open_step_run
 @dataclass(frozen=True)
 class StepSpec:
     """One entry of the finetune step registry: the step's run type (its
-    draft section and config TOML name), the user-visible title, and the
-    options dataclass the form is generated from."""
+    draft section and config TOML name), the user-visible title, the
+    options dataclass the form is generated from, and an optional note
+    shown above the form (a behaviour the screen must state)."""
 
     #: The step name (the run type, draft section, and config TOML name).
     name: str
@@ -57,13 +58,25 @@ class StepSpec:
     title: str
     #: The options dataclass the form is generated from.
     options: type[Options]
+    #: A short note above the form, or ``None`` for no note.
+    note: str | None = None
 
 
-#: The finetune step registry: step name → spec. Tickets 03/04 add their
-#: steps here (with the step's live run type and run kind); the screen and
-#: the finetune submenu row follow from this registry.
+#: The finetune step registry: step name → spec. Ticket 04 adds evaluate
+#: here (with the step's live run type and run kind); the screen and the
+#: finetune submenu row follow from this registry.
 STEPS: dict[str, StepSpec] = {
     "prepare": StepSpec("prepare", "Prepare data", PrepareOptions),
+    "train": StepSpec(
+        "train",
+        "Train decoder",
+        TrainOptions,
+        note=(
+            "Re-running with the same output directory resumes training; a "
+            "run that already reached n_epochs returns cleanly. There is no "
+            "confirmation prompt and no start-over control."
+        ),
+    ),
 }
 
 
@@ -124,8 +137,14 @@ class StepScreen(StandaloneRunScreen):
         return self._step
 
     def _entry(self) -> StepSpec:
-        """The step's registry entry (its title and options dataclass)."""
+        """The step's registry entry (its title, options dataclass, and
+        note)."""
         return STEPS[self._step]
+
+    def screen_note(self) -> str | None:
+        """The step's behavioural note above the form (``None`` when the
+        registry entry carries none)."""
+        return self._entry().note
 
     def action_run_step(self) -> None:
         """*Run this step*: delegate to ``StandaloneRunScreen.action_run``."""

@@ -10,6 +10,13 @@ text as the flag's help (the single source the TUI reuses too). Well names
 start with a dash, so ``--wells``-style values must stay inside the flag
 value — ``--wells=-A001,-A002`` and ``--wells -A001`` both parse.
 
+The ``difference``, ``segment``, and ``analyze`` subcommands also take
+``--config <file>``: either the stage's own flat TOML config (what the TUI
+stage screens write) or a sectioned ``pipeline.toml`` (whose ``[pipeline]``
+run level and chain wiring resolve to this stage's options). Explicit flags
+override the file's values; required flags can be satisfied by the file.
+``train`` takes no config file.
+
 The exit-code contract: 0 success, 1 runtime error (a stage exception, or a
 summary that reports failed work — logged at ERROR with context), 2 usage
 error (argparse errors, invalid option combinations, config errors).
@@ -37,6 +44,7 @@ from ._options import (
     Reference,
     SegmentationOptions,
     ViewOptions,
+    _to_plain,
     _union_members,
     viewer_path,
 )
@@ -50,7 +58,14 @@ from .finetune import (
     run_prepare,
     run_train,
 )
-from .pipeline import ConfigError, PipelineConfig, read_config, run_pipeline
+from .pipeline import (
+    ConfigError,
+    PipelineConfig,
+    read_config,
+    read_stage_config,
+    resolve_stage_document,
+    run_pipeline,
+)
 from .segmentation import run_segmentation
 from .tui import run_tui
 from .viewer import available_wells, view_wells
@@ -139,32 +154,52 @@ def _parse_reference(text: str) -> Reference:
 
 
 def _add_flags(parser: argparse.ArgumentParser, cls: type, *,
-               renames: dict[str, str] | None = None) -> None:
+               renames: dict[str, str] | None = None,
+               configurable: bool = False) -> None:
     """One kebab-case flag per field of the options dataclass ``cls``,
-    with the field's help text (the dataclass is the single source)."""
+    with the field's help text (the dataclass is the single source).
+
+    ``configurable`` stages accept ``--config``, so every flag defaults to
+    :data:`argparse.SUPPRESS` and none is argparse-required: the parsed
+    namespace then carries only flags actually supplied, the config file can
+    satisfy required ones, and a missing value is reported after the merge.
+    Each action keeps its display default in ``dataclass_default`` for the
+    README table (``argparse.SUPPRESS`` for a required field).
+    """
     renames = _RENAMES if renames is None else renames
     hints = get_type_hints(cls)
     for f in fields(cls):
         flag = "--" + renames.get(f.name, f.name.replace("_", "-"))
         required = f.default is MISSING and f.default_factory is MISSING
-        default = None
+        dataclass_default = None
         if not required:
-            default = (f.default if f.default is not MISSING
-                       else f.default_factory())
+            dataclass_default = (f.default if f.default is not MISSING
+                                 else f.default_factory())
+        # Configurable stages suppress every default so the parsed namespace
+        # carries only flags actually supplied; their display default is
+        # kept on the action for the README table.
+        default = argparse.SUPPRESS if configurable else (
+            None if required else dataclass_default)
         hint = hints[f.name]
         origin = get_origin(hint)
         members = _union_members(hint)
         if members is not None and len(members) == 1:  # X | None
             hint, origin = members[0], get_origin(members[0])
         kwargs: dict = {"help": f.metadata["help"], "default": default,
-                        "required": required, "dest": f.name}
+                        "required": required and not configurable,
+                        "dest": f.name}
         if hint is bool:
-            if default:
-                parser.add_argument("--no-" + flag[2:], dest=f.name,
-                                    action="store_false", help=kwargs["help"])
+            explicit = {"default": default} if configurable else {}
+            if dataclass_default:
+                action = parser.add_argument(
+                    "--no-" + flag[2:], dest=f.name, action="store_false",
+                    help=kwargs["help"], **explicit)
             else:
-                parser.add_argument(flag, dest=f.name, action="store_true",
-                                    help=kwargs["help"])
+                action = parser.add_argument(
+                    flag, dest=f.name, action="store_true",
+                    help=kwargs["help"], **explicit)
+            action.dataclass_default = argparse.SUPPRESS if required else (
+                dataclass_default)
             continue
         if hint is Reference:
             kwargs["type"] = _parse_reference
@@ -184,7 +219,9 @@ def _add_flags(parser: argparse.ArgumentParser, cls: type, *,
             if origin is not None:  # Literal: fixed choices
                 kwargs["choices"] = list(get_args(hint))
                 kwargs.pop("type")
-        parser.add_argument(flag, **kwargs)
+        action = parser.add_argument(flag, **kwargs)
+        action.dataclass_default = argparse.SUPPRESS if required else (
+            dataclass_default)
 
 
 def _stage_kwargs(args: argparse.Namespace, cls: type) -> dict:
@@ -194,14 +231,41 @@ def _stage_kwargs(args: argparse.Namespace, cls: type) -> dict:
     return {key: value for key, value in vars(args).items() if key in names}
 
 
+def _explicit_stage_kwargs(args: argparse.Namespace, cls: type) -> dict:
+    """The flags the command line actually carried that are fields of
+    ``cls``, as plain TOML values. Configurable stage flags suppress their
+    argparse defaults, so a present field is always explicit — config-file
+    values survive unless the flag was given."""
+    return {
+        f.name: _to_plain(getattr(args, f.name))
+        for f in fields(cls)
+        if hasattr(args, f.name)
+    }
+
+
+def _stage_options(args: argparse.Namespace, run_type: str, cls: type):
+    """One stage's options: its config document (flat, or resolved from a
+    pipeline config) with the explicitly given flags merged over it.
+
+    Without ``--config`` the document is just the explicit flags, so
+    omitted options take their dataclass defaults. A missing required
+    option surfaces as :class:`ConfigError` (exit code 2).
+    """
+    doc: dict = {}
+    if getattr(args, "config", None) is not None:
+        doc = read_stage_config(run_type, args.config)
+    doc.update(_explicit_stage_kwargs(args, cls))
+    return resolve_stage_document(run_type, doc)
+
+
 def _difference_options(args: argparse.Namespace) -> DifferenceOptions:
-    return DifferenceOptions(**_stage_kwargs(args, DifferenceOptions))
+    return _stage_options(args, "difference", DifferenceOptions)
 
 
 def _segmentation_options(args: argparse.Namespace) -> SegmentationOptions:
     """The segment options, with the input mode's directory required exactly
     when the input mode needs it (a usage error, exit code 2)."""
-    options = SegmentationOptions(**_stage_kwargs(args, SegmentationOptions))
+    options = _stage_options(args, "segmentation", SegmentationOptions)
     if options.input == "raw" and options.raw_dir is None:
         raise _UsageError("--raw-dir is required when --input raw")
     if options.input == "diff" and options.diff_dir is None:
@@ -210,7 +274,20 @@ def _segmentation_options(args: argparse.Namespace) -> SegmentationOptions:
 
 
 def _analysis_options(args: argparse.Namespace) -> AnalysisOptions:
-    return AnalysisOptions(**_stage_kwargs(args, AnalysisOptions))
+    return _stage_options(args, "analysis", AnalysisOptions)
+
+
+#: The stage subcommands' config file help.
+_STAGE_CONFIG_HELP = (
+    "TOML config file: the stage's own flat config (what the TUI writes) "
+    "or a pipeline config (this stage's section plus the run-level wiring). "
+    "Command-line flags override its values."
+)
+
+
+def _add_stage_config_flag(parser: argparse.ArgumentParser) -> None:
+    """Add ``--config`` to a stage subcommand."""
+    parser.add_argument("--config", type=Path, help=_STAGE_CONFIG_HELP)
 
 
 #: The pipeline's run-level settings — the only flags the ``pipeline``
@@ -362,34 +439,31 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True,
                                        metavar="command")
-    _add_flags(
-        subparsers.add_parser(
-            "difference",
-            help="Per-well uint8 difference frames from a raw plate.",
-            description="Difference frames from a raw plate directory "
-            "(see --help for every flag).",
-        ),
-        DifferenceOptions,
+    difference_parser = subparsers.add_parser(
+        "difference",
+        help="Per-well uint8 difference frames from a raw plate.",
+        description="Difference frames from a raw plate directory "
+        "(see --help for every flag).",
     )
-    _add_flags(
-        subparsers.add_parser(
-            "segment",
-            help="Colony segmentation and tracking of raw or difference frames.",
-            description="Colony segmentation and tracking of raw or "
-            "difference frames (see --help for every flag).",
-        ),
-        SegmentationOptions,
+    _add_stage_config_flag(difference_parser)
+    _add_flags(difference_parser, DifferenceOptions, configurable=True)
+    segment_parser = subparsers.add_parser(
+        "segment",
+        help="Colony segmentation and tracking of raw or difference frames.",
+        description="Colony segmentation and tracking of raw or "
+        "difference frames (see --help for every flag).",
     )
-    _add_flags(
-        subparsers.add_parser(
-            "analyze",
-            help="Growth measurements, aggregates, and plots for segmentation trees.",
-            description="Growth measurements, aggregates, and plots for one "
-            "or more segmentation trees (see --help for every flag).",
-        ),
-        AnalysisOptions,
-        renames=_RENAMES,
+    _add_stage_config_flag(segment_parser)
+    _add_flags(segment_parser, SegmentationOptions, configurable=True)
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Growth measurements, aggregates, and plots for segmentation trees.",
+        description="Growth measurements, aggregates, and plots for one "
+        "or more segmentation trees (see --help for every flag).",
     )
+    _add_stage_config_flag(analyze_parser)
+    _add_flags(analyze_parser, AnalysisOptions, renames=_RENAMES,
+               configurable=True)
     _add_pipeline_flags(subparsers.add_parser(
         "pipeline",
         help="The standard chain (difference → segment → analyze) from a "

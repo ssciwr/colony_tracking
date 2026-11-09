@@ -10,10 +10,11 @@ script and pasting its output:
 
     uv run python tests/test_readme.py
 
-Rendering rules (the Default column, backticked): ``required`` for flags
-without a default, ``none`` for ``None``, ``unset`` for booleans (the flag
-is absent unless given; the help text states the value in force),
-``512 512`` for n-value tuples, otherwise the plain value.
+Rendering rules (the Default column, backticked): ``required`` for required
+flags (configurable stages use ``argparse.SUPPRESS`` so ``--config`` can
+satisfy them), ``none`` for ``None``, ``unset`` for booleans (the flag is
+absent unless given; the help text states the value in force), ``512 512``
+for n-value tuples, otherwise the plain value.
 """
 
 from __future__ import annotations
@@ -66,9 +67,14 @@ SUBCOMMANDS = _subcommands(cli._build_parser())
 
 def _default_cell(action: argparse.Action) -> str:
     """The Default column for one flag (see the module docstring)."""
-    if action.required:
-        return "`required`"
-    default = action.default
+    if hasattr(action, "dataclass_default"):
+        default = action.dataclass_default
+        if default == argparse.SUPPRESS:
+            return "`required`"
+    else:
+        if action.required:
+            return "`required`"
+        default = action.default
     if isinstance(default, bool):
         return "`unset`"
     if default is None:

@@ -30,10 +30,11 @@ root under ``<out_root>/<name of the root>/``:
 - ``areas_by_ancestors.csv`` / ``rates_by_ancestors.csv`` — the pooled
   aggregates over non-bad, non-pre-existing rows of non-excluded wells
   (per (frame, ancestors) area statistics; per max-ancestors rate statistics);
-- the three plots ``growth_curves_by_ancestors.png``,
-  ``mean_area_by_ancestors.png``, ``growth_rates_by_ancestors.png`` (suppressed
-  by ``no_plots``); per-well QA overlays ``qa/<well>_rim.png`` (suppressed by
-  ``no_qa``);
+- the three combined plots ``growth_curves_by_ancestors.png``,
+  ``mean_area_by_ancestors.png``, ``growth_rates_by_ancestors.png`` plus one
+  ``growth_curves_<n>_ancestor(s).png`` growth-curve plot per ancestor count
+  (suppressed by ``no_plots``); per-well QA overlays ``qa/<well>_rim.png``
+  (suppressed by ``no_qa``);
 - and, directly under ``out_root``, the shared ``well_geometry.csv`` cache of
   the fitted well circles.
 
@@ -104,10 +105,10 @@ rates (areas stay in the trajectories; the rate aggregates and plots skip
 the colony).
 
 **Plots.** Growth curves (individual trajectories, absolute and relative
-time, coloured by ancestor count); mean area per ancestor group (buckets with
-< 3 members not drawn; group opacity fades with member count unless
-``no_group_alpha``); rate distributions per group (box + strip, symlog
-absolute-growth panel).
+time, coloured by ancestor count), one growth-curve figure per ancestor
+count, mean area per ancestor group (buckets with < 3 members not drawn;
+group opacity fades with member count unless ``no_group_alpha``); rate
+distributions per group (box + strip, symlog absolute-growth panel).
 
 ``plots_only`` re-renders everything derived from an existing trajectories
 CSV with no image IO. Colonies/trajectories CSVs written by the prototype
@@ -725,13 +726,15 @@ def group_alpha(n, n_ref, floor=0.25):
     return floor + (1.0 - floor) * float(np.sqrt(min(n, n_ref) / n_ref))
 
 
-def plot_growth_curves(traj, out_path, well_names=""):
+def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
     """Individual colony trajectories: absolute area on both time axes.
 
     Left: area over well time (absolute). Right: area over hours since the
     colony's first valid frame (relative). Curves are split into same-colour
     runs by their ancestor count at that point; the legend maps colours to
-    ancestor counts.
+    ancestor counts. ``ancestors`` restricts both panels to the rows whose
+    ancestor count matches (the per-group single plots); ``None`` draws every
+    group (the combined plot).
     """
     import matplotlib
     matplotlib.use("Agg")
@@ -742,8 +745,11 @@ def plot_growth_curves(traj, out_path, well_names=""):
     for r in traj:
         if r["rim_excluded"] or r["age_h"] is None:
             continue
+        if ancestors is not None and r["ancestors"] != ancestors:
+            continue
         per_colony.setdefault((r["well"], r["colony_id"]), []).append(r)
 
+    group_note = f" ({group_label(ancestors)})" if ancestors is not None else ""
     seen = set()
     for ax, xkey, xlabel in ((axes[0], "t_hours", "well time (h)"),
                              (axes[1], "age_h",
@@ -771,11 +777,27 @@ def plot_growth_curves(traj, out_path, well_names=""):
         for n in sorted(seen):
             ax.plot([], [], color=group_color(n), lw=2, label=group_label(n))
         ax.legend(fontsize=8)
-    axes[0].set_title(f"colony growth, absolute time{well_names}")
-    axes[1].set_title("colony growth, time since first appearance")
+    axes[0].set_title(
+        f"colony growth, absolute time{group_note}{well_names}")
+    axes[1].set_title(f"colony growth, time since first appearance{group_note}")
     fig.suptitle("")
     fig.savefig(out_path, dpi=130)
     plt.close(fig)
+
+
+def plot_growth_curves_per_ancestor(traj, out_dir, well_names=""):
+    """One growth-curve plot per ancestor count, alongside the combined plot.
+
+    Every ancestor count with at least one drawable row gets its own
+    two-panel growth-curve figure (``growth_curves_1_ancestor.png``,
+    ``growth_curves_2_ancestors.png``, ...), restricted to that group.
+    """
+    groups = sorted({r["ancestors"] for r in traj
+                     if not r["rim_excluded"] and r["age_h"] is not None})
+    for n in groups:
+        name = group_label(n).replace(" ", "_")
+        plot_growth_curves(traj, Path(out_dir) / f"growth_curves_{name}.png",
+                           well_names=well_names, ancestors=n)
 
 
 def plot_mean_areas(traj, areas_agg, out_path, well_names="", alpha_on=True):
@@ -1182,6 +1204,7 @@ def write_outputs(traj, options, out_dir):
         plot_growth_curves(traj_f,
                            out_dir / "growth_curves_by_ancestors.png",
                            well_names=n_note)
+        plot_growth_curves_per_ancestor(traj_f, out_dir, well_names=n_note)
         plot_mean_areas(traj_f, areas_agg,
                         out_dir / "mean_area_by_ancestors.png",
                         well_names=n_note,

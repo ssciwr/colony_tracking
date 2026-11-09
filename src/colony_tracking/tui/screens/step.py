@@ -25,11 +25,15 @@ exact :class:`~colony_tracking.pipeline.ConfigError` message instead. The
 load action is never gated — loading works on an incomplete draft, and the
 loaded document is reported at the next resolve either way.
 
-Adding a step — ticket 04's ``evaluate`` — means registering its
-:class:`StepSpec` here and its name in the draft's live finetune run
-types; the app registers the screen and the finetune submenu makes the
-row live from that registry. The step's draft, TOML name, title, and run
-kind are registered alongside it.
+Adding a step means registering its :class:`StepSpec` here and its name
+in the draft's live finetune run types
+(:data:`~colony_tracking.tui.draft.FINETUNE_RUN_TYPES`), its title and
+TOML name in the draft tables, and its run kind in the runner
+(:data:`~colony_tracking.tui.runner.KINDS`, ``OUTPUT_KINDS``,
+``_RUNNERS``); the app registers the screen and the
+finetune submenu makes the row live from this registry. The summary
+block's own function in :mod:`~colony_tracking.tui.screens.run` follows
+the step's summary type.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from typing import Callable, ClassVar
 
 from textual.binding import Binding
 
-from ..._options import Options, PrepareOptions, TrainOptions
+from ..._options import EvaluateOptions, Options, PrepareOptions, TrainOptions
 from ..draft import ConfigDraft
 from ._standalone import StandaloneRunScreen
 from .run import open_step_run
@@ -62,8 +66,7 @@ class StepSpec:
     note: str | None = None
 
 
-#: The finetune step registry: step name → spec. Ticket 04 adds evaluate
-#: here (with the step's live run type and run kind); the screen and the
+#: The finetune step registry: step name → spec. The screen and the
 #: finetune submenu row follow from this registry.
 STEPS: dict[str, StepSpec] = {
     "prepare": StepSpec("prepare", "Prepare data", PrepareOptions),
@@ -77,6 +80,7 @@ STEPS: dict[str, StepSpec] = {
             "confirmation prompt and no start-over control."
         ),
     ),
+    "evaluate": StepSpec("evaluate", "Evaluate checkpoint", EvaluateOptions),
 }
 
 

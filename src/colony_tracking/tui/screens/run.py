@@ -59,7 +59,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
 from ..._options import Options
-from ...finetune import PrepareSummary, TrainSummary
+from ...finetune import EvaluateSummary, PrepareSummary, TrainSummary
 from ...pipeline import (
     AnalysisSummary,
     ConfigError,
@@ -167,6 +167,14 @@ def _prepare_summary_lines(summary: PrepareSummary) -> list[str]:
     return lines
 
 
+def _checkpoint_line(summary: TrainSummary | EvaluateSummary) -> list[str]:
+    """The checkpoint continuation line shared by the train and evaluate
+    summary blocks, when the summary reports one."""
+    if summary.checkpoint is None:
+        return []
+    return [f"{_CONTINUATION}checkpoint: {summary.checkpoint}"]
+
+
 def _train_summary_lines(summary: TrainSummary) -> list[str]:
     """The train step's summary block: the split's image counts, the
     smoke-test shapes when one ran, and the best checkpoint when it
@@ -180,9 +188,21 @@ def _train_summary_lines(summary: TrainSummary) -> list[str]:
             f"{_CONTINUATION}smoke test: raw {summary.smoke_raw_shape} · "
             f"label {summary.smoke_label_shape}"
         )
-    if summary.checkpoint is not None:
-        lines.append(f"{_CONTINUATION}checkpoint: {summary.checkpoint}")
-    return lines
+    return [*lines, *_checkpoint_line(summary)]
+
+
+def _evaluate_summary_lines(summary: EvaluateSummary) -> list[str]:
+    """The evaluate step's summary block: the scored images and instances,
+    the IoU distribution, the thresholds, and the clipped count, then the
+    checkpoint when one was scored — from the summary object alone."""
+    detail = (
+        f"images {summary.n_images} · split {summary.split} · instances "
+        f"{summary.n_instances} · mean IoU {summary.mean_iou:.3f} · median "
+        f"IoU {summary.median_iou:.3f} · IoU>=0.5 {summary.iou_at_05:.3f} · "
+        f"IoU>=0.75 {summary.iou_at_075:.3f} · IoU>=0.9 "
+        f"{summary.iou_at_09:.3f} · larger than a tile {summary.n_clipped}"
+    )
+    return [f"evaluate     {detail}", *_checkpoint_line(summary)]
 
 
 def _pipeline_summary_lines(summary: PipelineSummary) -> list[str]:
@@ -214,6 +234,8 @@ def _summary_lines(kind: str, summary: object) -> list[str]:
         return _prepare_summary_lines(summary)
     if isinstance(summary, TrainSummary):
         return _train_summary_lines(summary)
+    if isinstance(summary, EvaluateSummary):
+        return _evaluate_summary_lines(summary)
     return [f"{kind:<13}{_stage_detail(summary)}"]
 
 

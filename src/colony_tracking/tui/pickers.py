@@ -1,11 +1,13 @@
-"""Shared path-picker pieces: location, browse button, and hand-off.
+"""Shared path-picker pieces: location, browse button, filters, hand-off.
 
 The option forms, the quick start, and the config-file dialogs all put a
 click-only *browse* button beside a path input. This module owns the
 pieces they share — the button widget, its label and styles, the rule for
-where a picker opens (:func:`picker_location`), and the hand-off that
-waits for the dismissed screen's reveal to settle (:func:`open_picker`) —
-so the call sites cannot drift.
+where a picker opens (:func:`picker_location`), the file filters
+(:func:`file_filters`) and picked-name rule (:func:`value_file_name`) the
+file dialogs apply, and the hand-off that waits for the dismissed
+screen's reveal to settle (:func:`open_picker`) — so the call sites
+cannot drift.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Any, Final
 from textual.app import App
 from textual.screen import Screen
 from textual.widgets import Button
-from textual_fspicker import SelectDirectory
+from textual_fspicker import Filters, SelectDirectory
 
 #: A browse button's label (the field-row counterpart of ``reset``).
 BROWSE_LABEL: Final[str] = "browse"
@@ -40,6 +42,42 @@ BROWSE_BUTTON_CSS = """
     color: $text;
 }
 """
+
+
+def _matches_suffix(suffix: str) -> Callable[[Path], bool]:
+    """A picker filter predicate matching a file with ``suffix``
+    (case-insensitive)."""
+    lowered = suffix.lower()
+
+    def matches(path: Path) -> bool:
+        return path.suffix.lower() == lowered
+
+    return matches
+
+
+def _any_file(_path: Path) -> bool:
+    """The file pickers' fallback filter: every file stays reachable."""
+    return True
+
+
+def file_filters(label: str, suffix: str) -> Filters:
+    """The file dialogs' filters: ``<label> (*<suffix>)`` first, every file
+    still reachable — the config dialogs' treatment, shared by every
+    file-valued field."""
+    return Filters(
+        (f"{label} (*{suffix})", _matches_suffix(suffix)),
+        ("All files", _any_file),
+    )
+
+
+def value_file_name(value: str) -> str:
+    """The file name a path input's text names, or ``""`` when it names a
+    directory (or nothing) — a file picker's pre-filled file name."""
+    text = value.strip()
+    path = Path(text)
+    if not text or path.is_dir() or text.endswith(("/", "\\")):
+        return ""
+    return path.name
 
 
 class BrowseButton(Button):

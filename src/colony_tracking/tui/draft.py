@@ -78,10 +78,9 @@ from ..pipeline import (
     write_stage_config,
 )
 
-#: The finetune steps the TUI edits today — one flat document each,
-#: resolved through :mod:`colony_tracking.finetune.config`. Ticket 04 adds
-#: ``evaluate`` here once its screen lands.
-FINETUNE_RUN_TYPES: tuple[str, ...] = ("prepare", "train")
+#: The finetune steps the TUI edits — one flat document each, resolved
+#: through :mod:`colony_tracking.finetune.config`.
+FINETUNE_RUN_TYPES: tuple[str, ...] = ("prepare", "train", "evaluate")
 
 #: The run types the TUI edits — one :class:`ConfigDraft` (and one config
 #: TOML) per type.
@@ -105,6 +104,7 @@ TITLES: dict[str, str] = {
     "analysis": "Analyze",
     "prepare": "Prepare",
     "train": "Train",
+    "evaluate": "Evaluate",
 }
 
 #: Each run type's own config file name.
@@ -115,6 +115,7 @@ TOML_NAMES: dict[str, str] = {
     "analysis": "analysis.toml",
     "prepare": "prepare.toml",
     "train": "train.toml",
+    "evaluate": "evaluate.toml",
 }
 
 #: The run-level section of a pipeline draft document (``[pipeline]``).

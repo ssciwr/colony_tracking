@@ -6,8 +6,8 @@ The rows are the spec's three names — ``Prepare data``, ``Train decoder``,
 ``prepare`` / ``train`` / ``evaluate``. A row is live exactly when its
 step has a registered :class:`~colony_tracking.tui.screens.step.StepSpec`
 (and therefore a registered screen); the rest stay disabled planned rows.
-Tickets 03/04 make their rows live by registering the step's spec and its
-draft/runner kind — this submenu needs no edit.
+A step's row becomes live by registering its spec and its draft/runner
+kind — this submenu needs no edit.
 """
 
 from __future__ import annotations

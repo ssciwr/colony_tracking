@@ -1,11 +1,12 @@
 """StageRunner: run the stages and finetune steps in-process from the TUI.
 
 :func:`start` runs one of ``run_difference`` / ``run_segmentation`` /
-``run_analysis`` / ``run_pipeline`` / ``run_prepare`` / ``run_train`` on
-its kind's resolved config in a thread — the stage functions are called
-unchanged, so a TUI run behaves exactly like a CLI run of the same config
-(resume via done markers included). One run at a time: starting a second
-run while one is active is an error the UI reports, and there is no
+``run_analysis`` / ``run_pipeline`` / ``run_prepare`` / ``run_train`` /
+``run_evaluate`` on its kind's resolved config in a thread — the stage
+functions are called unchanged, so a TUI run behaves exactly like a CLI
+run of the same config (resume via done markers included). One run at a
+time: starting a second run while one is active is an error the UI
+reports, and there is no
 cancellation — stopping means quitting the TUI with Ctrl-Q, and the
 stages' done markers make the next start a resume.
 
@@ -53,13 +54,20 @@ from .. import log
 from .._options import Options
 from ..analysis import AnalysisSummary, run_analysis
 from ..difference import DifferenceSummary, run_difference
-from ..finetune import PrepareSummary, TrainSummary, run_prepare, run_train
+from ..finetune import (
+    EvaluateSummary,
+    PrepareSummary,
+    TrainSummary,
+    run_evaluate,
+    run_prepare,
+    run_train,
+)
 from ..pipeline import PipelineConfig, PipelineSummary, run_pipeline
 from ..segmentation import SegmentationSummary, run_segmentation
 from .records import deliverer, forwarding, output_capture
 
 #: The kinds :func:`start` can run: one per stage, the whole chain, and the
-#: live finetune steps (ticket 04 adds ``evaluate``).
+#: live finetune steps.
 KINDS: tuple[str, ...] = (
     "difference",
     "segmentation",
@@ -67,13 +75,13 @@ KINDS: tuple[str, ...] = (
     "pipeline",
     "prepare",
     "train",
+    "evaluate",
 )
 
 #: The kinds whose runs also print progress to stdout/stderr (the live
 #: finetune steps); their output is forwarded to the run screen as plain
-#: lines. Ticket 04 adds ``evaluate``. The stage kinds keep the package
-#: logger as their only route.
-OUTPUT_KINDS: frozenset[str] = frozenset({"prepare", "train"})
+#: lines. The stage kinds keep the package logger as their only route.
+OUTPUT_KINDS: frozenset[str] = frozenset({"prepare", "train", "evaluate"})
 
 #: The runner's table: kind -> the run to make on the kind's resolved
 #: config — a stage kind takes that stage's own
@@ -88,6 +96,7 @@ _RUNNERS: dict[str, Callable[[PipelineConfig | Options], Any]] = {
     "pipeline": lambda config: run_pipeline(config),
     "prepare": lambda options: run_prepare(options),
     "train": lambda options: run_train(options),
+    "evaluate": lambda options: run_evaluate(options),
 }
 
 #: The run in progress, if any (one run at a time; guarded by ``_LOCK``).
@@ -113,7 +122,7 @@ def summary_failed(summary: object) -> bool:
         return bool(summary.failed)
     if isinstance(summary, AnalysisSummary):
         return bool(summary.failures or summary.failed_wells)
-    if isinstance(summary, (PrepareSummary, TrainSummary)):
+    if isinstance(summary, (PrepareSummary, TrainSummary, EvaluateSummary)):
         return summary.error is not None
     return False
 
@@ -157,11 +166,11 @@ def failed_summary_lines(kind: str, summary: Any) -> list[str]:
         return lines
     if kind == "pipeline":
         return [f"pipeline: the {summary.failed_stage} stage failed"]
-    if kind in ("prepare", "train"):
+    if kind in ("prepare", "train", "evaluate"):
         if summary.error is None:
             return []
         # The CLI's exit-1 line for a finetune step (``train prepare: …``,
-        # ``train train: …``).
+        # ``train train: …``, ``train evaluate: …``).
         return [f"train {kind}: {summary.error}"]
     return []
 

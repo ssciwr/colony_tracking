@@ -21,10 +21,40 @@ from __future__ import annotations
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from types import UnionType
-from typing import Any, Literal, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 #: Reference frame selection: ``"first"`` or a 1-based frame number.
 Reference = Literal["first"] | int
+
+
+@dataclass(frozen=True)
+class FilePath:
+    """Annotation metadata marking a ``Path`` field as a *file*, not a
+    directory — the TUI's forms read it and give the field the matching
+    file dialog instead of the directory picker.
+
+    Every other consumer (the CLI flags, the config reader/writer, the
+    dataclasses themselves) sees a plain ``Path``: ``get_type_hints``
+    strips ``Annotated`` metadata unless a caller opts in with
+    ``include_extras=True``, and only :func:`colony_tracking.tui.forms.specs_of`
+    does.
+    """
+
+    #: ``"open"`` for a file the run reads, ``"save"`` for one it writes.
+    dialog: Literal["open", "save"]
+    #: The picker filter's human name (``"Checkpoints"``).
+    label: str
+    #: The conventional file suffix, dot included (``".pt"``).
+    suffix: str
+
 
 #: Segment stage input mode.
 InputMode = Literal["raw", "diff"]
@@ -180,7 +210,9 @@ class SegmentationOptions(Options):
     model_type: str = field(
         default="vit_b_lm", metadata={"help": "micro-sam model type."}
     )
-    checkpoint: Path | None = field(
+    checkpoint: Annotated[
+        Path, FilePath("open", "Checkpoints", ".pt")
+    ] | None = field(
         default=None,
         metadata={
             "help": "Optional finetuned decoder checkpoint, used in place of the "
@@ -448,7 +480,9 @@ class EvaluateOptions(Options):
     split: str = field(
         default="val", metadata={"help": "Split to evaluate (val / train)."}
     )
-    checkpoint: Path | None = field(
+    checkpoint: Annotated[
+        Path, FilePath("open", "Checkpoints", ".pt")
+    ] | None = field(
         default=None,
         metadata={
             "help": "Finetuned checkpoint; omit to evaluate the pretrained base model."
@@ -481,7 +515,9 @@ class EvaluateOptions(Options):
         default=None,
         metadata={"help": "Score only the first N instances per image."},
     )
-    output: Path | None = field(
+    output: Annotated[
+        Path, FilePath("save", "JSON reports", ".json")
+    ] | None = field(
         default=None, metadata={"help": "Optional path for a JSON report."}
     )
 

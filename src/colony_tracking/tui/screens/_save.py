@@ -55,37 +55,15 @@ from ..pickers import (
     BROWSE_BUTTON_CSS,
     BROWSE_LABEL,
     BrowseButton,
+    file_filters,
     open_picker,
     picker_location,
+    value_file_name,
 )
 
-
-def _is_toml(path: Path) -> bool:
-    """Whether a path looks like a config TOML file."""
-    return path.suffix.lower() == ".toml"
-
-
-def _any_file(_path: Path) -> bool:
-    """The file picker's fallback filter: every file stays reachable."""
-    return True
-
-
-#: The file pickers' filters: config TOMLs first, every file still
+#: The config dialogs' file filters: config TOMLs first, every file still
 #: reachable (a config without the conventional suffix).
-TOML_FILTERS: Final[Filters] = Filters(
-    ("TOML files (*.toml)", _is_toml),
-    ("All files", _any_file),
-)
-
-
-def _value_name(raw: str) -> str:
-    """The file name the path input's text names, or ``""`` when it names
-    a directory (or nothing) — the picker's pre-filled file name."""
-    text = raw.strip()
-    path = Path(text)
-    if not text or path.is_dir() or text.endswith(("/", "\\")):
-        return ""
-    return path.name
+TOML_FILTERS: Final[Filters] = file_filters("TOML files", ".toml")
 
 
 #: Shared layout for the two dialogs' path rows: the input takes the row,
@@ -115,12 +93,21 @@ def default_toml_path(draft: ConfigDraft) -> Path | None:
       :data:`~colony_tracking.tui.draft.TOML_NAMES` name (the trees, the
       h5 set, and the checkpoints/logs are written into the ``out_dir``,
       the config sits beside them), ``None`` without an out_dir;
+    - ``evaluate``: the JSON report's parent with ``evaluate.toml``
+      (evaluate has no output directory of its own), ``None`` without a
+      report *file* path (a directory-shaped value has nothing to sit
+      beside) — the dialog then starts empty;
     - ``analysis``: the stage's own ``out_root`` with ``analysis.toml``,
       ``None`` without one.
 
     ``None`` starts the input empty (the user types a path).
     """
     run_type = draft.run_type
+    if run_type == "evaluate":
+        report = draft.get(run_type, "output")
+        if not report or not value_file_name(str(report)):
+            return None
+        return Path(str(report)).parent / TOML_NAMES[run_type]
     if run_type in ("difference", "segmentation", "prepare", "train"):
         out_dir = draft.get(run_type, "out_dir")
         if not out_dir:
@@ -252,7 +239,7 @@ class SaveConfigDialog(_ConfigFileDialog[tuple[Path, PipelineConfig | Options] |
             title="Write config TOML",
             filters=TOML_FILTERS,
             default_file=(
-                _value_name(raw) or TOML_NAMES[self.draft.run_type]
+                value_file_name(raw) or TOML_NAMES[self.draft.run_type]
             ),
         )
 
@@ -308,7 +295,7 @@ class LoadConfigDialog(_ConfigFileDialog[Path | None]):
             picker_location(raw),
             title="Load config TOML",
             filters=TOML_FILTERS,
-            default_file=_value_name(raw) or None,
+            default_file=value_file_name(raw) or None,
         )
 
     def _commit(self, path: str) -> None:

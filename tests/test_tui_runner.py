@@ -41,6 +41,8 @@ from colony_tracking import (
     AnalysisSummary,
     DifferenceOptions,
     DifferenceSummary,
+    EvaluateOptions,
+    EvaluateSummary,
     PipelineConfig,
     PipelineSummary,
     PrepareOptions,
@@ -68,6 +70,7 @@ _RUN_FUNCTION = {
     "pipeline": "run_pipeline",
     "prepare": "run_prepare",
     "train": "run_train",
+    "evaluate": "run_evaluate",
 }
 
 
@@ -122,6 +125,11 @@ def _train_options(tmp_path: Path) -> TrainOptions:
     )
 
 
+def _evaluate_options(tmp_path: Path) -> EvaluateOptions:
+    """A minimal resolved evaluate step config (its own flat document)."""
+    return EvaluateOptions(data_dir=tmp_path / "h5")
+
+
 def _diff_summary(failed: int = 0) -> DifferenceSummary:
     return DifferenceSummary(wells={}, processed=1, skipped=0, failed=failed)
 
@@ -138,6 +146,7 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
         "pipeline": _config(tmp_path),
         "prepare": _prepare_options(tmp_path),
         "train": _train_options(tmp_path),
+        "evaluate": _evaluate_options(tmp_path),
     }[kind]
     summaries = {
         "difference": _diff_summary(),
@@ -146,6 +155,7 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
         "pipeline": PipelineSummary(status="ok"),
         "prepare": PrepareSummary(),
         "train": TrainSummary(),
+        "evaluate": EvaluateSummary(),
     }
     calls = []
 
@@ -250,6 +260,8 @@ def test_summary_failed_maps_the_cli_exit_1_semantics():
     assert runner.summary_failed(PrepareSummary(error="no labels found"))
     assert not runner.summary_failed(TrainSummary())
     assert runner.summary_failed(TrainSummary(error="no training files"))
+    assert not runner.summary_failed(EvaluateSummary())
+    assert runner.summary_failed(EvaluateSummary(error="no images in x/val"))
 
 
 def test_failed_summary_lines_are_the_cli_wording():
@@ -302,8 +314,13 @@ def test_failed_summary_lines_are_the_cli_wording():
     assert runner.failed_summary_lines("train", train) == [
         "train train: no training files in x/train"
     ]
+    evaluate = EvaluateSummary(error="no images in x/val")
+    assert runner.failed_summary_lines("evaluate", evaluate) == [
+        "train evaluate: no images in x/val"
+    ]
     assert runner.failed_summary_lines("prepare", PrepareSummary()) == []
     assert runner.failed_summary_lines("train", TrainSummary()) == []
+    assert runner.failed_summary_lines("evaluate", EvaluateSummary()) == []
     assert runner.failed_summary_lines("difference", _diff_summary()) == []
 
 

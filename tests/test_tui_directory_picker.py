@@ -1,8 +1,11 @@
 """Tests for the path fields' browse buttons and the picker.
 
-Every single-``Path`` field renders with a *browse* button in its field
-row — the reset button's click-only precedent (``can_focus`` off), so tab
-and the arrow-key field walk stay field-to-field. The press opens the
+Every directory-valued single-``Path`` field renders with a *browse*
+button in its field row — the reset button's click-only precedent
+(``can_focus`` off), so tab and the arrow-key field walk stay
+field-to-field. (File-valued fields, marked
+:class:`~colony_tracking._options.FilePath`, open the file dialogs
+instead; see ``tests/test_tui_file_picker.py``.) The press opens the
 directory-picker modal, textual-fspicker's ``SelectDirectory``, driven
 headless here: picking a directory writes it into the field's input, and
 the normal on-change flow stores it — on a stage screen into that

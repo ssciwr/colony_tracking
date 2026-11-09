@@ -32,6 +32,7 @@ from colony_tracking import PipelineConfig
 from colony_tracking._options import (
     AnalysisOptions,
     DifferenceOptions,
+    EvaluateOptions,
     PrepareOptions,
     SegmentationOptions,
 )
@@ -651,15 +652,37 @@ def _complete_prepare_draft() -> ConfigDraft:
 
 
 def test_the_live_steps_are_registered_run_types():
-    """``prepare`` and ``train`` are the TUI's finetune run types, each
-    with its own flat config TOML name and options dataclass — the pattern
-    ticket 04 extends with evaluate."""
-    assert "prepare" in RUN_TYPES
-    assert "train" in RUN_TYPES
+    """``prepare``, ``train``, and ``evaluate`` are the TUI's finetune run
+    types, each with its own flat config TOML name and options dataclass."""
+    assert {"prepare", "train", "evaluate"} <= set(RUN_TYPES)
     assert TOML_NAMES["prepare"] == "prepare.toml"
     assert TOML_NAMES["train"] == "train.toml"
+    assert TOML_NAMES["evaluate"] == "evaluate.toml"
     assert ConfigDraft("prepare").run_type == "prepare"
     assert ConfigDraft("train").run_type == "train"
+    assert ConfigDraft("evaluate").run_type == "evaluate"
+
+
+def test_evaluate_resolve_uses_the_shared_finetune_machinery(caplog):
+    """The evaluate draft resolves through ``colony_tracking.finetune.config``
+    with that machinery's own wordings: its one required key, logged under
+    the step's prefix; the file-valued paths stay plain path strings."""
+    expected = "missing required key(s): ['data_dir']"
+    with pytest.raises(ConfigError) as info:
+        ConfigDraft("evaluate").resolve()
+    assert str(info.value) == expected
+    assert f"evaluate config: {expected}" in caplog.text
+    draft = ConfigDraft("evaluate")
+    draft.set("evaluate", "data_dir", "/data/h5")
+    draft.set("evaluate", "checkpoint", "/models/best.pt")
+    draft.set("evaluate", "output", "/reports/bench.json")
+    assert draft.resolve() == EvaluateOptions.from_dict(
+        {
+            "data_dir": "/data/h5",
+            "checkpoint": "/models/best.pt",
+            "output": "/reports/bench.json",
+        }
+    )
 
 
 def test_train_resolve_uses_the_shared_finetune_machinery(caplog):

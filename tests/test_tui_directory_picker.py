@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from conftest import click_widget
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Button, Input
@@ -100,14 +101,6 @@ def _run_form(form: OptionForm, observe) -> None:
             await observe(app, form, pilot)
 
     asyncio.run(scenario())
-
-
-async def _click(pilot, app: App, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
 
 
 async def _wait_loaded(pilot, nav) -> None:
@@ -291,7 +284,7 @@ def test_stage_browse_picks_into_the_stages_own_draft(stage, key, tmp_path):
             field = screen.form.query_one(f"#{field_id}", Input)
             field.value = str(tmp_path)
             await pilot.pause()
-            await _click(pilot, app, f"#browse-{field_id}")
+            await click_widget(pilot, app, f"#browse-{field_id}")
             assert isinstance(app.screen, SelectDirectory)
             assert app.screen.query_one("DirectoryNavigation").location == tmp_path
             await _pick_subdir(pilot, app, target)
@@ -320,7 +313,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert not app.screen.gate_open
             app.screen.query_one("#qs-raw-dir", Input).value = str(raw)
             await pilot.pause()
-            await _click(pilot, app, "#browse-qs-raw-dir")
+            await click_widget(pilot, app, "#browse-qs-raw-dir")
             assert isinstance(app.screen, SelectDirectory)
             assert app.screen.query_one("DirectoryNavigation").location == raw
             await _pick_subdir(pilot, app, wells)
@@ -331,7 +324,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert not quick.gate_open  # the out root is still missing
             # the out root: an empty input starts the picker at the working
             # directory; drive it to the tmp tree and select that
-            await _click(pilot, app, "#browse-qs-out-root")
+            await click_widget(pilot, app, "#browse-qs-out-root")
             nav = app.screen.query_one("DirectoryNavigation")
             nav.location = tmp_path
             await pilot.pause()
@@ -340,7 +333,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert app.drafts["pipeline"].get(RUN_LEVEL, "out_root") == str(tmp_path)
             assert quick.gate_open
             # a later browse, cancelled: nothing changes
-            await _click(pilot, app, "#browse-qs-out-root")
+            await click_widget(pilot, app, "#browse-qs-out-root")
             assert isinstance(app.screen, SelectDirectory)
             await pilot.press("escape")
             await pilot.pause()

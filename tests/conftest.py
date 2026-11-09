@@ -490,3 +490,26 @@ def build_label_series(
         )
         label_paths.append(path)
     return LabelSeries(root=out_dir, names=list(names), label_paths=label_paths)
+
+
+async def click_widget(pilot, app, selector: str) -> None:
+    """Scroll a (possibly folded-away) widget into view and click it.
+
+    Shared by the ``Pilot`` scenarios whose buttons can sit below the test
+    viewport's fold (the config screen's sections scroll): the click is
+    asserted to land on the widget, then the UI is pumped once so the
+    resulting message is processed.
+    """
+    app.screen.query_one(selector).scroll_visible(animate=False)
+    await pilot.pause()
+    assert await pilot.click(selector), selector
+    await pilot.pause()
+
+
+def home_index(option_id: str) -> int:
+    """The home menu's row index for ``option_id``, read from the live
+    ENTRIES tuple so a reordered or added row cannot leave a test pointing
+    at the wrong entry."""
+    from colony_tracking.tui.screens.home import ENTRIES
+
+    return [entry_id for entry_id, _label, _target in ENTRIES].index(option_id)

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Literal, get_origin
 
 import pytest
+from conftest import click_widget
 from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Input, Select, Static
 
@@ -128,14 +129,6 @@ async def _await_done(pilot, screen: RunScreen):
     assert handle is not None and handle.done.is_set()
     await pilot.pause()
     return handle
-
-
-async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
 
 
 # --- the stage screens: every field, nothing excluded ---------------------------------
@@ -390,7 +383,7 @@ def test_the_derived_grays_fall_back_to_the_required_texts():
             out_root.value = root
             await pilot.pause()
             assert shown() == derived
-            await _click(pilot, app, "#reset-pipeline-out-root")
+            await click_widget(pilot, app, "#reset-pipeline-out-root")
             assert shown() == static  # the reset re-lays the statics too
             assert (
                 screen.form.query_one("#pipeline-out-root", Input).value == ""
@@ -419,7 +412,7 @@ def test_a_reset_button_restores_the_gray_of_every_widget_kind():
             reference.value = "3"
             await pilot.pause()
             assert reference.placeholder == "first"  # the gray is unchanged
-            await _click(pilot, app, "#reset-pipeline-reference")
+            await click_widget(pilot, app, "#reset-pipeline-reference")
             reference = screen.form.query_one("#pipeline-reference", Input)
             assert reference.value == ""
             assert reference.placeholder == "first"
@@ -433,7 +426,7 @@ def test_a_reset_button_restores_the_gray_of_every_widget_kind():
             dry_run.value = True
             await pilot.pause()
             assert app.drafts["pipeline"].get("difference", "dry_run") is True
-            await _click(pilot, app, "#reset-cfg-difference-dry-run")
+            await click_widget(pilot, app, "#reset-cfg-difference-dry-run")
             await pilot.pause()
             assert dry_run.value is False
             assert app.drafts["pipeline"].get("difference", "dry_run") is None
@@ -528,7 +521,7 @@ def test_reset_clears_exactly_its_key_and_updates_the_preview():
             assert "reference = 2" in preview
             assert "display_percentile = 97.5" in preview
             assert "rim_width_px = 90" in preview
-            await _click(pilot, app, "#reset-cfg-analysis-rim-width-px")
+            await click_widget(pilot, app, "#reset-cfg-analysis-rim-width-px")
             assert draft.document() == {
                 "pipeline": {"raw_dir": "/data/raw", "reference": 2},
                 "difference": {"display_percentile": 97.5},
@@ -543,7 +536,7 @@ def test_reset_clears_exactly_its_key_and_updates_the_preview():
             assert "rim_width_px" not in preview
             assert "display_percentile = 97.5" in preview
             # the run-level form resets the same way
-            await _click(pilot, app, "#reset-pipeline-reference")
+            await click_widget(pilot, app, "#reset-pipeline-reference")
             assert draft.document() == {
                 "pipeline": {"raw_dir": "/data/raw"},
                 "difference": {"display_percentile": 97.5},
@@ -596,7 +589,7 @@ def test_reset_enabled_only_for_set_fields():
                 "#reset-cfg-difference-dry-run", Button
             ).disabled
             # a reset returns the field to default and disables its button
-            await _click(pilot, app, "#reset-pipeline-raw-dir")
+            await click_widget(pilot, app, "#reset-pipeline-raw-dir")
             assert app.drafts["pipeline"].get("pipeline", "raw_dir") is None
             assert app.screen.query_one("#reset-pipeline-raw-dir", Button).disabled
 
@@ -605,33 +598,33 @@ def test_reset_enabled_only_for_set_fields():
 
 def test_a_new_registry_entry_slots_into_the_config_screen(monkeypatch):
     """One registry entry (plus the draft section) adds the config
-    screen's whole train section: its form, its owned line, its reset
+    screen's whole future section: its form, its owned line, its reset
     buttons — no config-screen code per stage."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.drafts["pipeline"].stages["train"] = {}
+            app.drafts["pipeline"].stages["future"] = {}
             screen = ConfigScreen()
             app.push_screen(screen)
             await pilot.pause()
-            assert app.screen.query_one("#train-section-title", Static)
-            form = screen.stage_forms["train"]
-            assert isinstance(form.query_one("#cfg-train-mode"), _expected_widget(
+            assert app.screen.query_one("#future-section-title", Static)
+            form = screen.stage_forms["future"]
+            assert isinstance(form.query_one("#cfg-future-mode"), _expected_widget(
                 FutureStageOptions.__annotations__["mode"]
             ))
-            assert isinstance(form.query_one("#cfg-train-shape"), Input)
-            assert isinstance(form.query_one("#cfg-train-label-dir"), Input)
-            assert app.screen.query_one("#reset-cfg-train-mode", Button)
-            assert "none" in str(app.screen.query_one("#owned-train", Static).render())
-            form.query_one("#cfg-train-mode").value = "b"
+            assert isinstance(form.query_one("#cfg-future-shape"), Input)
+            assert isinstance(form.query_one("#cfg-future-label-dir"), Input)
+            assert app.screen.query_one("#reset-cfg-future-mode", Button)
+            assert "none" in str(app.screen.query_one("#owned-future", Static).render())
+            form.query_one("#cfg-future-mode").value = "b"
             await pilot.pause()
-            assert app.drafts["pipeline"].get("train", "mode") == "b"
-            await _click(pilot, app, "#reset-cfg-train-mode")
-            assert app.drafts["pipeline"].get("train", "mode") is None
+            assert app.drafts["pipeline"].get("future", "mode") == "b"
+            await click_widget(pilot, app, "#reset-cfg-future-mode")
+            assert app.drafts["pipeline"].get("future", "mode") is None
 
     asyncio.run(scenario())
 
@@ -816,7 +809,7 @@ def test_load_toml_restores_a_written_pipeline_config_into_the_run_level(tmp_pat
                 tmp_path / "out"
             )
             await pilot.pause()
-            await _click(pilot, app, "#write-toml")
+            await click_widget(pilot, app, "#write-toml")
             dialog = app.screen
             assert isinstance(dialog, SaveConfigDialog)
             dialog.query_one("#toml-path", Input).value = str(path)
@@ -830,7 +823,7 @@ def test_load_toml_restores_a_written_pipeline_config_into_the_run_level(tmp_pat
             screen.form.query_one("#pipeline-raw-dir", Input).value = ""
             await pilot.pause()
             assert not screen.gate_open
-            await _click(pilot, app, "#load-toml")  # loading is never gated
+            await click_widget(pilot, app, "#load-toml")  # loading is never gated
             loader = app.screen
             assert isinstance(loader, LoadConfigDialog)
             assert loader.query_one("#toml-path", Input).placeholder == (

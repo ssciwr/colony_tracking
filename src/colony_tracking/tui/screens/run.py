@@ -293,6 +293,17 @@ def _report(app: App[Any], message: str) -> str:
     return message
 
 
+def _resume_hint(kind: str) -> str:
+    """What starting ``kind`` again does: a pipeline stage resumes via its
+    per-well done markers, training resumes from its output directory, and
+    the other finetune steps simply run again."""
+    if kind == "train":
+        return "re-running with the same output directory resumes training"
+    if kind in FINETUNE_RUN_TYPES:
+        return "re-running starts it again"
+    return "the next start resumes via done markers"
+
+
 class RunScreen(Screen[None]):
     """One run from start to finish (see the module docstring).
 
@@ -398,8 +409,8 @@ class RunScreen(Screen[None]):
         stage the markers say is running now."""
         running = (
             f"running {self.kind} (started {self._started_at}) — no "
-            "cancellation: quitting (Ctrl-Q) is safe, the next "
-            "start resumes via done markers"
+            f"cancellation: quitting (Ctrl-Q) is safe, "
+            f"{_resume_hint(self.kind)}"
         )
         lines = [running]
         if self._current_stage is not None:

@@ -159,6 +159,26 @@ def test_every_subcommand_is_documented():
         assert heading in readme, f"README is missing the {heading!r} heading"
 
 
+def test_readme_documents_the_finetune_track_in_the_tui():
+    """The TUI section names the three finetune step screens, their config
+    files, and the CLI replay path — and no row is described as planned."""
+    readme = README_PATH.read_text(encoding="utf-8")
+    section = _section(readme, "### tui")
+    for needle in (
+        "Finetune",
+        "Prepare data",
+        "Train decoder",
+        "Evaluate checkpoint",
+        "prepare.toml",
+        "train.toml",
+        "evaluate.toml",
+        "colony-tracking train prepare|train|evaluate --config <file>",
+    ):
+        assert needle in section, f"README TUI section does not document {needle!r}"
+    assert "Train — planned" not in section
+    assert "planned rows" not in section
+
+
 def test_readme_documents_the_integration_test():
     """The marked integration test's env var, GPU need, and invocation."""
     readme = README_PATH.read_text(encoding="utf-8")

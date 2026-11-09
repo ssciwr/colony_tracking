@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from conftest import build_mini_plate
+from conftest import build_mini_plate, home_index
 from textual.widgets import Button, Input, OptionList, RichLog, SelectionList, Static
 
 from colony_tracking import cli
@@ -41,9 +41,10 @@ from colony_tracking.tui.screens.viewer import ViewerScreen
 #: How long a test waits for navigation or a (stubbed) launch to finish.
 _TIMEOUT = 10.0
 
-#: The home menu's row order (the ENTRIES tuple in screens/home.py):
-#: ``View wells in napari`` sits after the config entry, before Train.
-_VIEW = 5
+#: The home menu's row order, read off the live ENTRIES tuple:
+#: ``View wells in napari`` sits after the config entry, before the
+#: finetune submenu.
+_VIEW = home_index("viewer")
 
 #: The raw plate's wells and the difference tree's extra well.
 _RAW_WELLS = ("-A001", "-B004")

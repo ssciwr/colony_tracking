@@ -4,11 +4,11 @@
 ``run_analysis`` / ``run_pipeline`` / ``run_prepare`` / ``run_train`` /
 ``run_evaluate`` on its kind's resolved config in a thread — the stage
 functions are called unchanged, so a TUI run behaves exactly like a CLI
-run of the same config (resume via done markers included). One run at a
-time: starting a second run while one is active is an error the UI
-reports, and there is no
-cancellation — stopping means quitting the TUI with Ctrl-Q, and the
-stages' done markers make the next start a resume.
+run of the same config (a stage re-run resumes via its done markers). One
+run at a time: starting a second run while one is active is an error the
+UI reports, and there is no cancellation. Stopping means quitting the TUI
+with Ctrl-Q; re-running a stage or the training step then resumes where it
+left off (via the stage's done markers or the training output directory).
 
 Each run kind carries its run type's own resolved config: a stage or
 finetune kind receives that run type's own
@@ -108,8 +108,7 @@ _LOCK = threading.Lock()
 #: screens report the same text.
 ACTIVE_MESSAGE = (
     "a {kind} run is already active — the runner runs one at a time and "
-    "cannot cancel: wait for it to finish, or quit the TUI (the next "
-    "start resumes via done markers)"
+    "cannot cancel: wait for it to finish"
 )
 
 
@@ -299,8 +298,9 @@ def start(
     the UI thread via ``app.call_from_thread``.
 
     Starting a second run while one is active raises :class:`RuntimeError`
-    (the UI reports it; there is no cancellation — quitting and
-    re-starting resumes via done markers).
+    (the UI reports it; there is no cancellation — quitting and re-starting
+    resumes a stage via its done markers or training from its output
+    directory).
     """
     global _ACTIVE  # noqa: PLW0603 — module-level, one run at a time
     if kind not in _RUNNERS:

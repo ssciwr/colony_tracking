@@ -26,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from conftest import click_widget
 from textual.widgets import Input
 
 from colony_tracking.tui.app import ColonyTuiApp
@@ -181,14 +182,6 @@ def _run_screen(screen, observe) -> None:
     asyncio.run(scenario())
 
 
-async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
-
-
 def test_the_evaluate_checkpoint_browses_with_the_file_open_dialog(
     tmp_path: Path,
 ) -> None:
@@ -203,7 +196,7 @@ def test_the_evaluate_checkpoint_browses_with_the_file_open_dialog(
         checkpoint_field = screen.form.query_one("#evaluate-checkpoint", Input)
         checkpoint_field.value = str(tmp_path)
         await pilot.pause()
-        await _click(pilot, app, "#browse-evaluate-checkpoint")
+        await click_widget(pilot, app, "#browse-evaluate-checkpoint")
         await _wait_until(pilot, lambda: isinstance(app.screen, FileOpen))
         picker = app.screen
         nav = picker.query_one("DirectoryNavigation")
@@ -231,7 +224,7 @@ def test_the_evaluate_report_browses_with_the_file_save_dialog(tmp_path: Path) -
         output_field = screen.form.query_one("#evaluate-output", Input)
         output_field.value = str(tmp_path)
         await pilot.pause()
-        await _click(pilot, app, "#browse-evaluate-output")
+        await click_widget(pilot, app, "#browse-evaluate-output")
         await _wait_until(pilot, lambda: isinstance(app.screen, FileSave))
         picker = app.screen
         nav = picker.query_one("DirectoryNavigation")
@@ -258,7 +251,7 @@ def test_the_evaluate_data_dir_keeps_the_directory_picker(tmp_path: Path) -> Non
         data_dir = screen.form.query_one("#evaluate-data-dir", Input)
         data_dir.value = str(tmp_path)
         await pilot.pause()
-        await _click(pilot, app, "#browse-evaluate-data-dir")
+        await click_widget(pilot, app, "#browse-evaluate-data-dir")
         await _wait_until(pilot, lambda: isinstance(app.screen, SelectDirectory))
         nav = app.screen.query_one("DirectoryNavigation")
         nav.location = tmp_path
@@ -289,7 +282,7 @@ def test_the_segmentation_checkpoint_browses_with_the_file_open_dialog(
         checkpoint_field = screen.form.query_one("#segmentation-checkpoint", Input)
         checkpoint_field.value = str(tmp_path)
         await pilot.pause()
-        await _click(pilot, app, "#browse-segmentation-checkpoint")
+        await click_widget(pilot, app, "#browse-segmentation-checkpoint")
         await _wait_until(pilot, lambda: isinstance(app.screen, FileOpen))
         await _choose(pilot, app, checkpoint.name)
         await _wait_until(pilot, lambda: app.screen is screen)

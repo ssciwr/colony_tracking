@@ -62,7 +62,12 @@ from colony_tracking.tui.draft import ConfigDraft
 from colony_tracking.tui.screens._save import SaveConfigDialog
 from colony_tracking.tui.screens.home import HomeScreen
 from colony_tracking.tui.screens.quick_start import QuickStartScreen
-from colony_tracking.tui.screens.run import RunScreen, open_pipeline_run, open_stage_run
+from colony_tracking.tui.screens.run import (
+    RunScreen,
+    _resume_hint,
+    open_pipeline_run,
+    open_stage_run,
+)
 
 #: How long a test waits for a (fake or small, fast) run to finish.
 _TIMEOUT = 10.0
@@ -649,6 +654,30 @@ def test_log_records_reach_the_pane_while_the_run_is_active(monkeypatch, tmp_pat
             )
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("kind", "needle", "forbidden"),
+    [
+        ("difference", "done markers", None),
+        ("pipeline", "done markers", None),
+        ("train", "same output directory resumes training", "done markers"),
+        ("prepare", "re-running starts it again", "done markers"),
+        ("evaluate", "re-running starts it again", "done markers"),
+    ],
+    ids=["difference", "pipeline", "train", "prepare", "evaluate"],
+)
+def test_the_running_status_states_the_kinds_own_resume_behaviour(
+    kind, needle, forbidden
+):
+    """The no-cancellation note does not promise done-marker resume for the
+    finetune steps: only the pipeline stages have done markers, training
+    resumes from its output directory, and the other steps simply run
+    again."""
+    note = _resume_hint(kind)
+    assert needle in note
+    if forbidden is not None:
+        assert forbidden not in note
 
 
 def test_the_status_line_names_the_pipeline_stage_running_now(monkeypatch, tmp_path):

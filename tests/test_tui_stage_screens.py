@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Literal, get_origin, get_type_hints
 
 import pytest
+from conftest import click_widget
 from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Input, Select, Static
 
@@ -96,14 +97,6 @@ def _section_of(app: ColonyTuiApp, run_type: str) -> dict:
     carry a run type key; only a stage draft's own section exists)."""
     draft = app.drafts[run_type]
     return {} if draft.is_pipeline else draft.stages[run_type]
-
-
-async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
 
 
 #: The required fields' example texts (the ticket's copy table): the
@@ -295,7 +288,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             reference.value = "3"
             await pilot.pause()
             assert reference.placeholder == "first"  # the gray is unchanged
-            await _click(pilot, app, "#reset-difference-reference")
+            await click_widget(pilot, app, "#reset-difference-reference")
             reference = difference.form.query_one("#difference-reference", Input)
             assert reference.value == ""
             assert reference.placeholder == "first"
@@ -309,7 +302,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             select.value = "diff"
             await pilot.pause()
             assert _section_of(app, "segmentation") == {"input": "diff"}
-            await _click(pilot, app, "#reset-segmentation-input")
+            await click_widget(pilot, app, "#reset-segmentation-input")
             await pilot.pause()
             assert select.value is Select.NULL
             assert select.prompt == "raw"
@@ -322,7 +315,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             dry_run.value = True
             await pilot.pause()
             assert _section_of(app, "difference") == {"dry_run": True}
-            await _click(pilot, app, "#reset-difference-dry-run")
+            await click_widget(pilot, app, "#reset-difference-dry-run")
             await pilot.pause()
             assert dry_run.value is False
             assert _section_of(app, "difference") == {}

@@ -23,8 +23,8 @@ The `train` subcommands (`prepare`, `train`, `evaluate`) are the finetuning
 track: they convert input frames plus ground-truth label images into a
 well-split h5 training set, run micro-sam decoder training, and benchmark
 the checkpoint against the held-out wells.
-The `tui` subcommand opens a terminal interface over the same stages
-(see below).
+The `tui` subcommand opens a terminal interface over the same stages and
+the finetuning track (see below).
 The `view` subcommand opens a run's wells in
 [napari](https://napari.org): the raw time series, the difference stack, the
 segmentation labels, and the QA overlay of each well side by side, so the QA
@@ -280,14 +280,15 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 
 ### tui
 
-The terminal user interface: `colony-tracking tui` (no flags). Four run
-types — the whole pipeline chain, and Difference / Segment / Analyze
-each on its own — each edit their own in-progress config and write and
-read their own config TOML; nothing on a screen is derived from another
-run type's configuration or outputs (the chain's own wiring — segment
-consuming the difference tree, the shared out root — applies only
-within one pipeline run). Every runtime line the stages log streams
-live into the run screen. The home menu offers:
+The terminal user interface: `colony-tracking tui` (no flags). Seven run
+types make up the TUI: the whole pipeline chain, Difference / Segment /
+Analyze each on its own, and the three finetuning steps Prepare / Train /
+Evaluate. Each edits its own in-progress config and writes and reads its
+own config TOML. Nothing on a screen is derived from another run type's
+configuration or outputs. The chain's own wiring, where segment consumes
+the difference tree and all stages share an out root, applies only within
+one pipeline run. Every runtime line the stages log streams live into the
+run screen. The home menu offers:
 
 - **Quick start (full-auto)** — the raw directory and the out root (the
   reference frame and wells optional), *Run now*: the whole chain runs
@@ -324,43 +325,67 @@ live into the run screen. The home menu offers:
   napari and stays usable while the viewer is open; the child's lines and
   any launch failure (napari missing, no display) appear in the screen's
   log pane, never as a crash.
-- **Finetune** — the finetuning track's step submenu: `Prepare data` is
-  live; `Train decoder` and `Evaluate checkpoint` are planned rows.
+- **Finetune** — the finetuning track's three step screens behind one
+  submenu: `Prepare data`, `Train decoder`, and `Evaluate checkpoint`.
+  Each is a gated form with every option of its step, *Run this step*,
+  *Write TOML…*, and *Load TOML…*. A direct start opens the pre-filled
+  write dialog, so the step's TOML is written before the run and replays
+  from the CLI:
+  `colony-tracking train prepare|train|evaluate --config <file>`.
+  Training's progress output, which micro-sam and torch_em print along
+  with a tqdm bar, streams into the run screen's log pane as plain lines.
+  Carriage-return repaints collapse to one line per finished line.
+  Re-running training with the same output directory resumes; a run that
+  already reached `n_epochs` returns cleanly. There is no confirmation
+  prompt and no start-over control, matching the CLI.
 
-Path fields (the raw directory, the out root, output directories, and
-similar) carry a *browse* button that opens a directory picker; the
-choice lands in the field like typed text. The *Load TOML…* and *Write
-TOML…* dialogs carry the same button for their config-file path: it opens
-a file picker that prefers `*.toml` (with an all-files fallback), and the
-choice is loaded or written at once. A loaded config's relative paths are
+Directory-valued path fields (the raw directory, the out root, output
+directories, and similar) carry a *browse* button that opens a directory
+picker. File-valued fields, namely the segment and evaluate checkpoints
+and the evaluate JSON report, open a file dialog instead: an open dialog
+for a checkpoint to read and a save dialog for the report to write, each
+filtered by suffix with an all-files fallback. The choice lands in the
+field like typed text. The *Load TOML…* and *Write TOML…* dialogs carry
+the same button for their config-file path: it opens a file picker that
+prefers `*.toml` (with an all-files fallback), and the choice is loaded or
+written at once. A loaded config's relative paths are
 resolved against the directory it was written from (the config's own
 directory or nearest ancestor where its raw tree exists), so a
 `pipeline.toml` saved while the TUI ran in a project directory still finds
 its data when the TUI is started elsewhere.
 
 Each run type is a decision point: after its options are filled, either
-*Write TOML…* or a direct start — and a direct start writes that run
-type's own TOML first, so every run is reproducible from its config
-file. A stage screen suggests its config beside the stage's output
-tree (`<out-dir's parent>/difference.toml`; analysis, which writes into
-an out root, suggests `<out-root>/analysis.toml`); the chain suggests
-`<out-root>/pipeline.toml`. *Load TOML…* reads a run type's config back
-into its screens (a load resets, it never merges); a stage screen accepts
-its own flat TOML as well as a sectioned `pipeline.toml` (the stage's
-wired options are derived from it). Config-only mode is
-the same flow without a run: fill what you need, *Write TOML…*, quit,
-and run the CLI later — the chain via
-`colony-tracking pipeline --config <file>`, or a stage via
-`colony-tracking difference|segment|analyze --config <file>`. A stage CLI
-accepts either that stage's own flat TOML or a `pipeline.toml` (whose
-section and run-level wiring resolve to the stage's options).
+*Write TOML…* or a direct start. A direct start opens the pre-filled
+write dialog, and the TOML is written before the run, so every run is
+reproducible from its config file. A stage screen suggests its config
+beside the stage's output tree (`<out-dir's parent>/difference.toml`;
+analysis, which writes into an out root, suggests
+`<out-root>/analysis.toml`); the chain suggests `<out-root>/pipeline.toml`.
+A finetune step suggests its own file beside its output: `prepare.toml`
+and `train.toml` in the parent of the h5 set or checkpoint/log directory,
+and `evaluate.toml` in the JSON report's directory. When no report file is
+set the dialog starts empty.
+*Load TOML…* reads a run type's config back into its screens (a load
+resets, it never merges); a stage screen accepts its own flat TOML as
+well as a sectioned `pipeline.toml` (the stage's wired options are
+derived from it). Config-only mode is the same flow without a run: fill
+what you need, *Write TOML…*, quit, and run the CLI later. The chain
+replays via `colony-tracking pipeline --config <file>`, a stage via
+`colony-tracking difference|segment|analyze --config <file>`, and a
+finetune step via
+`colony-tracking train prepare|train|evaluate --config <file>`. A stage
+CLI accepts either that stage's own flat TOML or a `pipeline.toml` (whose
+section and run-level wiring resolve to the stage's options), and a
+finetune CLI reads exactly the flat TOML its step screen writes.
 
-A run opens on its own screen: the live log, the stage status line, and
-the final per-stage summaries (from the summary objects, never from the
-log text); a stage failure — an exception or failed wells — becomes an
+A run opens on its own screen: the live log, the run status line, and the
+final summary block (from the summary objects, never from the log text).
+A stage or step failure, whether an exception or failed work, becomes an
 error panel and the app stays alive. There is no cancellation: quitting
-(Ctrl-Q) mid-run is safe, the stages are crash-safe via their done
-markers, and the next start resumes where the run left off.
+(Ctrl-Q) mid-run is safe. The pipeline stages are crash-safe via their
+per-well done markers, and the next start resumes where they left off.
+The training step instead resumes when re-run with the same output
+directory, and a run that already reached `n_epochs` returns cleanly.
 
 ### view
 

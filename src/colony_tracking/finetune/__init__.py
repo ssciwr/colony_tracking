@@ -1,8 +1,8 @@
 """Finetuning track: ``train prepare | train | evaluate``.
 
-``run_prepare`` builds the well-split h5 training set from raw frames and
-ground-truth labels — the conversion itself lives in the private
-``_convert`` module and reuses the io helpers. ``run_train`` runs
+``run_prepare`` builds the well-split h5 training set from input frames
+(raw or difference) and ground-truth labels — the conversion itself lives in
+the private ``_convert`` module and reuses the io helpers. ``run_train`` runs
 micro-sam's ``train_sam`` on that split (a one-batch smoke test runs
 before training), and ``run_evaluate`` benchmarks a checkpoint on the
 held-out split: every ground-truth instance is prompted with its own
@@ -53,23 +53,26 @@ class PrepareSummary:
     train_wells: list[str] = field(default_factory=list)
     val_wells: list[str] = field(default_factory=list)
     n_dropped: int = 0  # labels with < min_instances instances
-    n_missing_raw: int = 0  # labels without a matching raw frame
+    n_missing_images: int = 0  # labels without a matching source image
     error: str | None = None
 
 
 def run_prepare(options: PrepareOptions) -> PrepareSummary:
-    """Build the well-split h5 set from raw frames and ground-truth labels.
+    """Build the well-split h5 set from input frames and ground-truth labels.
 
-    Pairs are matched by file stem, labels below ``min_instances`` are
-    dropped, the raw frames are stretched to uint8 via the shared io
-    helper, and whole wells (never individual files) go to validation —
-    greedily the instance-richest until ``val_fraction`` (capped by
-    ``max_val_wells``), or the explicit ``val_wells`` list. One h5 per
-    pair (``raw`` uint8, ``label`` int32, gzip 4) lands under
-    ``<out_dir>/{train,val}``.
+    Input frames may be raw or difference frames. Labels pair with them by
+    ``(well, frame number)``; a label is any discovered frame whose stem
+    ends in ``_labels`` (the segment stage's ``<frame-stem>__labels.tif``),
+    and other TIFFs in the label tree are ignored. Labels below
+    ``min_instances`` are dropped, every input frame is stretched to uint8
+    via the shared io helper, and whole wells (never individual files) go
+    to validation — greedily the instance-richest until ``val_fraction``
+    (capped by ``max_val_wells``), or the explicit ``val_wells`` list. One
+    h5 per pair, named after the source image (``raw`` uint8, ``label``
+    int32, gzip 4), lands under ``<out_dir>/{train,val}``.
     """
     result = convert(
-        raw_dir=options.raw_dir,
+        image_dir=options.image_dir,
         label_dir=options.label_dir,
         out_dir=options.out_dir,
         val_fraction=options.val_fraction,
@@ -88,7 +91,7 @@ def run_prepare(options: PrepareOptions) -> PrepareSummary:
         train_wells=list(result.train_wells),
         val_wells=list(result.val_wells),
         n_dropped=result.n_dropped,
-        n_missing_raw=result.n_missing_raw,
+        n_missing_images=result.n_missing_images,
         error=result.error,
     )
 
@@ -278,7 +281,7 @@ class EvaluateSummary:
     n_clipped: int = 0  # instances larger than a tile
     per_image: list[dict] = field(default_factory=list)
     split: str = "val"
-    model_type: str = "vit_t"
+    model_type: str = "vit_b_lm"
     patch_shape: tuple[int, int] = (512, 512)
     checkpoint: Path | None = None
     error: str | None = None

@@ -1,20 +1,29 @@
 """Private data conversion for the finetuning track.
 
-Builds the well-split h5 training set from raw frames and ground-truth
-labels, reusing the io helpers (no duplicated io logic). Not public API —
-the public surface is ``run_prepare`` in the package module.
+Builds the well-split h5 training set from input frames (raw or
+difference) and ground-truth labels, reusing the io helpers (no duplicated
+io logic). Not public API — the public surface is ``run_prepare`` in the
+package module.
 
 Why the steps it takes (the prototype's rationale, kept):
 
 * The image set is defined by the label directory: only frames with a
-  matching label are converted. Pairs are matched by file stem — the same
-  file name in the label tree.
+  matching label are converted. Labels pair with input frames by
+  ``(well, frame number)`` — the same ``--LO<nnn>--`` field — not by file
+  name, and a discovered label is a frame whose stem ends in ``_labels``
+  (``<frame-stem>__labels.tif`` from the segment stage, or any
+  ``<stem>_labels.tif`` convention). Other TIFFs in the label tree are
+  ignored, so a difference-root label tree works against a raw input tree
+  and vice versa.
 * Labels with fewer than ``min_instances`` instances are dropped:
   micro-sam samples crops with a sampler that needs a real object per
   crop, so an all-zero label would abort training with "Could not sample
   a valid batch in 500 attempts".
-* The raw frames are stretched to uint8 (1/99 percentile) via the shared
-  io helper: SAM expects input in [0, 255], the raw images are uint16.
+* Every input frame — raw or difference — is stretched to uint8 (1/99
+  percentile) via the shared io helper: SAM expects input in [0, 255].
+  There is no modality detection or branching; the h5 dataset key stays
+  ``raw`` because that is micro-sam's input contract, not a statement
+  about the source modality.
 * The split is by well, never by file: neighbouring timepoints of one well
   correlate at r > 0.99, so a file split would leak the same colonies into
   train and validation. Whole wells move, greedily the instance-richest
@@ -53,12 +62,12 @@ class PreparedSplit:
     train_wells: tuple[str, ...] = ()
     val_wells: tuple[str, ...] = ()
     n_dropped: int = 0  # labels with < min_instances instances
-    n_missing_raw: int = 0  # labels without a matching raw frame
+    n_missing_images: int = 0  # labels without a matching source image
     error: str | None = None
 
 
 def convert(
-    raw_dir: Path | str,
+    image_dir: Path | str,
     label_dir: Path | str,
     out_dir: Path | str,
     val_fraction: float = 0.2,
@@ -68,10 +77,10 @@ def convert(
     val_wells: Sequence[str] | None = None,
 ) -> PreparedSplit:
     """Build the well-split h5 set under ``<out_dir>/{train,val}``."""
-    raw_dir, label_dir, out_dir = Path(raw_dir), Path(label_dir), Path(out_dir)
+    image_dir, label_dir, out_dir = Path(image_dir), Path(label_dir), Path(out_dir)
 
-    if not raw_dir.is_dir():
-        return PreparedSplit(error=f"no such raw frame directory: {raw_dir}")
+    if not image_dir.is_dir():
+        return PreparedSplit(error=f"no such input frame directory: {image_dir}")
     if not label_dir.is_dir():
         return PreparedSplit(error=f"no such label directory: {label_dir}")
     if min_instances < 1:
@@ -80,27 +89,46 @@ def convert(
             f"sampled), got {min_instances}"
         )
 
-    # Pair raw frames and labels by file stem (the same file name in the
-    # label tree); the label set defines the image set, as in the prototype.
-    raw_by_key = {
-        (f.well, f.name): f for frames in io.discover_wells(raw_dir).values()
+    # Pair by (well, frame number), not by file name: raw and difference
+    # frames carry the same --LO<nnn>-- field. The label set defines the
+    # image set, as in the prototype; *_labels is the label filter.
+    images_by_key = {
+        (f.well, f.frame): f for frames in io.discover_wells(image_dir).values()
         for f in frames
     }
     label_frames = [
         f for frames in io.discover_wells(label_dir).values() for f in frames
+        if f.stem.endswith("_labels")
     ]
     if not label_frames:
         return PreparedSplit(error=f"no ground-truth labels found in {label_dir}")
 
-    pairs = []
-    n_missing_raw = 0
+    labels_by_key: dict[tuple[str, int], list[io.Frame]] = {}
     for lf in label_frames:
-        rf = raw_by_key.get((lf.well, lf.name))
-        if rf is None:
-            log.warning("no raw image for %s, skipping", lf.name)
-            n_missing_raw += 1
+        labels_by_key.setdefault((lf.well, lf.frame), []).append(lf)
+    duplicates = {
+        key: frames for key, frames in labels_by_key.items() if len(frames) > 1
+    }
+    if duplicates:
+        details = "; ".join(
+            f"{well} frame {frame}: "
+            + ", ".join(f.name for f in frames)
+            for (well, frame), frames in sorted(duplicates.items())
+        )
+        return PreparedSplit(
+            error=f"multiple labels for the same (well, frame): {details}"
+        )
+
+    pairs = []
+    n_missing_images = 0
+    for (well, frame), label_frames_for_key in sorted(labels_by_key.items()):
+        lf = label_frames_for_key[0]
+        imf = images_by_key.get((well, frame))
+        if imf is None:
+            log.warning("no source image for %s, skipping", lf.name)
+            n_missing_images += 1
             continue
-        pairs.append((lf.well, lf.name, rf.path, lf.path))
+        pairs.append((well, imf.name, imf.path, lf.path))
 
     # Inspect the labels once to drop empty ones and count instances.
     def inspect(pair: tuple[str, str, Path, Path]) -> tuple[str, int]:
@@ -108,7 +136,7 @@ def convert(
         label = np.asarray(tifffile.imread(label_path))
         return pair[0], int(label.max())
 
-    log.info("inspecting %d raw/label pairs ...", len(pairs))
+    log.info("inspecting %d image/label pairs ...", len(pairs))
     with ThreadPoolExecutor(n_workers) as pool:
         inspected = list(pool.map(inspect, pairs))
 
@@ -119,7 +147,7 @@ def convert(
             n_dropped += 1
             continue
         kept.append(
-            {"well": pair[0], "name": pair[1], "raw": pair[2],
+            {"well": pair[0], "name": pair[1], "image": pair[2],
              "label": pair[3], "n_inst": n_inst}
         )
     log.info(
@@ -128,7 +156,7 @@ def convert(
     )
     if not kept:
         return PreparedSplit(
-            n_dropped=n_dropped, n_missing_raw=n_missing_raw,
+            n_dropped=n_dropped, n_missing_images=n_missing_images,
             error="no usable pairs left (all labels dropped)",
         )
 
@@ -149,7 +177,7 @@ def convert(
         unknown = sorted(val_set - set(per_well))
         if unknown:
             return PreparedSplit(
-                n_dropped=n_dropped, n_missing_raw=n_missing_raw,
+                n_dropped=n_dropped, n_missing_images=n_missing_images,
                 error=f"requested validation wells without labels: "
                 f"{', '.join(unknown)}",
             )
@@ -174,7 +202,7 @@ def convert(
     val_recs = [r for r in kept if r["well"] in val_set]
     if not train_recs or not val_recs:
         return PreparedSplit(
-            n_dropped=n_dropped, n_missing_raw=n_missing_raw,
+            n_dropped=n_dropped, n_missing_images=n_missing_images,
             error="split produced an empty train or val set, adjust "
             "val_wells/val_fraction",
         )
@@ -187,21 +215,23 @@ def convert(
             tag, len(recs), sum(r["n_inst"] for r in recs), ",".join(wells),
         )
 
-    # Write one h5 per pair: raw uint8 (shared io stretch), label int32.
+    # Write one h5 per pair, named after the source image: the image is
+    # stretched to uint8 (shared io path) and stored under micro-sam's
+    # ``raw`` key; the label is int32.
     n_pairs = 0
     for tag, recs in (("train", train_recs), ("val", val_recs)):
         split_dir = out_dir / tag
         split_dir.mkdir(parents=True, exist_ok=True)
         for i, rec in enumerate(recs, 1):
-            raw = np.asarray(tifffile.imread(rec["raw"]))
+            image = np.asarray(tifffile.imread(rec["image"]))
             label = np.asarray(tifffile.imread(rec["label"]))
-            if raw.shape != label.shape:
+            if image.shape != label.shape:
                 log.warning("shape mismatch for %s, skipping", rec["name"])
                 continue
             out_path = split_dir / (Path(rec["name"]).stem + ".h5")
             with h5py.File(out_path, "w") as h5:
                 h5.create_dataset(
-                    "raw", data=io.stretch_uint8(raw),
+                    "raw", data=io.stretch_uint8(image),
                     compression="gzip", compression_opts=GZIP_LEVEL,
                 )
                 h5.create_dataset(
@@ -224,5 +254,5 @@ def convert(
         train_wells=sorted({r["well"] for r in train_recs}),
         val_wells=sorted({r["well"] for r in val_recs}),
         n_dropped=n_dropped,
-        n_missing_raw=n_missing_raw,
+        n_missing_images=n_missing_images,
     )

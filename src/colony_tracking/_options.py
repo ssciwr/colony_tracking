@@ -321,13 +321,18 @@ class AnalysisOptions(Options):
 class PrepareOptions(Options):
     """Options for ``train prepare`` (finetune data conversion)."""
 
-    raw_dir: Path = field(
-        metadata={"help": "Directory of raw plate frames (flat or per-well layout)."}
+    image_dir: Path = field(
+        metadata={
+            "help": "Directory of input frames (raw or difference frames; flat "
+            "or per-well layout)."
+        }
     )
     label_dir: Path = field(
         metadata={
-            "help": "Directory of ground-truth label images (same layout, file "
-            "names matching the raw frames); the label set defines the image set."
+            "help": "Directory of ground-truth label images; labels pair with "
+            "input frames by well and frame, and files whose stem ends in "
+            "_labels (e.g. <frame-stem>__labels.tif) are the label set (the "
+            "label set defines the image set)."
         }
     )
     out_dir: Path = field(
@@ -384,10 +389,11 @@ class TrainOptions(Options):
         }
     )
     model_type: str = field(
-        default="vit_t",
+        default="vit_b_lm",
         metadata={
-            "help": "SAM variant ('vit_t' is MobileSAM and the lightest option; "
-            "the laptop GPU OOMs on vit_b)."
+            "help": "SAM variant; 'vit_b_lm' is the default and matches the "
+            "segment stage. 'vit_t' (MobileSAM) is the lightest option but "
+            "needs the optional mobile_sam package and its weights."
         },
     )
     configuration: str = field(
@@ -449,8 +455,13 @@ class EvaluateOptions(Options):
         },
     )
     model_type: str = field(
-        default="vit_t",
-        metadata={"help": "SAM variant the checkpoint was trained with."},
+        default="vit_b_lm",
+        metadata={
+            "help": "SAM variant the checkpoint was trained with; 'vit_b_lm' is "
+            "the default and matches the segment stage. 'vit_t' (MobileSAM) is "
+            "the lightest option but needs the optional mobile_sam package and "
+            "its weights."
+        },
     )
     patch_shape: tuple[int, int] = field(
         default=(512, 512),

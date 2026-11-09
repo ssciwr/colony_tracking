@@ -165,21 +165,21 @@ last raw frame, no colony tinting; logged).
 
 ---
 
-## 4. Finetuning track: raw frames → training pairs
+## 4. Finetuning track: input frames → training pairs
 
 Module: `src/colony_tracking/finetune/_convert.py` (prepare) and
 `src/colony_tracking/finetune/__init__.py` (evaluate).
 
 | # | Operation | Exact math | Code |
 | --- | --- | --- | --- |
-| 4.1.1 | Label inspection | `label = np.asarray(tifffile.imread(label_path))`; instance count = `int(label.max())`; labels with fewer than `min_instances` instances are dropped | `_convert.py:106-109, 117-119` |
-| 4.1.2 | Raw frame stretch | `raw = np.asarray(tifffile.imread(rec["raw"]))`; written as `io.stretch_uint8(raw)`, the same 1/99 percentile stretch (`(im − lo)/(hi − lo) · 255`, clipped, uint8) the raw-input segment path uses | `_convert.py:196-204` |
-| 4.1.3 | Label cast | `label.astype(np.int32)`; shape mismatch against the raw frame is skipped with a warning | `_convert.py:198-200, 208` |
-| 4.1.4 | Write | h5 datasets `raw` (uint8) and `label` (int32), gzip level 4, one file per frame pair under `<out>/{train,val}/` | `_convert.py:202-210` |
-| 4.2.1 | Evaluate: tile crop | box-centred tile: `ty = clip((y0+y1)//2 − ph//2, 0, h − ph)`, `tx = clip((x0+x1)//2 − pw//2, 0, w − pw)`; `patch = raw[ty:ty+ph, tx:tx+pw]` (default 512×512) | `__init__.py:333-340` |
-| 4.2.2 | SAM prompt | `predictor.set_image(np.repeat(patch[..., None], 3, −1))`; box swapped to `[x0−tx, y0−ty, x1−tx, y1−ty]`; one mask from `predict(box=…, multimask_output=False)` | `__init__.py:342-350` |
-| 4.2.3 | Per-instance IoU | `union = logical_or(pred, true).sum()`; `iou = logical_and(pred, true).sum() / union` (0.0 when the union is empty); `true = (patch_gt == iid)` | `__init__.py:352-359` |
-| 4.2.4 | Clipped flag | `(y1 − y0) > ph or (x1 − x0) > pw` | `__init__.py:360` |
+| 4.1.1 | Label inspection | `label = np.asarray(tifffile.imread(label_path))`; instance count = `int(label.max())`; labels with fewer than `min_instances` instances are dropped | `_convert.py:133-151` |
+| 4.1.2 | Input frame stretch | `image = np.asarray(tifffile.imread(rec["image"]))`; written as `io.stretch_uint8(image)`, the same 1/99 percentile stretch (`(im − lo)/(hi − lo) · 255`, clipped, uint8) the raw-input segment path uses — applied identically to raw and difference input frames | `_convert.py:226-236` |
+| 4.1.3 | Label cast | `label.astype(np.int32)`; shape mismatch against the input frame is skipped with a warning | `_convert.py:228-230, 237-240` |
+| 4.1.4 | Write | h5 datasets `raw` (uint8) and `label` (int32), gzip level 4, one file per image/label pair named after the source image under `<out>/{train,val}/` | `_convert.py:231-240` |
+| 4.2.1 | Evaluate: tile crop | box-centred tile: `ty = clip((y0+y1)//2 − ph//2, 0, h − ph)`, `tx = clip((x0+x1)//2 − pw//2, 0, w − pw)`; `patch = raw[ty:ty+ph, tx:tx+pw]` (default 512×512) | `__init__.py:338-340` |
+| 4.2.2 | SAM prompt | `predictor.set_image(np.repeat(patch[..., None], 3, −1))`; box swapped to `[x0−tx, y0−ty, x1−tx, y1−ty]`; one mask from `predict(box=…, multimask_output=False)` | `__init__.py:347-353` |
+| 4.2.3 | Per-instance IoU | `union = logical_or(pred, true).sum()`; `iou = logical_and(pred, true).sum() / union` (0.0 when the union is empty); `true = (patch_gt == iid)` | `__init__.py:355-360` |
+| 4.2.4 | Clipped flag | `(y1 − y0) > ph or (x1 − x0) > pw` | `__init__.py:363` |
 
 ---
 

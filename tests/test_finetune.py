@@ -2,8 +2,9 @@
 
 Seams under test: the finetune option dataclasses (the CLI contract of the
 spec's "Options and CLI contract" section) and ``run_prepare`` on a small
-synthetic labeled mini-plate — the well-based split (no well crosses the
-split; greedy instance-richest wells until ``val_fraction``; the
+synthetic labeled mini-plate — label/input pairing by ``(well, frame
+number)`` with the ``*_labels`` suffix filter, the well-based split (no well
+crosses the split; greedy instance-richest wells until ``val_fraction``; the
 ``max_val_wells`` cap; an explicit val-well list), low-instance label
 drops, the h5 contents (dtypes, shapes, stretched values, gzip 4), and the
 summary counters. The scoring seam ``predict_instances`` (tile choice,
@@ -33,6 +34,7 @@ import tifffile
 from colony_tracking import io
 from colony_tracking.finetune import (
     EvaluateOptions,
+    EvaluateSummary,
     PrepareOptions,
     PrepareSummary,
     TrainOptions,
@@ -42,7 +44,13 @@ from colony_tracking.finetune import (
     run_prepare,
     run_train,
 )
-from conftest import DiskSpec, LabeledPlate, build_labeled_plate, frame_name
+from conftest import (
+    DiskSpec,
+    LabeledPlate,
+    build_labeled_plate,
+    frame_name,
+    label_name,
+)
 
 
 # --- field contracts (names, order, required-ness) -------------------------
@@ -51,7 +59,7 @@ from conftest import DiskSpec, LabeledPlate, build_labeled_plate, frame_name
 def test_prepare_options_fields_match_contract():
     names = [f.name for f in fields(PrepareOptions)]
     assert names == [
-        "raw_dir",
+        "image_dir",
         "label_dir",
         "out_dir",
         "val_fraction",
@@ -96,7 +104,7 @@ def test_evaluate_options_fields_match_contract():
 
 def test_finetune_required_fields_have_no_default():
     required = {
-        PrepareOptions: ["raw_dir", "label_dir", "out_dir"],
+        PrepareOptions: ["image_dir", "label_dir", "out_dir"],
         TrainOptions: ["data_dir", "out_dir"],
         EvaluateOptions: ["data_dir"],
     }
@@ -117,12 +125,19 @@ def test_missing_required_field_raises():
         EvaluateOptions()
 
 
+def test_summary_has_no_legacy_missing_raw_field():
+    # The modality-specific name is gone from the public summary.
+    assert "n_missing_raw" not in {f.name for f in fields(PrepareSummary)}
+    assert not hasattr(PrepareSummary(), "n_missing_raw")
+    assert "n_missing_images" in {f.name for f in fields(PrepareSummary)}
+
+
 # --- defaults, exactly as the spec states -----------------------------------
 
 
 def test_prepare_options_defaults():
     opts = PrepareOptions(
-        raw_dir=Path("raw"), label_dir=Path("labels"), out_dir=Path("out")
+        image_dir=Path("images"), label_dir=Path("labels"), out_dir=Path("out")
     )
     assert opts.val_fraction == 0.2
     assert opts.max_val_wells == 3
@@ -133,7 +148,7 @@ def test_prepare_options_defaults():
 
 def test_train_options_defaults():
     opts = TrainOptions(data_dir=Path("data"), out_dir=Path("run"))
-    assert opts.model_type == "vit_t"
+    assert opts.model_type == "vit_b_lm"
     assert opts.configuration == "Minimal"
     assert opts.samples_per_image == 3
     assert opts.val_samples_per_image == 2
@@ -149,11 +164,16 @@ def test_evaluate_options_defaults():
     opts = EvaluateOptions(data_dir=Path("data"))
     assert opts.split == "val"
     assert opts.checkpoint is None
-    assert opts.model_type == "vit_t"
+    assert opts.model_type == "vit_b_lm"
     assert opts.patch_shape == (512, 512)
     assert opts.n_max_images is None
     assert opts.n_max_instances is None
     assert opts.output is None
+
+
+def test_evaluate_summary_default_model_matches_the_option():
+    # A hand-built summary must not fall back to the old vit_t default.
+    assert EvaluateSummary().model_type == "vit_b_lm"
 
 
 # --- per-field help text ----------------------------------------------------
@@ -192,7 +212,7 @@ def test_finetune_options_roundtrip():
     assert EvaluateOptions.from_dict(opts.to_dict()) == opts
 
     opts = PrepareOptions(
-        raw_dir=Path("/raw"),
+        image_dir=Path("/images"),
         label_dir=Path("/labels"),
         out_dir=Path("/h5"),
         val_wells=["-A001", "-A002"],
@@ -236,7 +256,7 @@ def labeled(tmp_path: Path) -> LabeledPlate:
 def _prepare(labeled: LabeledPlate, tmp_path: Path, **overrides) -> PrepareSummary:
     return run_prepare(
         PrepareOptions(
-            raw_dir=labeled.raw_root,
+            image_dir=labeled.raw_root,
             label_dir=labeled.label_root,
             out_dir=tmp_path / "h5",
             **overrides,
@@ -338,15 +358,207 @@ def test_well_whose_labels_are_all_dropped_is_logged(labeled, tmp_path, caplog):
     assert "-A004" in caplog.text
 
 
-def test_labels_without_raw_are_skipped_and_counted(labeled, tmp_path):
-    # An orphan label for a well the raw tree does not have.
+def test_labels_without_source_image_are_skipped_and_counted(labeled, tmp_path, caplog):
+    # An orphan label for a well the input tree does not have.
     tifffile.imwrite(
-        labeled.label_root / frame_name("-A006", 1, 0),
+        labeled.label_root / label_name(frame_name("-A006", 1, 0)),
+        np.zeros((512, 512), dtype=np.uint32),
+    )
+    with caplog.at_level(logging.WARNING, logger="colony_tracking"):
+        summary = _prepare(labeled, tmp_path)
+    assert summary.n_missing_images == 1
+    assert summary.n_pairs == 11  # the orphan changes nothing else
+    assert "no source image" in caplog.text
+    assert label_name(frame_name("-A006", 1, 0)) in caplog.text
+
+
+# --- label resolution: pair by (well, frame), *_labels is the filter ----------
+#
+# The label set defines the image set. A label is any discovered frame whose
+# stem ends in ``_labels``; it pairs with the input frame carrying the same
+# well and LO frame number, so neither file names nor modality markers need
+# to match.
+
+
+def _two_well_plate(tmp_path: Path, layout: str = "flat") -> LabeledPlate:
+    """Two wells x two frames with one planted disk each (small fixture)."""
+    return build_labeled_plate(
+        tmp_path / "plate",
+        wells=("-A001", "-A002"),
+        n_frames=2,
+        disks={
+            "-A001": [DiskSpec("a", cy=150.0, cx=150.0, r0=18.0)],
+            "-A002": [DiskSpec("b", cy=300.0, cx=300.0, r0=16.0)],
+        },
+        layout=layout,
+    )
+
+
+def _diff_frame_name(name: str) -> str:
+    """The difference-stage name for a raw frame (adds ``_diff_uint8``)."""
+    return f"{name[:-4]}_diff_uint8.tif"
+
+
+def _copy_as_diff(src_root: Path, dst_root: Path, names: list[str]) -> list[str]:
+    """Write ``names`` from ``src_root`` under difference-style names."""
+    dst_root.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name in names:
+        diff_name = _diff_frame_name(name)
+        tifffile.imwrite(dst_root / diff_name, tifffile.imread(src_root / name))
+        written.append(diff_name)
+    return written
+
+
+def _write_label_tree(
+    dst_root: Path, labeled: LabeledPlate, marker: str = ""
+) -> None:
+    """Mirror ``labeled``'s labels as ``<frame-stem><marker>__labels.tif``."""
+    for well, names in labeled.plate.wells.items():
+        if well not in labeled.label_paths:
+            continue
+        dst_root.mkdir(parents=True, exist_ok=True)
+        for name, label_path in zip(names, labeled.label_paths[well]):
+            tifffile.imwrite(
+                dst_root / label_name(name, marker), tifffile.imread(label_path)
+            )
+
+
+def test_raw_input_with_segment_style_labels_pairs_and_names_h5_after_raw(tmp_path):
+    plate = _two_well_plate(tmp_path)
+    summary = run_prepare(
+        PrepareOptions(
+            image_dir=plate.raw_root,
+            label_dir=plate.label_root,
+            out_dir=tmp_path / "h5",
+        )
+    )
+    assert summary.error is None
+    expected = {
+        Path(name).stem + ".h5"
+        for names in plate.plate.wells.values() for name in names
+    }
+    assert {p.name for p in (tmp_path / "h5").glob("*/*.h5")} == expected
+
+
+def test_difference_input_pairs_by_well_and_frame(tmp_path):
+    plate = _two_well_plate(tmp_path)
+    diff_root = tmp_path / "diff"
+    names = [
+        name for well_names in plate.plate.wells.values() for name in well_names
+    ]
+    diff_names = _copy_as_diff(plate.raw_root, diff_root, names)
+    # Labels from the difference root: <diff-stem>__labels.tif.
+    label_root = tmp_path / "diff_labels"
+    for well, raw_names in plate.plate.wells.items():
+        if well not in plate.label_paths:
+            continue
+        label_root.mkdir(parents=True, exist_ok=True)
+        for name, label_path in zip(raw_names, plate.label_paths[well]):
+            tifffile.imwrite(
+                label_root / label_name(_diff_frame_name(name)),
+                tifffile.imread(label_path),
+            )
+
+    summary = run_prepare(
+        PrepareOptions(
+            image_dir=diff_root, label_dir=label_root, out_dir=tmp_path / "h5"
+        )
+    )
+    assert summary.error is None
+    expected = {Path(name).stem + ".h5" for name in diff_names}
+    assert {p.name for p in (tmp_path / "h5").glob("*/*.h5")} == expected
+
+    # The same preprocessing: raw == stretch_uint8(source), label int32, gzip 4.
+    source = diff_root / diff_names[0]
+    h5_path = next((tmp_path / "h5").glob(f"*/{Path(diff_names[0]).stem}.h5"))
+    with h5py.File(h5_path) as h5:
+        assert h5["raw"].dtype == np.uint8
+        assert np.array_equal(h5["raw"][:], io.stretch_uint8(tifffile.imread(source)))
+        assert h5["label"].dtype == np.int32
+        assert h5["raw"].compression == "gzip"
+        assert h5["raw"].compression_opts == 4
+        assert h5["label"].compression == "gzip"
+        assert h5["label"].compression_opts == 4
+
+
+def test_raw_input_with_difference_root_labels_pairs_without_renaming(tmp_path):
+    # The exact E2E case: raw frames, labels written by a difference-root run
+    # (<raw-stem>_diff_uint8__labels.tif). Pairing is by well/frame.
+    plate = _two_well_plate(tmp_path)
+    label_root = tmp_path / "diff_labels"
+    _write_label_tree(label_root, plate, marker="_diff_uint8")
+
+    summary = run_prepare(
+        PrepareOptions(
+            image_dir=plate.raw_root, label_dir=label_root, out_dir=tmp_path / "h5"
+        )
+    )
+    assert summary.error is None
+    expected = {
+        Path(name).stem + ".h5"
+        for names in plate.plate.wells.values() for name in names
+    }
+    assert {p.name for p in (tmp_path / "h5").glob("*/*.h5")} == expected
+
+
+def test_non_label_tiffs_and_ref_labels_are_ignored(labeled, tmp_path):
+    # ref__labels.tif has no LO field (discovery skips it); a TIFF with an LO
+    # field but no _labels suffix is not a label.
+    tifffile.imwrite(
+        labeled.label_root / "ref__labels.tif",
+        np.zeros((512, 512), dtype=np.uint32),
+    )
+    name = labeled.plate.wells["-A001"][0]
+    tifffile.imwrite(
+        labeled.label_root / f"{Path(name).stem}_extra.tif",
         np.zeros((512, 512), dtype=np.uint32),
     )
     summary = _prepare(labeled, tmp_path)
-    assert summary.n_missing_raw == 1
-    assert summary.n_pairs == 11  # the orphan changes nothing else
+    assert summary.error is None
+    assert summary.n_pairs == 11
+    assert summary.n_missing_images == 0
+
+
+def test_duplicate_labels_for_one_pair_are_an_error(labeled, tmp_path, caplog):
+    name = labeled.plate.wells["-A001"][0]
+    duplicate = label_name(name, "_diff_uint8")
+    tifffile.imwrite(
+        labeled.label_root / duplicate,
+        tifffile.imread(labeled.label_paths["-A001"][0]),
+    )
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        summary = _prepare(labeled, tmp_path)
+    assert summary.error is not None
+    assert "multiple labels" in summary.error
+    assert label_name(name) in summary.error
+    assert duplicate in summary.error
+    assert "-A001" in summary.error and "frame 1" in summary.error
+    assert not (tmp_path / "h5").exists()
+
+
+def test_flat_input_with_per_well_labels_cross_layout(tmp_path):
+    plate = _two_well_plate(tmp_path)  # flat input, flat labels
+    per_well_labels = tmp_path / "labels_per_well"
+    for well, paths in plate.label_paths.items():
+        well_dir = per_well_labels / well
+        well_dir.mkdir(parents=True)
+        for path in paths:
+            path.rename(well_dir / path.name)
+
+    summary = run_prepare(
+        PrepareOptions(
+            image_dir=plate.raw_root,
+            label_dir=per_well_labels,
+            out_dir=tmp_path / "h5",
+        )
+    )
+    assert summary.error is None
+    expected = {
+        Path(name).stem + ".h5"
+        for names in plate.plate.wells.values() for name in names
+    }
+    assert {p.name for p in (tmp_path / "h5").glob("*/*.h5")} == expected
 
 
 # --- the h5 files -------------------------------------------------------------
@@ -359,7 +571,7 @@ def test_h5_contents_match_source(labeled, tmp_path):
     h5_path = out / "val" / (name[:-4] + ".h5")
     assert h5_path.exists()
     raw_src = tifffile.imread(labeled.raw_root / name)
-    label_src = tifffile.imread(labeled.label_root / name)
+    label_src = tifffile.imread(labeled.label_paths["-A003"][0])
     with h5py.File(h5_path) as h5:
         assert h5["raw"].dtype == np.uint8
         assert h5["label"].dtype == np.int32
@@ -380,7 +592,8 @@ def test_per_well_layout(tmp_path):
     )
     summary = run_prepare(
         PrepareOptions(
-            raw_dir=plate.raw_root, label_dir=plate.label_root, out_dir=tmp_path / "h5"
+            image_dir=plate.raw_root, label_dir=plate.label_root,
+            out_dir=tmp_path / "h5",
         )
     )
     assert summary.error is None
@@ -388,7 +601,7 @@ def test_per_well_layout(tmp_path):
     name = plate.plate.wells["-A003"][0]  # -A003 is in the train split
     h5_path = tmp_path / "h5" / "train" / (name[:-4] + ".h5")
     raw_src = tifffile.imread(plate.raw_root / "-A003" / name)
-    label_src = tifffile.imread(plate.label_root / "-A003" / name)
+    label_src = tifffile.imread(plate.label_paths["-A003"][0])
     with h5py.File(h5_path) as h5:
         assert np.array_equal(h5["raw"][:], io.stretch_uint8(raw_src))
         assert np.array_equal(h5["label"][:], label_src.astype(np.int32))
@@ -407,7 +620,7 @@ def test_run_prepare_summary_counters(labeled, tmp_path):
     assert summary.n_val == 3
     assert summary.n_instances == 15
     assert summary.n_dropped == 1
-    assert summary.n_missing_raw == 0
+    assert summary.n_missing_images == 0
     assert len(list((out / "train").glob("*.h5"))) == 8
     assert len(list((out / "val").glob("*.h5"))) == 3
 

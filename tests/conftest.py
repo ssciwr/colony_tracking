@@ -63,6 +63,16 @@ def frame_name(well: str, lo: int, t_ms: int) -> str:
     )
 
 
+def label_name(frame: str, marker: str = "") -> str:
+    """The label file name for an input frame: ``<stem><marker>__labels.tif``.
+
+    ``marker`` inserts a modality/run marker between the frame stem and the
+    ``__labels`` suffix (e.g. ``_diff_uint8`` for a difference-root label).
+    """
+    stem = frame[:-5] if frame.lower().endswith(".tiff") else frame[:-4]
+    return f"{stem}{marker}__labels.tif"
+
+
 # --- reading written outputs --------------------------------------------------
 
 
@@ -360,11 +370,12 @@ class LabeledPlate:
 
     The raw tree (``raw_root``) is a ``build_mini_plate`` tree (noise on,
     no ring). The label tree (``label_root``) mirrors the raw layout: for
-    every well in ``disks``, one label TIFF per frame carrying the raw
-    frame's file name (uint32; 0 = background; 1..N = the well's disks in
-    planting order, so ``int(label.max())`` is the instance count). Wells
-    not in ``disks`` have raw frames but no label files — the finetune
-    conversion pairs by file stem, so they stay out of the image set.
+    every well in ``disks``, one ``<frame-stem>__labels.tif`` per frame
+    (uint32; 0 = background; 1..N = the well's disks in planting order, so
+    ``int(label.max())`` is the instance count). Wells not in ``disks`` have
+    raw frames but no label files — the finetune conversion pairs labels to
+    input frames by ``(well, frame number)``, so they stay out of the image
+    set.
     """
 
     plate: MiniPlate  # the raw tree's ground truth
@@ -426,7 +437,7 @@ def build_labeled_plate(
                 if mask is not None:
                     n_inst += 1
                     label[mask] = i + 1
-            path = well_dir / plate.wells[w][t - 1]
+            path = well_dir / label_name(plate.wells[w][t - 1])
             tifffile.imwrite(path, label, compression="zlib")
             paths.append(path)
             counts.append(n_inst)

@@ -11,9 +11,10 @@ handlers.
 Finetune steps also print: micro-sam/torch_em write progress to
 stdout/stderr and draw a tqdm bar there, not through the package logger.
 :func:`output_capture` is that separate door: it redirects the two streams
-into plain unprefixed lines, collapsing a write's carriage-return repaints
-to their last segment so a bar does not flood the pane. The runner uses it
-for finetune kinds only; the stages' logging is left untouched.
+into plain unprefixed lines, collapsing carriage-return repaints (even
+across the per-write flushes tqdm makes) to their last segment so a bar
+does not flood the pane. The runner uses it for finetune kinds only; the
+stages' logging is left untouched.
 
 With a running textual ``App`` (the normal TUI case) records and output
 lines are marshalled onto the UI thread through ``App.call_from_thread``
@@ -84,12 +85,14 @@ def forwarding(
 class _LineWriter(io.TextIOBase):
     """A text stream that emits plain lines to ``emit``.
 
-    Newlines end a line. Carriage returns are tqdm repaints: everything
-    since the previous ``\\r`` is the same line's next frame, so it is
-    discarded until the line ends. That makes a bar one line per finished
-    line (its last segment), however many frames it drew, instead of a
-    line per refresh flooding the pane. An unterminated line is emitted by
-    :meth:`flush` (the run's end), and empty lines are dropped.
+    Newlines end a line, and so does CRLF (even when the two characters
+    arrive in separate writes). A lone carriage return is a tqdm repaint:
+    everything since the previous ``\\r`` is the same line's next frame, so
+    it is discarded until the line ends. That makes a bar one line per
+    finished line (its last segment), however many frames it drew, instead
+    of a line per refresh flooding the pane. An unterminated line is
+    emitted once by :meth:`finish` (the run's end), and empty lines are
+    dropped.
     """
 
     encoding = "utf-8"
@@ -116,9 +119,15 @@ class _LineWriter(io.TextIOBase):
                 if index + 1 < len(data) and data[index + 1] == "\n":
                     self._emit_segment(data, start, index)  # CRLF line end
                     index += 2
+                    start = index
+                elif index + 1 == len(data):
+                    # A trailing CR may be the first half of a CRLF split
+                    # across writes: defer it (with its segment) until the
+                    # next write, which re-reads it in context.
+                    break
                 else:  # a repaint: drop the segment drawn before it
                     index += 1
-                start = index
+                    start = index
             elif char == "\n":
                 self._emit_segment(data, start, index)
                 index += 1
@@ -136,7 +145,21 @@ class _LineWriter(io.TextIOBase):
             self._emit(segment)
 
     def flush(self) -> None:
-        last = self._buffer
+        """No-op: a flush is not a line boundary.
+
+        tqdm's printer calls ``file.flush()`` after every repaint write
+        (torch_em uses it), so emitting the buffer here would turn each
+        frame into its own line and defeat the repaint collapse. The
+        run's end calls :meth:`finish` instead.
+        """
+
+    def finish(self) -> None:
+        """Emit the final unterminated segment, if any (the run's end).
+
+        A trailing ``\\r`` is the last repaint's boundary, not part of the
+        segment. Idempotent: a second call finds an empty buffer.
+        """
+        last = self._buffer.removesuffix("\r")
         self._buffer = ""
         if last:
             self._emit(last)
@@ -155,10 +178,11 @@ def output_capture(
     Each completed line is delivered through ``deliver`` (the
     :func:`deliverer` wrapper of the running app), exactly like a log
     record, so the pane sees it on the UI thread; a carriage-return
-    repaint is kept as the same line's last segment. A delivery failure
-    never kills the run (the UI may be closing as the step writes), and
-    the original streams are restored on exit, flushing any final
-    unterminated line.
+    repaint is kept as the same line's last segment. A stream flush is
+    not a line boundary (tqdm flushes after every repaint), so only
+    :meth:`_LineWriter.finish` emits the final unterminated line, once. A
+    delivery failure never kills the run (the UI may be closing as the
+    step writes), and the original streams are restored on exit.
     """
 
     def emit(line: str) -> None:
@@ -173,5 +197,5 @@ def output_capture(
         with redirect_stdout(stdout), redirect_stderr(stderr):
             yield
     finally:
-        stdout.flush()
-        stderr.flush()
+        stdout.finish()
+        stderr.finish()

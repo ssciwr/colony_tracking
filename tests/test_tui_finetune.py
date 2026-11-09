@@ -17,8 +17,9 @@ Seams under test:
 - the run flow: *Run this step* writes the TOML first, then runs the
   step in-process with the live log; a finetune step's printed output and
   tqdm repaints (stdout/stderr) reach the pane as plain unprefixed lines,
-  collapsing a write's carriage-return repaints to its last segment,
-  while the stage path keeps its logger-only routing; the summary blocks
+  collapsing every carriage-return repaint to its last segment — even
+  when the writer flushes between repaints, as tqdm does — while the
+  stage path keeps its logger-only routing; the summary blocks
   report the step's numbers, and a summary carrying an ``error`` becomes
   the error panel with the CLI's exit-1 wording (``train prepare: …`` /
   ``train train: …`` / ``train evaluate: …``).
@@ -58,6 +59,7 @@ from colony_tracking.tui.draft import (
     ConfigDraft,
 )
 from colony_tracking.tui.forms import NO_DEFAULT, kebab, specs_of
+from colony_tracking.tui.records import deliverer, output_capture
 from colony_tracking.tui.screens._save import LoadConfigDialog, SaveConfigDialog
 from colony_tracking.tui.screens.finetune import ENTRIES, FinetuneScreen
 from colony_tracking.tui.screens.home import HomeScreen
@@ -1067,6 +1069,7 @@ def test_run_this_step_writes_the_toml_then_runs_train_with_the_live_log(
         # the pane.
         for percent, bar in ((10, "#"), (20, "##"), (30, "###")):
             sys.stdout.write(f"\r {percent}%|{bar} |")
+            sys.stdout.flush()  # as tqdm does after every repaint
         sys.stdout.write("\n")
         sys.stderr.write("val loader ready\n")
         return _train_summary()
@@ -1308,6 +1311,74 @@ def test_printed_output_capture_is_finetune_only(monkeypatch, tmp_path):
     assert seen["train_stdout"] is not original_stdout
     assert train_output == ["train printed line"]
     assert sys.stdout is original_stdout  # restored after the run
+
+
+def test_stream_flushes_do_not_end_a_line():
+    """tqdm flushes after every repaint write; a flush is not a line
+    boundary, so repaints separated by ``flush()`` still collapse to the
+    last segment (and end-of-run emits that segment exactly once)."""
+    lines: list[str] = []
+
+    def on_output(line: str) -> None:
+        lines.append(line)
+
+    with output_capture(deliverer(None), on_output):
+        for percent in (10, 50, 100):
+            sys.stdout.write(f"\r{percent}%")
+            sys.stdout.flush()
+
+    assert lines == ["100%"]
+
+
+def test_a_tqdm_like_write_flush_sequence_ending_in_a_newline_is_one_line():
+    """The real bar's shape: repaint, flush, repaint, flush, … and a final
+    newline when it closes. Only the closed line reaches the pane."""
+    lines: list[str] = []
+
+    def on_output(line: str) -> None:
+        lines.append(line)
+
+    with output_capture(deliverer(None), on_output):
+        for percent in (10, 50, 100):
+            sys.stdout.write(f"\r{percent}%|{'#' * percent} |")
+            sys.stdout.flush()
+        sys.stdout.write("\n")
+
+    assert lines == ["100%|" + "#" * 100 + " |"]
+
+
+def test_a_crlf_split_across_writes_is_still_a_line_end():
+    """A CRLF can arrive as ``"hello\\r"`` then ``"\\n"``; the line still
+    ends and is emitted once (a trailing CR is deferred, not consumed)."""
+    lines: list[str] = []
+
+    def on_output(line: str) -> None:
+        lines.append(line)
+
+    with output_capture(deliverer(None), on_output):
+        sys.stdout.write("hello\r")
+        sys.stdout.flush()
+        sys.stdout.write("\n")
+
+    assert lines == ["hello"]
+
+
+def test_a_real_tqdm_bar_becomes_a_bounded_number_of_lines():
+    """A real tqdm loop cannot flood the pane: with a repaint per step it
+    still emits only a small bounded number of lines, the last at 100%."""
+    import tqdm
+
+    lines: list[str] = []
+
+    def on_output(line: str) -> None:
+        lines.append(line)
+
+    with output_capture(deliverer(None), on_output):
+        for _ in tqdm.tqdm(range(6), miniters=1, mininterval=0, file=None):
+            pass
+
+    assert 1 <= len(lines) <= 2, lines
+    assert "100%" in lines[-1]
 
 
 def test_open_step_run_reports_the_prepare_drafts_invalid_message(tmp_path):

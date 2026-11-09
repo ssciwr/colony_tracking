@@ -140,23 +140,23 @@ def test_a_new_registry_entry_slots_in(monkeypatch):
     stage needs: the same screen class renders its form, including the
     select/tuple kinds."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:
             draft = app.drafts["pipeline"]
-            draft.stages["train"] = {}
-            stage = StageScreen("train", draft)
+            draft.stages["future"] = {}
+            stage = StageScreen("future", draft)
             app.push_screen(stage)
             await pilot.pause()
-            assert isinstance(stage.form.query_one("#train-mode"), Select)
-            assert isinstance(stage.form.query_one("#train-shape"), Input)
-            assert isinstance(stage.form.query_one("#train-label-dir"), Input)
-            stage.form.query_one("#train-mode", Select).value = "b"
+            assert isinstance(stage.form.query_one("#future-mode"), Select)
+            assert isinstance(stage.form.query_one("#future-shape"), Input)
+            assert isinstance(stage.form.query_one("#future-label-dir"), Input)
+            stage.form.query_one("#future-mode", Select).value = "b"
             await pilot.pause()
-            assert draft.get("train", "mode") == "b"
+            assert draft.get("future", "mode") == "b"
 
     asyncio.run(scenario())
 
@@ -769,18 +769,18 @@ def test_select_overlay_keeps_arrow_precedence(monkeypatch):
     dropdown, further downs navigate the overlay, and the screen's
     field-stepping binding never steals the key."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:
             draft = app.drafts["pipeline"]
-            draft.stages["train"] = {}
-            stage = StageScreen("train", draft)
+            draft.stages["future"] = {}
+            stage = StageScreen("future", draft)
             app.push_screen(stage)
             await pilot.pause()
-            mode = stage.form.query_one("#train-mode", Select)
+            mode = stage.form.query_one("#future-mode", Select)
             mode.focus()
             await pilot.pause()
             await pilot.press("down")  # the Select's own binding: open
@@ -788,14 +788,14 @@ def test_select_overlay_keeps_arrow_precedence(monkeypatch):
             assert mode.expanded
             await pilot.press("down")  # the overlay's highlight moves
             await pilot.pause()
-            shape = stage.form.query_one("#train-shape")
+            shape = stage.form.query_one("#future-shape")
             assert app.focused is not shape  # the focus stayed with the select
             await pilot.press("down")
             await pilot.pause()
             await pilot.press("enter")  # pick the highlighted literal
             await pilot.pause()
             assert not mode.expanded
-            assert draft.get("train", "mode") == "b"
+            assert draft.get("future", "mode") == "b"
             assert app.focused is mode  # the focus came back to the field
 
     asyncio.run(scenario())

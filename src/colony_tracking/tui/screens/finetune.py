@@ -5,9 +5,10 @@ The rows are the spec's three names — ``Prepare data``, ``Train decoder``,
 ``Evaluate checkpoint`` — while the run-type keys and TOML names stay
 ``prepare`` / ``train`` / ``evaluate``. A row is live exactly when its
 step has a registered :class:`~colony_tracking.tui.screens.step.StepSpec`
-(and therefore a registered screen); the rest stay disabled planned rows.
-A step's row becomes live by registering its spec and its draft/runner
-kind — this submenu needs no edit.
+(and therefore a registered screen); a step with no spec yet is a
+disabled row. Adding a step means adding its row to :data:`ENTRIES` and
+registering its spec and draft/runner kind — the row's liveness then
+follows from the registry.
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ ENTRIES: tuple[tuple[str, str], ...] = (
 
 
 class FinetuneScreen(Screen[None]):
-    """The finetune submenu: one row per step (see the module docstring)."""
+    """The finetune submenu: one row per :data:`ENTRIES` entry (see the
+    module docstring)."""
 
     def compose(self) -> ComposeResult:
         yield Header()

@@ -189,20 +189,20 @@ def test_a_new_registry_entry_gets_browse_buttons_for_its_path_fields(
     """One registry entry adds the whole section — its Path field's browse
     button included (none on the non-path field)."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.drafts["pipeline"].stages["train"] = {}
+            app.drafts["pipeline"].stages["future"] = {}
             app.push_screen(ConfigScreen())
             await pilot.pause()
             assert isinstance(
-                app.screen.query_one("#browse-cfg-train-label-dir"), BrowseButton
+                app.screen.query_one("#browse-cfg-future-label-dir"), BrowseButton
             )
             with pytest.raises(NoMatches):
-                app.screen.query_one("#browse-cfg-train-mode")
+                app.screen.query_one("#browse-cfg-future-mode")
 
     asyncio.run(scenario())
 

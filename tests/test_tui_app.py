@@ -156,7 +156,7 @@ def test_the_home_menu_has_no_disabled_rows():
 
     async def scenario() -> None:
         app = ColonyTuiApp()
-        async with app.run_test() as pilot:
+        async with app.run_test():
             assert isinstance(app.screen, HomeScreen)
             menu = app.screen.query_one("#home-menu", OptionList)
             assert [option.id for option in menu.options] == _HOME_IDS

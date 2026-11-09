@@ -98,7 +98,6 @@ from .config import (
     ConfigError,
     FlatConfig,
     _compatible,
-    _human_hint,  # re-exported for the TUI's forms
     config_error,
     value_message,
 )

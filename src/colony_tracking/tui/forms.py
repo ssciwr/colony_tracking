@@ -123,7 +123,8 @@ from .._options import (
     _union_members,
     parse_reference,
 )
-from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
+from ..config import _human_hint
+from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS
 from .draft import ConfigDraft
 from .pickers import (
     BROWSE_BUTTON_CSS,
@@ -186,7 +187,7 @@ def parse_field(text: str, hint: Any) -> Any:
     """Parse one field's typed text into its plain draft value.
 
     Blank text returns :data:`UNSET`; a parse failure raises
-    :class:`FieldError` with a short human message (the pipeline's
+    :class:`FieldError` with a short human message (the config reader's
     ``_human_hint`` wording, except the reference field's, which is the
     shared :func:`~colony_tracking._options.parse_reference` message).
     """

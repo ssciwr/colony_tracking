@@ -17,15 +17,21 @@ what the chain derives and why).
 A stage draft is flat and fully explicit: its document is one table — a
 detached copy of its own section — where every field of the stage's
 options dataclass (:mod:`colony_tracking._options`) is an ordinary key;
-a standalone run's config derives nothing.
+a standalone run's config derives nothing. The flat-document machinery
+(:func:`~colony_tracking.pipeline.resolve_stage_document` /
+:func:`~colony_tracking.pipeline.write_stage_config`) lives in
+:mod:`colony_tracking.pipeline`, so the stage CLIs read the same files
+without importing the TUI.
 
 :meth:`ConfigDraft.resolve` is where a draft's values are fully
 validated, raising :class:`~colony_tracking.pipeline.ConfigError` with
 the machinery's exact wordings (logged through :data:`colony_tracking.log`,
 shown verbatim by a screen's action gate). :meth:`ConfigDraft.load`
-replaces the draft with a config TOML of its run type and validates
-structure only; owned keys, missing requireds, and mistyped values pass
-and surface verbatim at the next resolve.
+replaces the draft with a config TOML of its run type. A flat stage
+document is validated structurally only — owned keys, missing requireds,
+and mistyped values pass and surface verbatim at the next resolve — while
+a sectioned pipeline document loaded into a stage draft resolves to that
+stage's wired options.
 :func:`resolve_loaded_paths` is the load dialogs' follow-up: it rebases a
 loaded draft's relative path values onto the directory they were written
 from, so a file saved from one working directory keeps working when the
@@ -35,22 +41,12 @@ TUI runs in another.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import MISSING, fields
+from dataclasses import fields
 from pathlib import Path
 from typing import Any, get_args, get_origin, get_type_hints
 
-import tomli_w
-
 from .. import log
-from .._options import (
-    AnalysisOptions,
-    DifferenceOptions,
-    Options,
-    SegmentationOptions,
-    _from_plain,
-    _to_plain,
-    _union_members,
-)
+from .._options import Options, _to_plain, _union_members
 from ..pipeline import (
     ConfigError,
     PipelineConfig,
@@ -58,11 +54,14 @@ from ..pipeline import (
     _OWNED,
     _OWNED_REASON,
     _RUN_LEVEL_FIELDS,
+    _STAGE_OPTIONS,
     _STAGES,
-    _compatible,
     _config_error,
-    _human_hint,
+    _stage_config_error,
+    resolve_stage_document,
+    stage_config_document,
     write_config,
+    write_stage_config,
 )
 
 #: The run types the TUI edits — one :class:`ConfigDraft` (and one config
@@ -72,14 +71,6 @@ RUN_TYPES: tuple[str, ...] = ("pipeline", "difference", "segmentation", "analysi
 #: The stage sections of a pipeline document (the config's stage names,
 #: also the standalone stage run types).
 STAGES: tuple[str, ...] = _STAGES
-
-#: Each stage run type's options dataclass — what a stage draft's flat
-#: document is explicit about.
-_STAGE_OPTIONS: dict[str, type[Options]] = {
-    "difference": DifferenceOptions,
-    "segmentation": SegmentationOptions,
-    "analysis": AnalysisOptions,
-}
 
 #: User-visible titles per run type (screens and dialogs reuse them).
 TITLES: dict[str, str] = {
@@ -242,14 +233,6 @@ def _unknown_run_type(run_type: str) -> ConfigError:
     return ConfigError(message)
 
 
-def _stage_config_error(run_type: str, message: str) -> ConfigError:
-    """Log one stage config error with the run type's own prefix, then
-    return it for raising (the per-run-type counterpart of
-    :func:`colony_tracking.pipeline._config_error`)."""
-    log.error("%s config: %s", run_type, message)
-    return ConfigError(message)
-
-
 def _check_pipeline_sections(doc: dict[str, Any]) -> None:
     """Structural validation of a pipeline document (a load's only
     check): known sections, known keys inside each one — ``PipelineConfig.from_dict``'s
@@ -283,72 +266,6 @@ def _check_pipeline_sections(doc: dict[str, Any]) -> None:
                 f"unknown key(s) {unknown_keys} in [{stage}] — expected "
                 f"one key per name: {sorted(stage_fields)}"
             )
-
-
-def resolve_stage_document(run_type: str, doc: dict[str, Any]) -> Options:
-    """Validate and build one stage's options from its flat document.
-
-    Mirroring ``PipelineConfig.from_dict``'s checkpoints, in this order,
-    each raising (logged with the run-type prefix) :class:`ConfigError`:
-    the document must be a mapping; its keys must be exactly the
-    dataclass's field names; every field without a default must be
-    present; every present value must match its declared type. Values
-    coerce through :func:`~colony_tracking._options._from_plain` exactly
-    as a read-back TOML value would; omitted keys take their dataclass
-    defaults. Every field is ordinary — no owned-key refusal, nothing
-    derived.
-    """
-    options = _STAGE_OPTIONS.get(run_type)
-    if options is None:
-        raise _unknown_run_type(run_type)
-    hints = get_type_hints(options)
-    declared = fields(options)
-    names = [f.name for f in declared]
-    if not isinstance(doc, dict):
-        raise _stage_config_error(
-            run_type, f"{doc!r} is not a table of {run_type} options"
-        )
-    unknown = sorted(set(doc) - set(names))
-    if unknown:
-        raise _stage_config_error(
-            run_type,
-            f"unknown key(s) {unknown} — expected one key per name: {sorted(names)}",
-        )
-    missing = [
-        f.name
-        for f in declared
-        if f.name not in doc and f.default is MISSING and f.default_factory is MISSING
-    ]
-    if missing:
-        raise _stage_config_error(run_type, f"missing required key(s): {missing}")
-    for key, value in doc.items():
-        hint = hints[key]
-        if not _compatible(value, hint):
-            raise _stage_config_error(
-                run_type,
-                f"{run_type}: key {key!r} must be {_human_hint(hint)} "
-                f"(got {value!r})",
-            )
-    kwargs = {key: _from_plain(value, hints[key]) for key, value in doc.items()}
-    return options(**kwargs)
-
-
-def write_stage_config(run_type: str, options: Options, path: Path | str) -> Path:
-    """Write ``options`` as ``run_type``'s flat TOML config file.
-
-    The effective document — the options'
-    :meth:`~colony_tracking._options.Options.to_dict` minus the ``None``
-    values — is written whole, defaults included, so the file is
-    self-contained and round-trips through the dataclass's ``from_dict``.
-    Parent directories are created. Returns the path.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = {key: value for key, value in options.to_dict().items() if value is not None}
-    with open(path, "wb") as handle:
-        tomli_w.dump(doc, handle)
-    log.info("%s config: written to %s", run_type, path)
-    return path
 
 
 class ConfigDraft:
@@ -485,10 +402,16 @@ class ConfigDraft:
     def load(self, path: Path | str) -> Path:
         """Read a config TOML of this run type into the draft, replacing
         the draft's content with the file's (a load resets, it never
-        merges). Structural validation only: unknown sections/keys are
-        refused with the resolvers' wordings; owned keys, missing
+        merges). Returns the path.
+
+        A stage draft accepts its own flat document and a sectioned
+        ``pipeline.toml``: the latter resolves through
+        ``PipelineConfig.from_dict`` to the stage's wired options (run
+        level and derived values included), so the draft becomes fully
+        explicit. A flat document is validated structurally only —
+        unknown keys are refused at load, while owned keys, missing
         requireds, and mistyped values surface verbatim at the next
-        :meth:`resolve`. Returns the path.
+        :meth:`resolve`.
         """
         path = Path(path)
         try:
@@ -504,6 +427,7 @@ class ConfigDraft:
             self.run_level = dict(doc.get(RUN_LEVEL, {}))
             self.stages = {stage: dict(doc.get(stage, {})) for stage in STAGES}
         else:
+            doc = stage_config_document(self.run_type, doc)
             names = {f.name for f in fields(_STAGE_OPTIONS[self.run_type])}
             unknown = sorted(set(doc) - names)
             if unknown:

@@ -758,6 +758,44 @@ def test_load_toml_restores_a_written_stage_config_into_the_form(tmp_path):
     asyncio.run(scenario())
 
 
+def test_load_toml_accepts_a_pipeline_config_on_a_stage_screen(tmp_path):
+    """A stage screen's load door accepts the sectioned ``pipeline.toml``:
+    the draft becomes the stage's wired options (run level and derived
+    values included) and the form shows them."""
+    path = tmp_path / "pipeline.toml"
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            pipeline = app.drafts["pipeline"]
+            pipeline.set("pipeline", "raw_dir", str(tmp_path / "raw"))
+            pipeline.set("pipeline", "out_root", str(tmp_path / "out"))
+            pipeline.set("pipeline", "reference", 3)
+            pipeline.write(path)
+
+            stage = StageScreen("difference")
+            app.push_screen(stage)
+            await pilot.pause()
+            await pilot.click("#load-toml")
+            await pilot.pause()
+            loader = app.screen
+            assert isinstance(loader, LoadConfigDialog)
+            loader.query_one("#toml-path", Input).value = str(path)
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.pause()
+            assert app.screen is stage
+            assert stage.form.query_one("#difference-raw-dir", Input).value == str(
+                tmp_path / "raw"
+            )
+            assert stage.form.query_one("#difference-out-dir", Input).value == str(
+                tmp_path / "out" / "difference_LO003"
+            )
+            assert stage.gate_open
+
+    asyncio.run(scenario())
+
+
 def test_load_toml_restores_a_written_pipeline_config_into_the_run_level(tmp_path):
     """The config screen's load door with the pipeline's own file: the
     run level written via the save dialog, one field blanked, *Load

@@ -497,6 +497,19 @@ def test_stage_load_reports_decode_errors(tmp_path, caplog):
     assert f"difference config: {fixture}: not valid TOML: " in caplog.text
 
 
+@pytest.mark.parametrize("run_type", list(_STAGE_DOCS), ids=list(_STAGE_DOCS))
+def test_stage_load_accepts_a_pipeline_config(tmp_path, run_type):
+    """A stage draft loads the TUI's sectioned ``pipeline.toml``: the
+    stage's wired options are derived from the run level and the chain
+    wiring, exactly as the pipeline draft resolves them."""
+    pipeline = _complete_draft()
+    path = tmp_path / "pipeline.toml"
+    resolved = pipeline.write(path)
+    stage = ConfigDraft(run_type)
+    assert stage.load(path) == path
+    assert stage.resolve() == getattr(resolved, run_type)
+
+
 def test_pipeline_load_refuses_unknown_sections_and_keys(tmp_path):
     """Structural validation, pipeline edition: unknown top-level sections
     (``train`` again) and unknown keys inside a known section refuse with

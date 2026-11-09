@@ -74,6 +74,7 @@ Per-well uint8 difference frames from a raw plate.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the stage's own flat config (what the TUI writes) or a pipeline config (this stage's section plus the run-level wiring). Command-line flags override its values. |
 | `--raw-dir` | `required` | Directory of raw plate frames (flat or per-well layout). |
 | `--out-dir` | `required` | Directory to write the per-well difference trees into. |
 | `--reference` | `first` | Reference frame: "first" or a 1-based frame number. |
@@ -82,6 +83,11 @@ Per-well uint8 difference frames from a raw plate.
 | `--subsample` | `8` | Stride of the subsampled grid used to estimate the display limit. |
 | `--n-workers` | `6` | Thread-pool size over wells. |
 | `--dry-run` | `unset` | Report wells, frames, and reference; write nothing. |
+
+`--config` may be this stage's own flat TOML (what the TUI's Difference
+screen writes) or a `pipeline.toml` (the `[difference]` section plus the
+run-level wiring). Command-line flags override the file's values, and
+required options may come from the file instead of the flags.
 
 ### segment
 
@@ -92,6 +98,7 @@ without the model.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the stage's own flat config (what the TUI writes) or a pipeline config (this stage's section plus the run-level wiring). Command-line flags override its values. |
 | `--input` | `raw` | Input mode: "raw" frames or "diff" difference frames. |
 | `--raw-dir` | `none` | Raw plate directory (required when input = 'raw'). |
 | `--diff-dir` | `none` | Difference tree directory (required when input = 'diff'). |
@@ -115,6 +122,12 @@ without the model.
 `--drop_labels_before`, which were always applied together with the same
 number.
 
+`--config` may be this stage's own flat TOML (what the TUI's Segment
+screen writes) or a `pipeline.toml` (the `[segmentation]` section plus the
+run-level wiring — for a pipeline config the input is always the chain's
+difference tree). Command-line flags override the file's values, and
+required options may come from the file instead of the flags.
+
 ### analyze
 
 Growth measurements, aggregates, and plots for one or more segmentation
@@ -122,6 +135,7 @@ trees.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the stage's own flat config (what the TUI writes) or a pipeline config (this stage's section plus the run-level wiring). Command-line flags override its values. |
 | `--seg-dir` | `required` | Segmentation trees to analyze (repeatable). |
 | `--raw-dir` | `required` | Raw plate directory (well-circle fit). |
 | `--out-root` | `required` | Directory to write the analysis outputs into. |
@@ -137,14 +151,22 @@ trees.
 | `--no-plots` | `unset` | Skip the plots. |
 | `--no-qa` | `unset` | Skip the per-well QA overlays. |
 | `--no-group-alpha` | `unset` | Do not fade group opacity with member count. |
+
+`--config` may be this stage's own flat TOML (what the TUI's Analyze
+screen writes) or a `pipeline.toml` (the `[analysis]` section plus the
+run-level wiring — the segment directories and analysis out root derive
+from the chain's difference/segment trees). Command-line flags override
+the file's values, and required options may come from the file instead of
+the flags.
+
 ### pipeline
 
 The standard chain (difference → segment on the difference tree → analyze)
 from a TOML config file, or from the command line alone. The command line
 carries the config path and the run-level overrides only; per-stage tuning
-belongs in the config file, where every option of the tables above is valid
-in its stage's section (`[difference]`, `[segmentation]`, `[analysis]`,
-snake_case keys).
+belongs in the config file, where every stage option (the stage's dataclass
+fields — its flags above, `--config` excepted) is valid in its stage's
+section (`[difference]`, `[segmentation]`, `[analysis]`, snake_case keys).
 
 | Option | Default | Description |
 | --- | --- | --- |
@@ -303,10 +325,15 @@ file. A stage screen suggests its config beside the stage's output
 tree (`<out-dir's parent>/difference.toml`; analysis, which writes into
 an out root, suggests `<out-root>/analysis.toml`); the chain suggests
 `<out-root>/pipeline.toml`. *Load TOML…* reads a run type's config back
-into its screens (a load resets, it never merges). Config-only mode is
+into its screens (a load resets, it never merges); a stage screen accepts
+its own flat TOML as well as a sectioned `pipeline.toml` (the stage's
+wired options are derived from it). Config-only mode is
 the same flow without a run: fill what you need, *Write TOML…*, quit,
 and run the CLI later — the chain via
-`colony-tracking pipeline --config <file>`.
+`colony-tracking pipeline --config <file>`, or a stage via
+`colony-tracking difference|segment|analyze --config <file>`. A stage CLI
+accepts either that stage's own flat TOML or a `pipeline.toml` (whose
+section and run-level wiring resolve to the stage's options).
 
 A run opens on its own screen: the live log, the stage status line, and
 the final per-stage summaries (from the summary objects, never from the

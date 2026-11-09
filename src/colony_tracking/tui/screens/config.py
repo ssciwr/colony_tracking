@@ -222,7 +222,8 @@ class ConfigScreen(FormScreen):
                 )
                 yield Static(Text(""), id=f"owned-{stage}", classes="owned-line")
                 yield self._stage_forms[stage]
-        with VerticalScroll(id="toml-pane"):
+        with VerticalScroll(id="toml-pane") as pane:
+            pane.border_title = "effective config TOML — preview (read-only)"
             yield Static(Text(""), id="toml-preview")
 
     @property

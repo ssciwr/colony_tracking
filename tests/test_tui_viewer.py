@@ -26,7 +26,7 @@ import time
 from pathlib import Path
 
 from conftest import build_mini_plate
-from textual.widgets import Button, OptionList, RichLog, SelectionList, Static
+from textual.widgets import Button, Input, OptionList, RichLog, SelectionList, Static
 
 from colony_tracking import cli
 from colony_tracking._options import ViewOptions
@@ -34,6 +34,7 @@ from colony_tracking.pipeline import PipelineConfig
 from colony_tracking.tui import launch
 from colony_tracking.tui.app import ColonyTuiApp
 from colony_tracking.tui.screens import viewer as viewer_module
+from colony_tracking.tui.screens._save import LoadConfigDialog
 from colony_tracking.tui.screens.home import HomeScreen
 from colony_tracking.tui.screens.viewer import ViewerScreen
 
@@ -202,19 +203,102 @@ def test_an_unresolved_draft_shows_the_exact_config_error(tmp_path):
     asyncio.run(scenario())
 
 
-def test_a_resolved_draft_with_no_sources_offers_no_wells(tmp_path):
-    """A draft that resolves but points at missing trees offers nothing
-    (discovery never raises) and leaves the action disabled."""
+def test_loading_a_relative_pipeline_toml_fills_the_well_list(
+    monkeypatch, tmp_path
+):
+    """An unresolved draft is not a dead end, and a config saved from
+    another directory still works: *Load pipeline TOML…* opens the shared
+    load dialog on the same pipeline draft, resolves the file's relative
+    paths against the directory it was written from, and the wells of its
+    sources appear when the dialog closes."""
+    project = tmp_path / "project"
+    raw, out = _sources(project)
+    config = out / "pipeline.toml"
+    config.write_text('[pipeline]\nraw_dir = "raw"\nout_root = "out"\n')
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
     async def scenario() -> None:
         app = ColonyTuiApp()
-        _fill_draft(app, tmp_path / "does-not-exist", tmp_path / "out")
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = await _open_viewer(pilot, app)
+            assert screen.wells == []
+
+            await pilot.click("#load-viewer-toml")
+            deadline = time.monotonic() + _TIMEOUT
+            while (
+                not isinstance(app.screen, LoadConfigDialog)
+                and time.monotonic() < deadline
+            ):
+                await pilot.pause(0.05)
+            dialog = app.screen
+            assert isinstance(dialog, LoadConfigDialog)
+            assert dialog.draft is app.drafts["pipeline"]
+
+            path_input = dialog.query_one("#toml-path", Input)
+            path_input.focus()
+            path_input.value = str(config)
+            await pilot.press("enter")
+            deadline = time.monotonic() + _TIMEOUT
+            while (
+                not isinstance(app.screen, ViewerScreen)
+                and time.monotonic() < deadline
+            ):
+                await pilot.pause(0.05)
+            assert app.screen is screen
+            assert screen.options is not None
+            assert screen.draft.get("pipeline", "raw_dir") == str(raw.resolve())
+            assert screen.draft.get("pipeline", "out_root") == str(out.resolve())
+            assert screen.wells == sorted([*_RAW_WELLS, _DIFF_WELL])
+            assert screen.query_one("#view-wells", SelectionList).option_count == 3
+            assert _status(screen) == ""
+
+    asyncio.run(scenario())
+
+
+def test_a_resolved_draft_with_no_sources_offers_no_wells(tmp_path):
+    """A draft that resolves but points at missing trees offers nothing
+    (discovery never raises), leaves the action disabled, and names the
+    directories it checked so the empty list explains itself."""
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        missing = tmp_path / "does-not-exist"
+        _fill_draft(app, missing, tmp_path / "out")
         async with app.run_test(size=(100, 44)) as pilot:
             screen = await _open_viewer(pilot, app)
             assert screen.options is not None
             assert screen.wells == []
             assert _status(screen) == ""
             assert screen.query_one("#open-viewer", Button).disabled
+            hint = str(screen.query_one("#view-hint", Static).render())
+            assert "No wells found" in hint
+            assert str(missing) in hint
             assert isinstance(app.screen, ViewerScreen)
+
+    asyncio.run(scenario())
+
+
+def test_the_well_box_is_a_keyboard_selectable_list(tmp_path):
+    """The bordered box is a multi-selection list, not a text input: it
+    labels itself as one (so no one tries to type a path into it), and
+    the keyboard drives it — down moves the highlight, space toggles the
+    well, which opens the action."""
+    raw, out = _sources(tmp_path)
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        _fill_draft(app, raw, out)
+        async with app.run_test(size=(100, 44)) as pilot:
+            screen = await _open_viewer(pilot, app)
+            wells = screen.query_one("#view-wells", SelectionList)
+            assert wells.border_title == "wells"
+            assert wells.border_subtitle == "space toggles"
+            assert app.focused is wells
+            await pilot.press("down", "space")
+            await pilot.pause()
+            assert screen.selected_wells == ["-A001"]
+            assert not screen.query_one("#open-viewer", Button).disabled
 
     asyncio.run(scenario())
 

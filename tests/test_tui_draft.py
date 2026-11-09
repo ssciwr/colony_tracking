@@ -35,7 +35,7 @@ from colony_tracking._options import (
     SegmentationOptions,
 )
 from colony_tracking.pipeline import _OWNED, ConfigError, read_config
-from colony_tracking.tui.draft import RUN_TYPES, ConfigDraft
+from colony_tracking.tui.draft import RUN_TYPES, ConfigDraft, resolve_loaded_paths
 
 
 def _complete_draft() -> ConfigDraft:
@@ -569,6 +569,42 @@ def test_pipeline_load_resets_the_draft(tmp_path, caplog):
         draft.load(fixture)
     assert draft.document() == {"pipeline": {"raw_dir": "/new"}}
     assert f"pipeline config: loaded {fixture}" in caplog.text
+
+
+def test_loaded_relative_paths_resolve_against_their_written_directory(
+    monkeypatch, tmp_path, caplog
+):
+    """A config saved by a TUI started in another directory keeps paths
+    relative to that directory. A load resolves them against the nearest
+    directory that holds the run's raw tree (here the config's parent), so
+    the viewer and a run see real sources instead of paths under the
+    loading process's working directory."""
+    project = tmp_path / "project"
+    raw = project / "raw"
+    raw.mkdir(parents=True)
+    out = project / "auto"
+    (out / "difference").mkdir(parents=True)
+    config = out / "pipeline.toml"
+    config.write_text(
+        '[pipeline]\nraw_dir = "raw"\nout_root = "auto"\nreference = 5\n'
+        '[difference]\nout_dir = "auto/difference"\n'
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    draft = ConfigDraft()
+    draft.load(config)
+
+    with caplog.at_level(logging.INFO, logger="colony_tracking"):
+        base = resolve_loaded_paths(draft, config)
+
+    assert base == project.resolve()
+    assert "pipeline config: relative paths resolved against" in caplog.text
+    assert draft.get("pipeline", "raw_dir") == str(raw.resolve())
+    assert draft.get("pipeline", "out_root") == str(out.resolve())
+    assert draft.get("difference", "out_dir") == str(
+        (out / "difference").resolve()
+    )
 
 
 # --- the four drafts are independent ---------------------------------------------

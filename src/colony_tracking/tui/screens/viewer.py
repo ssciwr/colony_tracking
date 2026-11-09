@@ -17,10 +17,20 @@ through the package logger
 :func:`~colony_tracking.tui.records.forwarding`). A failed launch
 never takes the interface down.
 
+The well box is a multi-selection list, not a text field: arrow keys move
+the highlight and space toggles a well. Its border says so, so the box is
+not mistaken for an input the user should type a path into. When the
+configured sources hold no wells, the hint above the box names every
+source directory discovery checked — an empty list explains itself.
+
 A draft that does not resolve (the chain's required run level missing)
 shows the exact :class:`~colony_tracking.pipeline.ConfigError` on the
 status line and in the log; the list stays empty and the screen stays
-usable.
+usable. *Load pipeline TOML…* opens the shared load-config dialog
+(:class:`~colony_tracking.tui.screens._save.LoadConfigDialog`) on the
+same pipeline draft, so a viewer opened without a configured draft can
+still pick the pipeline file it wants to view — the wells refresh when
+the dialog closes.
 """
 
 from __future__ import annotations
@@ -38,25 +48,37 @@ from textual.widgets.selection_list import Selection
 from ... import log
 from ..._options import ViewOptions
 from ...pipeline import ConfigError
-from ...viewer import available_wells
+from ...viewer import available_wells, configured_sources
 from .. import launch
 from ..draft import ConfigDraft
+from ._save import LoadConfigDialog
 from .run import _record_text
 
-#: The status line's normal hint (replaced by an error when the draft
-#: does not resolve).
+#: The hint line's normal text (an unresolved draft reports its error on
+#: the status line instead; no wells found names the checked sources).
 HINT = "Wells in the pipeline draft's sources — select one or more."
+
+
+def _sources_note(options: ViewOptions) -> str:
+    """The configured sources as one line, for the empty-well hint: every
+    directory discovery actually looked in, so an empty list explains
+    itself instead of looking like a broken input box."""
+    parts = [f"{source.kind}={source.root}" for source in configured_sources(options)]
+    return ", ".join(parts)
 
 
 class ViewerScreen(Screen[None]):
     """Pick wells and open them in napari (see the module docstring).
 
-    The screen edits nothing: it reads the app's ``drafts["pipeline"]``
-    entry on every entry (the draft a quick start or the config screen
-    fills) and offers its sources' wells.
+    The screen edits no options: it reads the app's ``drafts["pipeline"]``
+    entry on every entry (the draft a quick start, the config screen, or
+    its own *Load pipeline TOML…* fills) and offers its sources' wells.
     """
 
-    BINDINGS = [Binding("o", "open_viewer", "Open in napari")]
+    BINDINGS = [
+        Binding("o", "open_viewer", "Open in napari"),
+        Binding("l", "load_toml", "Load TOML…"),
+    ]
 
     CSS = """
     #view-hint { padding: 0 1; color: $text 60%; }
@@ -85,9 +107,13 @@ class ViewerScreen(Screen[None]):
         yield Header()
         yield Static(Text(HINT), id="view-hint")
         yield Static(Text(""), id="view-status")
-        yield SelectionList(id="view-wells")
+        wells = SelectionList(id="view-wells")
+        wells.border_title = "wells"
+        wells.border_subtitle = "space toggles"
+        yield wells
         with Horizontal(id="view-actions"):
             yield Button("Open in napari", id="open-viewer", disabled=True)
+            yield Button("Load pipeline TOML…", id="load-viewer-toml")
             yield Button("Back", id="view-back")
         yield RichLog(id="view-log", wrap=True)
         yield Footer()
@@ -112,6 +138,7 @@ class ViewerScreen(Screen[None]):
             config = self.draft.resolve()
         except ConfigError as err:
             self.options, self.wells = None, []
+            self._set_hint(HINT)
             self._report(str(err))
             self._sync_actions()
             return
@@ -120,6 +147,13 @@ class ViewerScreen(Screen[None]):
         selection.add_options(
             [Selection(well, well) for well in self.wells]
         )
+        if self.wells:
+            self._set_hint(HINT)
+        else:
+            self._set_hint(
+                "No wells found in the draft's configured sources — "
+                + _sources_note(self.options)
+            )
         self._set_status("")
         self._sync_actions()
 
@@ -143,8 +177,18 @@ class ViewerScreen(Screen[None]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "open-viewer":
             self.action_open_viewer()
+        elif event.button.id == "load-viewer-toml":
+            self.action_load_toml()
         elif event.button.id == "view-back":
             self.action_back()
+
+    def action_load_toml(self) -> None:
+        """*Load pipeline TOML…*: open the shared load-config dialog on
+        this screen's pipeline draft; the wells refresh when it closes
+        (the screen resumes). Loading is never gated — it is the way out
+        of an unresolved draft."""
+        if self.draft is not None:
+            self.app.push_screen(LoadConfigDialog(self.draft))
 
     def action_back(self) -> None:
         """*Back*: pop to the previous screen (the app's escape)."""
@@ -194,6 +238,11 @@ class ViewerScreen(Screen[None]):
             )
         else:
             self._set_status("the viewer closed")
+
+    def _set_hint(self, message: str) -> None:
+        """The hint line above the well list (the normal instruction, or
+        the checked sources when discovery found nothing)."""
+        self.query_one("#view-hint", Static).update(Text(message))
 
     def _set_status(self, message: str) -> None:
         self.query_one("#view-status", Static).update(Text(message))

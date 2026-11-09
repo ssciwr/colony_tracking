@@ -272,15 +272,29 @@ live into the run screen. The home menu offers:
   never offered. Select one or more and *Open in napari*: the TUI starts
   `colony-tracking view` as a separate process with the wells and the
   draft's resolved paths, so the viewer shows the same layers the command
-  produces by hand for those wells. The TUI never imports napari and
-  stays usable while the viewer is open; the child's lines and any launch
-  failure (napari missing, no display) appear in the screen's log pane,
-  never as a crash.
+  produces by hand for those wells. The well box is a multi-selection
+  list (arrow keys move, space toggles), not a text field; selecting from
+  the discovered wells is the input, because `view` only opens wells that
+  its sources actually hold. *Load pipeline TOML…* opens the same file
+  dialog as Pipeline config, so the viewer can pick which `pipeline.toml`
+  to read even when no draft has been configured yet; the wells refresh
+  from the loaded file. When discovery finds nothing, the hint above the
+  list names every source directory it checked. The TUI never imports
+  napari and stays usable while the viewer is open; the child's lines and
+  any launch failure (napari missing, no display) appear in the screen's
+  log pane, never as a crash.
 - **Train** — shown disabled (no training screen).
 
 Path fields (the raw directory, the out root, output directories, and
 similar) carry a *browse* button that opens a directory picker; the
-choice lands in the field like typed text.
+choice lands in the field like typed text. The *Load TOML…* and *Write
+TOML…* dialogs carry the same button for their config-file path: it opens
+a file picker that prefers `*.toml` (with an all-files fallback), and the
+choice is loaded or written at once. A loaded config's relative paths are
+resolved against the directory it was written from (the config's own
+directory or nearest ancestor where its raw tree exists), so a
+`pipeline.toml` saved while the TUI ran in a project directory still finds
+its data when the TUI is started elsewhere.
 
 Each run type is a decision point: after its options are filled, either
 *Write TOML…* or a direct start — and a direct start writes that run
@@ -374,8 +388,9 @@ the label images their `uint32` IDs.
 
 The TUI offers the same session: **View wells in napari** on the home menu
 lists the wells the chain draft's resolved sources hold and starts this
-command as a separate process (see [tui](#tui)); the TUI itself never
-imports napari.
+command as a separate process (see [tui](#tui)); *Load pipeline TOML…*
+there picks the pipeline file when the draft is still empty. The TUI
+itself never imports napari.
 
 ## Python API
 

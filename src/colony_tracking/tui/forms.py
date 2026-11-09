@@ -256,13 +256,16 @@ class _NoDefault:
 NO_DEFAULT: Final[_NoDefault] = _NoDefault()
 
 #: Required fields' example texts — the ``required:`` gray copy, keyed by
-#: field name (these are all the required keys of the pipeline's own
-#: options dataclasses; an unmapped required key falls back to its name).
+#: field name (the required keys of the pipeline stages' and finetune
+#: steps' options dataclasses; an unmapped required key falls back to its
+#: name).
 REQUIRED_EXAMPLES: Final[dict[str, str]] = {
     "raw_dir": "/path/to/raw-plate-frames",
     "out_root": "/path/to/output-root",
     "out_dir": "/path/to/output-dir",
     "seg_dirs": "/path/to/segmentation-trees",
+    "image_dir": "/path/to/input-frames",
+    "label_dir": "/path/to/label-images",
 }
 
 #: The gray text of a field whose declared default is ``None``.

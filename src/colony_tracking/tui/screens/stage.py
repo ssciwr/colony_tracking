@@ -16,15 +16,17 @@ screen takes ``input`` as a select (raw frames or difference frames) and
 derived from a run level, from another stage's settings, or from another
 run type's outputs. Each instance edits its own
 :class:`~colony_tracking.tui.draft.ConfigDraft` — the one run type it
-stands for (:attr:`run_type`): the app's
-``drafts`` entry for that run type — and writes and reads that run
+stands for (:attr:`~colony_tracking.tui.forms.FormScreen.run_type`): the
+app's ``drafts`` entry for that run type — and writes and reads that run
 type's own independent config TOML.
 
 The actions are the stage-level decision points: *Run this stage*,
 *Write TOML…* and *Load TOML…* (the shared save/load dialogs in
-:mod:`~colony_tracking.tui.screens._save`), and *Back*. The run/write
-actions stay disabled until the screen's draft resolves with the values
-on screen; a failing resolve shows the draft's exact
+:mod:`~colony_tracking.tui.screens._save`), and *Back* — the body the
+stage and finetune-step screens share
+(:class:`~colony_tracking.tui.screens._standalone.StandaloneRunScreen`).
+The run/write actions stay disabled until the screen's draft resolves with
+the values on screen; a failing resolve shows the draft's exact
 :class:`~colony_tracking.pipeline.ConfigError` message instead. The load
 action is never gated — loading works on an incomplete draft, and the
 loaded document is reported at the next resolve either way.
@@ -35,10 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, ClassVar
 
-from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
-from textual.widgets import Button, Static
 
 from ..._options import (
     AnalysisOptions,
@@ -47,8 +46,7 @@ from ..._options import (
     SegmentationOptions,
 )
 from ..draft import TITLES, ConfigDraft
-from ..forms import FormScreen, OptionForm, specs_of
-from ._save import LoadConfigDialog
+from ._standalone import StandaloneRunScreen
 from .run import open_stage_run
 
 
@@ -80,7 +78,7 @@ STAGES: dict[str, StageSpec] = {
 }
 
 
-class StageScreen(FormScreen):
+class StageScreen(StandaloneRunScreen):
     """The screen for one stage: all of the stage's options as one form,
     and the four actions.
 
@@ -132,55 +130,13 @@ class StageScreen(FormScreen):
         for it."""
         return self._stage
 
-    def compose_body(self) -> ComposeResult:
-        entry = STAGES[self._stage]
-        self._form = OptionForm(
-            self._stage,
-            specs_of(entry.options),
-            self._resolve_draft(),
-            on_change=self._on_form_change,
-        )
-        # One scrollable body: the actions below stay reachable on a small
-        # terminal whatever the form's height.
-        with VerticalScroll(id="stage-body"):
-            yield Static(f"{entry.title} — options", id="stage-title")
-            yield self._form
-
-    def compose_actions(self) -> ComposeResult:
-        yield Button("Run this stage", id="run-stage")
-        yield Button("Write TOML…", id="write-toml")
-        yield Button("Load TOML…", id="load-toml")
-        yield Button("Back", id="back")
-
-    def refresh_extras(self) -> None:
-        """Nothing beyond the form itself: every field is ordinary and
-        lives on it (the gate re-checks the draft on every change)."""
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "run-stage":
-            self.action_run_stage()
-        elif event.button.id == "write-toml":
-            self.action_write_toml()
-        elif event.button.id == "load-toml":
-            self.action_load_toml()
-        elif event.button.id == "back":
-            self.action_back()
-
-    def action_load_toml(self) -> None:
-        """*Load TOML…*: open the shared load-config dialog (see
-        :class:`~colony_tracking.tui.screens._save.LoadConfigDialog`);
-        loading is never gated."""
-        self.app.push_screen(LoadConfigDialog(self.draft))
+    def _entry(self) -> StageSpec:
+        """The stage's registry entry (its title and options dataclass)."""
+        return STAGES[self._stage]
 
     def action_run_stage(self) -> None:
-        """*Run this stage*: resolve the draft and hand the run to the
-        app's run flow (the config is the stage's own resolved options —
-        everything the draft holds, nothing derived)."""
-        if not self._enabled:
-            return
-        config = self._resolved_or_report()
-        if config is not None:
-            self.start_run(self._stage, config)
+        """*Run this stage*: delegate to ``StandaloneRunScreen.action_run``."""
+        self.action_run()
 
     def start_run(self, stage: str, config: Options) -> None:
         """Hand a resolved run request to the app's run flow.

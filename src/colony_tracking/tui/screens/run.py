@@ -56,6 +56,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
 from ..._options import Options
+from ...finetune import PrepareSummary
 from ...pipeline import (
     AnalysisSummary,
     ConfigError,
@@ -65,7 +66,7 @@ from ...pipeline import (
     SegmentationSummary,
 )
 from .. import runner
-from ..draft import STAGES, ConfigDraft
+from ..draft import FINETUNE_RUN_TYPES, STAGES, ConfigDraft
 from ..runner import ACTIVE_MESSAGE, RunHandle, failed_summary_lines
 from ._save import SaveConfigDialog
 
@@ -140,6 +141,25 @@ def _stage_detail(summary: Any) -> str:
     return detail
 
 
+def _prepare_summary_lines(summary: PrepareSummary) -> list[str]:
+    """The prepare step's summary block: the written pairs and the
+    well-level split, then the train/val wells, from the summary object
+    alone."""
+    detail = (
+        f"pairs {summary.n_pairs} · train {summary.n_train} "
+        f"({len(summary.train_wells)} well(s)) · val {summary.n_val} "
+        f"({len(summary.val_wells)} well(s)) · instances "
+        f"{summary.n_instances} · dropped labels {summary.n_dropped} · "
+        f"labels without input frame {summary.n_missing_images}"
+    )
+    lines = [f"prepare      {detail}"]
+    if summary.train_wells:
+        lines.append(f"{'':<13}train wells: {', '.join(summary.train_wells)}")
+    if summary.val_wells:
+        lines.append(f"{'':<13}val wells: {', '.join(summary.val_wells)}")
+    return lines
+
+
 def _pipeline_summary_lines(summary: PipelineSummary) -> list[str]:
     """The per-stage lines of a pipeline summary, in chain order: the
     stages that completed carry their summaries; the stage that failed
@@ -165,6 +185,8 @@ def _summary_lines(kind: str, summary: object) -> list[str]:
     lines driven by the summary objects."""
     if isinstance(summary, PipelineSummary):
         return _pipeline_summary_lines(summary)
+    if isinstance(summary, PrepareSummary):
+        return _prepare_summary_lines(summary)
     return [f"{kind:<13}{_stage_detail(summary)}"]
 
 
@@ -403,3 +425,23 @@ def open_stage_run(app: App[Any], draft: ConfigDraft, stage: str) -> str | None:
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r} — expected one of {list(STAGES)}")
     return _open_run(app, draft, stage)
+
+
+def open_step_run(app: App[Any], draft: ConfigDraft, step: str) -> str | None:
+    """Start one finetune step on its own — the step screens' action.
+
+    The same direct-run flow the stage screens use: the step's own flat
+    TOML is written first (reproducibility), then the run screen runs it
+    in-process on the resolved options. ``step`` is a live finetune run
+    type (:data:`~colony_tracking.tui.draft.FINETUNE_RUN_TYPES`); an
+    unregistered step is a programming error.
+
+    Returns the problem message when a check failed (also reported in
+    the UI), None once the flow is underway.
+    """
+    if step not in FINETUNE_RUN_TYPES:
+        raise ValueError(
+            f"unknown finetune step {step!r} — expected one of "
+            f"{list(FINETUNE_RUN_TYPES)}"
+        )
+    return _open_run(app, draft, step)

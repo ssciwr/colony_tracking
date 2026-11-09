@@ -1,7 +1,7 @@
 """The textual application: navigation, screen registry, and the
 run-type drafts.
 
-:class:`ColonyTuiApp` owns the four :class:`~colony_tracking.tui.draft.ConfigDraft`
+:class:`ColonyTuiApp` owns the :class:`~colony_tracking.tui.draft.ConfigDraft`
 instances the screens edit — one per run type, keyed by
 :data:`~colony_tracking.tui.draft.RUN_TYPES` in :attr:`drafts`, each its
 run type's config source of truth writing and reading its own config TOML
@@ -21,16 +21,22 @@ run type's config source of truth writing and reading its own config TOML
 - ``viewer`` — the wells the pipeline draft's sources hold, opened in
   napari as a separate ``colony-tracking view`` process
   (:class:`~colony_tracking.tui.screens.viewer.ViewerScreen`; the TUI
-  never imports napari).
+  never imports napari);
+- ``finetune`` — the finetune submenu
+  (:class:`~colony_tracking.tui.screens.finetune.FinetuneScreen`), plus one
+  ``StepScreen`` per registered finetune step
+  (:data:`colony_tracking.tui.screens.step.STEPS`); each edits its own
+  step's draft.
 
 No screen edits another run type's draft. There is no ``run`` entry: the
 run screen (:class:`~colony_tracking.tui.screens.run.RunScreen`) is
 pushed by the flow that starts a run — the stage screens' run actions
 through :func:`~colony_tracking.tui.screens.run.open_stage_run`, the
-quick start's *Run now* through
-:func:`~colony_tracking.tui.screens.run.open_pipeline_run` — both write
-the run type's config TOML first, then push the run screen, which runs
-the run in-process through :mod:`~colony_tracking.tui.runner`.
+finetune step screens' through
+:func:`~colony_tracking.tui.screens.run.open_step_run`, the quick start's
+*Run now* through :func:`~colony_tracking.tui.screens.run.open_pipeline_run`
+— all write the run type's config TOML first, then push the run screen,
+which runs the run in-process through :mod:`~colony_tracking.tui.runner`.
 
 Diagnostics flow through the package logger (:data:`colony_tracking.log`);
 nothing ever prints.
@@ -46,9 +52,11 @@ from textual.screen import Screen
 
 from .draft import RUN_TYPES, ConfigDraft
 from .screens.config import ConfigScreen
+from .screens.finetune import FinetuneScreen
 from .screens.home import HomeScreen
 from .screens.quick_start import QuickStartScreen
 from .screens.stage import STAGES, StageScreen
+from .screens.step import STEPS, StepScreen
 from .screens.viewer import ViewerScreen
 
 
@@ -61,6 +69,19 @@ def _stage_screen(name: str) -> Callable[[], Screen]:
 
     def factory() -> Screen:
         return StageScreen(name)
+
+    return factory
+
+
+def _step_screen(name: str) -> Callable[[], Screen]:
+    """The screen factory for one registered finetune step: a
+    :class:`~colony_tracking.tui.screens.step.StepScreen` for ``name``
+    (the draft comes from the running app's ``drafts`` entry; the run
+    action uses the shipped default — see
+    :meth:`~colony_tracking.tui.screens.step.StepScreen.start_run`)."""
+
+    def factory() -> Screen:
+        return StepScreen(name)
 
     return factory
 
@@ -80,7 +101,9 @@ class ColonyTuiApp(App[None]):
         "quick_start": QuickStartScreen,
         "config": ConfigScreen,
         "viewer": ViewerScreen,
+        "finetune": FinetuneScreen,
         **{spec.name: _stage_screen(spec.name) for spec in STAGES.values()},
+        **{spec.name: _step_screen(spec.name) for spec in STEPS.values()},
     }
 
     def __init__(self) -> None:

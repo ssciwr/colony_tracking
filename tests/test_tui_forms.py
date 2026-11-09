@@ -229,7 +229,13 @@ def test_placeholder_text_follows_the_copy_table():
     assert placeholder_text("seg_dirs", NO_DEFAULT) == (
         "required: /path/to/segmentation-trees"
     )
-    assert placeholder_text("label_dir", NO_DEFAULT) == "required: label_dir"
+    assert placeholder_text("image_dir", NO_DEFAULT) == (
+        "required: /path/to/input-frames"
+    )
+    assert placeholder_text("label_dir", NO_DEFAULT) == (
+        "required: /path/to/label-images"
+    )
+    assert placeholder_text("mystery", NO_DEFAULT) == "required: mystery"
 
 
 def test_specs_carry_the_gray_text():

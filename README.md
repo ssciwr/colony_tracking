@@ -324,7 +324,8 @@ live into the run screen. The home menu offers:
   napari and stays usable while the viewer is open; the child's lines and
   any launch failure (napari missing, no display) appear in the screen's
   log pane, never as a crash.
-- **Train** — shown disabled (no training screen).
+- **Finetune** — the finetuning track's step submenu: `Prepare data` is
+  live; `Train decoder` and `Evaluate checkpoint` are planned rows.
 
 Path fields (the raw directory, the out root, output directories, and
 similar) carry a *browse* button that opens a directory picker; the

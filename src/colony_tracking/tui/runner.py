@@ -1,16 +1,16 @@
 """StageRunner: run the stages in-process from the TUI.
 
 :func:`start` runs one of ``run_difference`` / ``run_segmentation`` /
-``run_analysis`` / ``run_pipeline`` on its kind's resolved config in a
-thread — the stage functions are called unchanged, so a TUI run behaves
-exactly like a CLI run of the same config (resume via done markers
-included). One run at a time: starting a second run while one is active
+``run_analysis`` / ``run_pipeline`` / ``run_prepare`` on its kind's
+resolved config in a thread — the stage functions are called unchanged,
+so a TUI run behaves exactly like a CLI run of the same config (resume
+via done markers included). One run at a time: starting a second run while one is active
 is an error the UI reports, and there is no cancellation — stopping
 means quitting the TUI with Ctrl-Q, and the stages' done markers make
 the next start a resume.
 
-Each run kind carries its run type's own resolved config: a stage kind
-(:data:`KINDS` minus ``pipeline``) receives that stage's own
+Each run kind carries its run type's own resolved config: a stage or
+finetune kind receives that run type's own
 :class:`~colony_tracking._options.Options`, the ``pipeline`` kind the
 chain's :class:`~colony_tracking.pipeline.PipelineConfig`.
 
@@ -47,12 +47,20 @@ from .. import log
 from .._options import Options
 from ..analysis import AnalysisSummary, run_analysis
 from ..difference import DifferenceSummary, run_difference
+from ..finetune import PrepareSummary, run_prepare
 from ..pipeline import PipelineConfig, PipelineSummary, run_pipeline
 from ..segmentation import SegmentationSummary, run_segmentation
 from .records import deliverer, forwarding
 
-#: The kinds :func:`start` can run: one per stage plus the whole chain.
-KINDS: tuple[str, ...] = ("difference", "segmentation", "analysis", "pipeline")
+#: The kinds :func:`start` can run: one per stage, the whole chain, and the
+#: live finetune steps (tickets 03/04 add ``train`` / ``evaluate``).
+KINDS: tuple[str, ...] = (
+    "difference",
+    "segmentation",
+    "analysis",
+    "pipeline",
+    "prepare",
+)
 
 #: The runner's table: kind -> the run to make on the kind's resolved
 #: config — a stage kind takes that stage's own
@@ -65,6 +73,7 @@ _RUNNERS: dict[str, Callable[[PipelineConfig | Options], Any]] = {
     "segmentation": lambda options: run_segmentation(options),
     "analysis": lambda options: run_analysis(options),
     "pipeline": lambda config: run_pipeline(config),
+    "prepare": lambda options: run_prepare(options),
 }
 
 #: The run in progress, if any (one run at a time; guarded by ``_LOCK``).
@@ -90,6 +99,8 @@ def summary_failed(summary: object) -> bool:
         return bool(summary.failed)
     if isinstance(summary, AnalysisSummary):
         return bool(summary.failures or summary.failed_wells)
+    if isinstance(summary, PrepareSummary):
+        return summary.error is not None
     return False
 
 
@@ -132,6 +143,11 @@ def failed_summary_lines(kind: str, summary: Any) -> list[str]:
         return lines
     if kind == "pipeline":
         return [f"pipeline: the {summary.failed_stage} stage failed"]
+    if kind == "prepare":
+        if summary.error is None:
+            return []
+        # The CLI's exit-1 line for a finetune step (``train prepare: …``).
+        return [f"train prepare: {summary.error}"]
     return []
 
 

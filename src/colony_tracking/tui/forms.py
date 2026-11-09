@@ -84,7 +84,7 @@ from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type
 
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
@@ -99,7 +99,6 @@ from textual.widgets import (
     Select,
     Static,
 )
-from textual_fspicker import SelectDirectory
 
 from .._options import (
     Options,
@@ -109,6 +108,13 @@ from .._options import (
 )
 from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
 from .draft import ConfigDraft
+from .pickers import (
+    BROWSE_BUTTON_CSS,
+    BROWSE_LABEL,
+    BrowseButton,
+    open_directory_picker,
+    picker_location,
+)
 from .screens._save import SaveConfigDialog
 
 #: Field-name → label spelling, mirroring the CLI's ``_RENAMES``, so a
@@ -366,60 +372,6 @@ def _is_path_field(spec: FieldSpec) -> bool:
     return _optional_member(spec.hint) is Path
 
 
-#: A browse button's label (the field-row counterpart of ``reset``).
-BROWSE_LABEL: Final[str] = "browse"
-
-
-class BrowseButton(Button):
-    """A path field's *browse* button: it opens the directory-picker
-    modal for its field (the hosting screen wires the press; see
-    :func:`open_directory_picker`). Click-only — ``can_focus`` is off,
-    like the reset buttons — so tab and the arrow-key field walk stay
-    field-to-field; styled through its container's ``.field-browse``
-    rules, because a ``Button``'s own type rules outrank a bare type
-    selector."""
-
-    can_focus = False
-
-
-def picker_location(value: str) -> Path:
-    """The directory a picker opens at for a path field showing ``value``:
-    the value's nearest existing directory (the path itself, else the
-    first existing ancestor), or the working directory when nothing
-    exists yet."""
-    stripped = value.strip()
-    if not stripped:
-        return Path.cwd()
-    path = Path(stripped)
-    for candidate in (path, *path.parents):
-        if candidate.is_dir():
-            return candidate
-    return Path.cwd()
-
-
-def open_directory_picker(
-    app: App[Any],
-    location: Path,
-    accept: Callable[[Path], None],
-) -> None:
-    """Open the directory-picker modal — textual-fspicker's
-    :class:`~textual_fspicker.SelectDirectory`, starting at ``location``.
-    Picking a directory hands it to ``accept``; cancelling (escape or the
-    dialog's *Cancel*) calls nothing.
-
-    The hand-off waits for the dismissed screen's reveal to settle
-    (``call_after_refresh``): the pop resumes the screen behind the
-    picker, whose entry refresh re-shows the draft's values — a write
-    racing that refresh would be re-set from the draft before its change
-    event landed, losing the pick."""
-
-    def picked(path: Path | None) -> None:
-        if path is not None:
-            app.call_after_refresh(accept, path)
-
-    app.push_screen(SelectDirectory(location), picked)
-
-
 class OptionForm(VerticalScroll):
     """The option fields of one draft section (see the module docstring).
 
@@ -470,24 +422,11 @@ class OptionForm(VerticalScroll):
         background: $surface-darken-1;
         color: $text;
     }
-    OptionForm .field-browse {
-        min-width: 0;
-        width: auto;
-        height: 1;
-        border: none;
-        background: $panel;
-        color: $text 60%;
-        margin-left: 1;
-    }
-    OptionForm .field-browse:hover {
-        background: $surface-darken-1;
-        color: $text;
-    }
     OptionForm Input.invalid,
     OptionForm Input.invalid:focus {
         border: tall $error !important;
     }
-    """
+    """ + BROWSE_BUTTON_CSS
 
     #: Up/down step the field focus instead of the scroll-container
     #: scrolling the base class binds them to. A focused widget's own

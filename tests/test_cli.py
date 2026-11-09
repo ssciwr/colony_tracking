@@ -19,6 +19,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import tifffile
+from PIL import Image
 
 import colony_tracking.cli as cli
 from colony_tracking import (
@@ -36,6 +38,7 @@ from colony_tracking import (
     SegmentationSummary,
     TrainOptions,
     TrainSummary,
+    ViewOptions,
     io,
 )
 from colony_tracking.difference import WellResult
@@ -354,6 +357,262 @@ def test_pipeline_without_config_requires_raw_dir_and_out_root(caplog):
     assert "--raw-dir" in caplog.text and "--out-root" in caplog.text
 
 
+# --- view ---------------------------------------------------------------------
+
+
+def _view_plate(tmp_path):
+    """A tiny raw plate: two wells, three frames (the viewer fits no circle)."""
+    return build_mini_plate(
+        tmp_path / "raw", layout="flat", wells=("-A001", "-A002"), n_frames=3,
+        size=32, noise_sigma=0.0,
+        rings={"-A001": None, "-A002": None}, disks={"-A001": [], "-A002": []},
+    )
+
+
+def _view_seams(monkeypatch):
+    """Record the built options and whether napari's loop was started."""
+    calls, runs = [], []
+    monkeypatch.setattr(
+        cli, "view_wells",
+        lambda options, viewer=None: (calls.append(options), object())[1],
+    )
+    monkeypatch.setattr(cli, "_run_napari", lambda: runs.append(True))
+    return calls, runs
+
+
+def test_view_reads_the_cwd_pipeline_toml(monkeypatch, tmp_path, capsys):
+    _view_plate(tmp_path)
+    (tmp_path / "pipeline.toml").write_text(
+        '[pipeline]\nraw_dir = "raw"\nout_root = "out"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls, runs = _view_seams(monkeypatch)
+
+    assert cli.main(["view", "--wells=-A001"]) == 0
+
+    (options,) = calls
+    # The resolved config fills every path: the run-level raw directory and
+    # the three derived trees.
+    assert options == ViewOptions(
+        wells=["-A001"], raw_dir=Path("raw"),
+        diff_dir=Path("out/difference"),
+        seg_dir=Path("out/seg_growth_diff"),
+        analysis_dir=Path("out/analysis"),
+    )
+    assert options.wells == ["-A001"]  # from the flag, never [pipeline].wells
+    assert runs == [True]  # the CLI owns the event loop
+    assert capsys.readouterr().out == ""  # nothing ever prints
+
+
+def test_view_derived_paths_follow_the_config_reference(
+        monkeypatch, tmp_path):
+    """The derived tree names come from the resolved config, never from the
+    viewer."""
+    _view_plate(tmp_path)
+    config = _write_config(
+        tmp_path,
+        '[pipeline]\nraw_dir = "raw"\nout_root = "out"\nreference = 5\n',
+    )
+    monkeypatch.chdir(tmp_path)
+    calls, _ = _view_seams(monkeypatch)
+
+    assert cli.main(["view", "--config", str(config), "--wells=-A001"]) == 0
+
+    (options,) = calls
+    assert options.diff_dir == Path("out/difference_LO005")
+    assert options.seg_dir == Path("out/seg_growth_diff_LO005")
+    assert options.analysis_dir == Path("out/analysis")
+
+
+def test_view_path_flags_override_only_their_own_directory(
+        monkeypatch, tmp_path):
+    plate = _view_plate(tmp_path)
+    config = _write_config(
+        tmp_path,
+        f'[pipeline]\nraw_dir = "{plate.root}"\nout_root = "out"\n',
+    )
+    other = tmp_path / "elsewhere"
+    monkeypatch.chdir(tmp_path)
+    calls, _ = _view_seams(monkeypatch)
+
+    assert cli.main([
+        "view", "--config", str(config), "--seg-dir", str(other / "seg"),
+        "--wells=-A001",
+    ]) == 0
+    options = calls[-1]
+    assert options.seg_dir == other / "seg"
+    assert options.raw_dir == plate.root  # the config stays in force
+    assert options.diff_dir == Path("out/difference")
+    assert options.analysis_dir == Path("out/analysis")
+
+    assert cli.main([
+        "view", "--config", str(config), "--diff-dir", str(other / "diff"),
+        "--analysis-dir", str(other / "analysis"), "--wells=-A001",
+    ]) == 0
+    options = calls[-1]
+    assert options.diff_dir == other / "diff"
+    assert options.analysis_dir == other / "analysis"
+    assert options.seg_dir == Path("out/seg_growth_diff")
+    assert options.raw_dir == plate.root
+
+
+def _derived_tree(tmp_path, kind):
+    """A minimal tree of each kind, holding well -A001 only."""
+    well = "-A001"
+    if kind == "diff":
+        root = tmp_path / "difference"
+        well_dir = root / well
+        well_dir.mkdir(parents=True)
+        tifffile.imwrite(well_dir / f"{well}--LO001--T0--WE1_diff_uint8.tif",
+                         np.full((4, 4), 128, dtype=np.uint8))
+        return root, "--diff-dir"
+    if kind == "seg":
+        root = tmp_path / "seg_growth_diff"
+        well_dir = root / well
+        well_dir.mkdir(parents=True)
+        tifffile.imwrite(well_dir / f"{well}--LO001--T0--WE1__labels.tif",
+                         np.ones((4, 4), dtype=np.uint32))
+        return root, "--seg-dir"
+    root = tmp_path / "analysis"
+    qa_dir = root / "seg_growth_diff" / "qa"
+    qa_dir.mkdir(parents=True)
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(
+        qa_dir / f"{well}_rim.png")
+    return root, "--analysis-dir"
+
+
+@pytest.mark.parametrize("kind", ("diff", "seg", "analysis"))
+def test_view_one_derived_dir_alone_opens_a_session(
+        monkeypatch, tmp_path, kind):
+    """No config file, no raw stack: any single derived source is a session."""
+    root, flag = _derived_tree(tmp_path, kind)
+    monkeypatch.chdir(tmp_path)  # no pipeline.toml here
+    calls, runs = _view_seams(monkeypatch)
+
+    assert cli.main(["view", flag, str(root), "--wells=-A001"]) == 0
+
+    (options,) = calls
+    field = {"--diff-dir": "diff_dir", "--seg-dir": "seg_dir",
+             "--analysis-dir": "analysis_dir"}[flag]
+    assert getattr(options, field) == root
+    assert options.raw_dir is None
+    assert runs == [True]
+
+
+def test_view_unknown_well_is_a_usage_error_across_every_source(
+        monkeypatch, tmp_path, caplog):
+    """Well validation follows the configured sources, not just raw."""
+    root, flag = _derived_tree(tmp_path, "seg")
+    monkeypatch.chdir(tmp_path)
+    calls, runs = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", flag, str(root), "--wells=-B002"]) == 2
+
+    assert "-B002" in caplog.text and "-A001" in caplog.text
+    assert calls == [] and runs == []
+
+
+def test_view_raw_dir_alone_works_without_a_config_file(monkeypatch, tmp_path):
+    plate = _view_plate(tmp_path)
+    monkeypatch.chdir(tmp_path)  # no pipeline.toml here
+    calls, runs = _view_seams(monkeypatch)
+
+    assert cli.main(["view", "--raw-dir", str(plate.root),
+                     "--wells", "-A001"]) == 0
+
+    (options,) = calls
+    assert options.raw_dir == plate.root and options.wells == ["-A001"]
+    assert runs == [True]
+
+
+def test_view_config_flag_reads_that_config_and_raw_dir_overrides_it(
+        monkeypatch, tmp_path, caplog):
+    plate = _view_plate(tmp_path)
+    other = tmp_path / "other_raw"
+    other.mkdir()
+    # The cwd's pipeline.toml points elsewhere; --config must win over it.
+    (tmp_path / "pipeline.toml").write_text(
+        f'[pipeline]\nraw_dir = "{other}"\nout_root = "out"\n',
+        encoding="utf-8")
+    config = _write_config(
+        tmp_path,
+        f'[pipeline]\nraw_dir = "{plate.root}"\nout_root = "out"\n'
+        "[difference]\nsubsample = 4\n",
+    )
+    monkeypatch.chdir(tmp_path)
+    calls, _ = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger="colony_tracking"):
+        assert cli.main(["view", "--config", str(config),
+                         "--wells=-A001"]) == 0
+    assert calls[-1].raw_dir == plate.root  # the config, not the cwd's file
+    assert calls[-1].config == config
+
+    # --raw-dir overrides only the raw path; the rest of the config stays.
+    config_raw = _write_config(
+        tmp_path,
+        f'[pipeline]\nraw_dir = "{other}"\nout_root = "out"\n'
+        "[difference]\nsubsample = 4\n",
+    )
+    assert cli.main(["view", "--config", str(config_raw),
+                     "--raw-dir", str(plate.root), "--wells=-A001"]) == 0
+    assert calls[-1].raw_dir == plate.root
+
+
+def test_view_without_config_or_raw_dir_is_a_usage_error(monkeypatch, tmp_path,
+                                                         caplog):
+    monkeypatch.chdir(tmp_path)  # no pipeline.toml either
+    calls, runs = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", "--wells=-A001"]) == 2
+
+    assert "--config" in caplog.text and "--raw-dir" in caplog.text
+    assert calls == [] and runs == []
+
+
+def test_view_without_wells_lists_the_wells_available(monkeypatch, tmp_path,
+                                                      caplog):
+    plate = _view_plate(tmp_path)
+    calls, runs = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", "--raw-dir", str(plate.root)]) == 2
+
+    assert "--wells" in caplog.text
+    assert "-A001" in caplog.text and "-A002" in caplog.text
+    assert calls == [] and runs == []
+
+
+def test_view_unknown_well_lists_the_wells_available(monkeypatch, tmp_path,
+                                                     caplog):
+    plate = _view_plate(tmp_path)
+    calls, runs = _view_seams(monkeypatch)
+
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", "--raw-dir", str(plate.root),
+                         "--wells=-C009"]) == 2
+
+    assert "-C009" in caplog.text
+    assert "-A001" in caplog.text and "-A002" in caplog.text
+    assert calls == [] and runs == []
+
+
+def test_view_missing_or_invalid_config_is_a_usage_error(monkeypatch, tmp_path,
+                                                         caplog):
+    calls, _ = _view_seams(monkeypatch)
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", "--config", str(tmp_path / "nope.toml"),
+                         "--wells=-A001"]) == 2
+    assert "nope.toml" in caplog.text
+
+    bad = _write_config(tmp_path, "[pipeline]\nraw_dir = \"raw\"\nnonsense = 1\n")
+    with caplog.at_level(logging.ERROR, logger="colony_tracking"):
+        assert cli.main(["view", "--config", str(bad), "--wells=-A001"]) == 2
+    assert "nonsense" in caplog.text
+    assert calls == []
+
+
 # --- flag parsing (train) --------------------------------------------------------
 
 
@@ -668,7 +927,8 @@ def test_top_level_and_train_help(capsys):
     with pytest.raises(SystemExit):
         cli.main(["--help"])
     out = capsys.readouterr().out
-    for command in ("difference", "segment", "analyze", "pipeline", "train"):
+    for command in ("difference", "segment", "analyze", "pipeline", "train",
+                    "tui", "view"):
         assert command in out
 
     with pytest.raises(SystemExit):
@@ -692,3 +952,9 @@ def test_top_level_and_train_help(capsys):
         cli.main(["train", "prepare", "--help"])
     out = capsys.readouterr().out
     assert "--image-dir" in out and "--raw-dir" not in out
+
+    with pytest.raises(SystemExit):
+        cli.main(["view", "--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "--wells" in out and "--config" in out and "--raw-dir" in out
+    assert "Wells to display" in out  # the dataclass per-field help

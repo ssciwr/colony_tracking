@@ -484,3 +484,87 @@ class EvaluateOptions(Options):
     output: Path | None = field(
         default=None, metadata={"help": "Optional path for a JSON report."}
     )
+
+
+@dataclass(kw_only=True)
+class ViewOptions:
+    """Options for the viewer (``view`` subcommand).
+
+    The fields are the command's flags, like every stage's dataclass. The
+    CLI fills an unset path field from the config file before handing the
+    options to :func:`~colony_tracking.viewer.view_wells`, so a
+    ``ViewOptions`` the viewer sees is resolved: every path it loads from
+    is already set, and the viewer never reads a config file or derives a
+    tree name. Each of the four path fields (raw, difference, segmentation,
+    analysis) is optional and independent: a session may carry any
+    non-empty subset. Not an :class:`Options`: the viewer writes nothing and
+    has no config section of its own.
+    """
+
+    wells: list[str] | None = field(
+        default=None,
+        metadata={
+            "help": "Wells to display (repeatable, comma-separated), e.g. "
+            "-A001. Always explicit: every well must exist in the configured "
+            "sources."
+        },
+    )
+    config: Path | None = field(
+        default=None,
+        metadata={
+            "help": "TOML config file to read the paths from (default: "
+            "pipeline.toml in the current directory, when that file exists)."
+        },
+    )
+    raw_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Directory of raw plate frames (flat or per-well layout). "
+            "Overrides the config file's raw directory."
+        },
+    )
+    diff_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Difference tree to show (one directory per well of "
+            "uint8 previews). Overrides the config file's difference.out_dir."
+        },
+    )
+    seg_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Segmentation tree to show (one directory per well of "
+            "label images), and the root whose QA overlay is read. Overrides "
+            "the config file's segmentation.out_dir."
+        },
+    )
+    analysis_dir: Path | None = field(
+        default=None,
+        metadata={
+            "help": "Analysis output root holding the per-root QA overlays. "
+            "Overrides the config file's analysis.out_root."
+        },
+    )
+
+
+#: The viewer's path fields, in layer order: each :class:`ViewOptions` field
+#: and the dotted attribute path of the resolved
+#: :class:`~colony_tracking.pipeline.PipelineConfig` value it mirrors
+#: (``raw_dir`` is the run level's own field, the others a stage's output).
+#: The CLI's ``--config`` resolution, the TUI launch's argument vector, and
+#: the viewer all read this one table, so a fifth layer is one edit.
+VIEW_PATH_FIELDS: dict[str, str] = {
+    "raw_dir": "raw_dir",
+    "diff_dir": "difference.out_dir",
+    "seg_dir": "segmentation.out_dir",
+    "analysis_dir": "analysis.out_root",
+}
+
+
+def viewer_path(config: object, name: str) -> Any:
+    """The value of one viewer path field ``name`` in the resolved
+    ``config``, walking :data:`VIEW_PATH_FIELDS`' dotted attribute path."""
+    value: Any = config
+    for part in VIEW_PATH_FIELDS[name].split("."):
+        value = getattr(value, part)
+    return value

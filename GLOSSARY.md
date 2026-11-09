@@ -128,6 +128,15 @@ plots.
 statistics per (frame, ancestors) and pooled rate statistics per
 max-ancestors.
 
+**good rows** — The trajectory rows exported as the filtered CSVs: not
+`no_growth`, not `pre_existing` (unless `keep_pre_existing`), not from a
+`bad well` (unless `keep_bad_wells`), and not `rim_excluded`; written as
+`trajectories_good.csv` and split by row-level `ancestors` into
+`trajectories_ancestors_<n>.csv`. The rate export covers the same good
+colonies restricted to those with a computed rate (blank-rate colonies
+with a too-narrow window are skipped), written as `rates_good.csv` and
+split by colony-level `max_ancestors` into `rates_ancestors_<n>.csv`.
+
 ## Configuration
 
 **default** — The value an option takes when the draft leaves it unset;

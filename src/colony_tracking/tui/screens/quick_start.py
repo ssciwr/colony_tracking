@@ -53,14 +53,13 @@ from textual.widgets import Button, Footer, Header, Input, Label, Static
 from ..._options import parse_reference
 from ...pipeline import ConfigError
 from ..draft import RUN_LEVEL, ConfigDraft
-from ..forms import (
+from ..forms import FieldSpec, focus_field, run_level_specs
+from ..pickers import (
+    BROWSE_BUTTON_CSS,
     BROWSE_LABEL,
     BrowseButton,
-    FieldSpec,
-    focus_field,
     open_directory_picker,
     picker_location,
-    run_level_specs,
 )
 from ._save import SaveConfigDialog
 from .run import open_pipeline_run
@@ -134,23 +133,10 @@ class QuickStartScreen(Screen[None]):
     .qs-label { margin-top: 1; padding: 0 1; }
     .qs-row { height: auto; align-vertical: middle; }
     .qs-row Input { width: 1fr; }  # not 100%: the row shares it with the browse button
-    .qs-row .field-browse {
-        min-width: 0;
-        width: auto;
-        height: 1;
-        border: none;
-        background: $panel;
-        color: $text 60%;
-        margin-left: 1;
-    }
-    .qs-row .field-browse:hover {
-        background: $surface-darken-1;
-        color: $text;
-    }
     #qs-error { color: red; padding: 0 1; margin-top: 1; display: none; }
     #qs-actions { height: auto; margin-top: 1; padding: 0 1; }
     #qs-actions Button { margin-right: 1; }
-    """
+    """ + BROWSE_BUTTON_CSS
 
     #: The action buttons the gate enables and disables (the stage
     #: screens' gate: disabled until the draft resolves).
@@ -281,7 +267,7 @@ class QuickStartScreen(Screen[None]):
     def _open_picker(self, name: str) -> None:
         """Open the directory picker for the path field ``name``, starting
         at the field's current value's nearest existing directory
-        (:func:`~colony_tracking.tui.forms.picker_location`): the picked
+        (:func:`~colony_tracking.tui.pickers.picker_location`): the picked
         directory lands in the field's input, which fires the normal
         change flow (the draft sync, the gate)."""
         widget = self.query_one(f"#{_field_id(name)}", Input)

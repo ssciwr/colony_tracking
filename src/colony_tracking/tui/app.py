@@ -17,7 +17,11 @@ run type's config source of truth writing and reading its own config TOML
   run type's draft;
 - ``config`` — the chain's run level plus the effective TOML
   (:class:`~colony_tracking.tui.screens.config.ConfigScreen`), the
-  pipeline draft again.
+  pipeline draft again;
+- ``viewer`` — the wells the pipeline draft's sources hold, opened in
+  napari as a separate ``colony-tracking view`` process
+  (:class:`~colony_tracking.tui.screens.viewer.ViewerScreen`; the TUI
+  never imports napari).
 
 No screen edits another run type's draft. There is no ``run`` entry: the
 run screen (:class:`~colony_tracking.tui.screens.run.RunScreen`) is
@@ -45,6 +49,7 @@ from .screens.config import ConfigScreen
 from .screens.home import HomeScreen
 from .screens.quick_start import QuickStartScreen
 from .screens.stage import STAGES, StageScreen
+from .screens.viewer import ViewerScreen
 
 
 def _stage_screen(name: str) -> Callable[[], Screen]:
@@ -74,6 +79,7 @@ class ColonyTuiApp(App[None]):
     SCREENS: ClassVar[dict[str, Callable[[], Screen]]] = {
         "quick_start": QuickStartScreen,
         "config": ConfigScreen,
+        "viewer": ViewerScreen,
         **{spec.name: _stage_screen(spec.name) for spec in STAGES.values()},
     }
 

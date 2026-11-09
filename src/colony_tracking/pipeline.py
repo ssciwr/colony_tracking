@@ -46,10 +46,17 @@ A config file is a TOML document with a ``[pipeline]`` section (run-level:
 ``raw_dir``, ``out_root``, ``reference``, ``wells`` — the first two required)
 plus one optional section per stage holding any of that stage's options;
 omitted keys take their defaults. :func:`read_config` parses one,
-:func:`write_config` writes one (for the future TUI), and
+:func:`write_config` writes one (for the TUI), and
 ``PipelineConfig.from_dict`` / ``to_dict`` round-trip the plain document.
-(The CLI's ``--config`` is optional: without it, the run-level settings come
-entirely from the command line.)
+(The ``pipeline`` subcommand's ``--config`` is optional: without it, the
+run-level settings come entirely from the command line.)
+
+The stage subcommands accept both config shapes: their own flat document
+(one table whose keys are the stage options dataclass's field names — what
+the TUI stage screens write; :func:`resolve_stage_document` /
+:func:`write_stage_config`) and this sectioned pipeline document, which
+:func:`read_stage_config` resolves to the stage's wired options. Explicit
+command-line flags override either shape's values.
 
 Some fields are owned by the pipeline and cannot be set in a stage section:
 ``[difference].raw_dir`` / ``reference`` and ``[analysis].raw_dir`` come from
@@ -71,7 +78,7 @@ from __future__ import annotations
 import dataclasses
 import tomllib
 import traceback
-from dataclasses import dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
 
@@ -96,6 +103,14 @@ from .segmentation import SegmentationSummary, run_segmentation
 _RUN_LEVEL_FIELDS = ("raw_dir", "out_root", "reference", "wells")
 _STAGES = ("difference", "segmentation", "analysis")
 _KNOWN_SECTIONS = ("pipeline", *_STAGES)
+
+#: Each stage run type's options dataclass — what a stage's flat config
+#: document is explicit about.
+_STAGE_OPTIONS: dict[str, type[Options]] = {
+    "difference": DifferenceOptions,
+    "segmentation": SegmentationOptions,
+    "analysis": AnalysisOptions,
+}
 
 #: Fields the pipeline owns — taken from the run-level settings and the chain
 #: wiring, never from a stage section (a config that sets them is a usage
@@ -440,6 +455,69 @@ def _has_key(doc: dict[str, Any], section: str, key: str) -> bool:
     return isinstance(doc.get(section), dict) and key in doc[section]
 
 
+# --- stage config documents -----------------------------------------------------
+
+
+def _stage_config_error(run_type: str, message: str) -> ConfigError:
+    """Log one stage config error with the run type's own prefix, then
+    return it for raising (the per-run-type counterpart of
+    :func:`_config_error`)."""
+    log.error("%s config: %s", run_type, message)
+    return ConfigError(message)
+
+
+def resolve_stage_document(run_type: str, doc: dict[str, Any]) -> Options:
+    """Validate and build one stage's options from its flat document.
+
+    Mirroring ``PipelineConfig.from_dict``'s checkpoints, in this order,
+    each raising (logged with the run-type prefix) :class:`ConfigError`:
+    the document must be a mapping; its keys must be exactly the
+    dataclass's field names; every field without a default must be
+    present; every present value must match its declared type. Values
+    coerce through :func:`~colony_tracking._options._from_plain` exactly
+    as a read-back TOML value would; omitted keys take their dataclass
+    defaults. Every field is ordinary — no owned-key refusal, nothing
+    derived.
+    """
+    options = _STAGE_OPTIONS.get(run_type)
+    if options is None:
+        raise _stage_config_error(
+            run_type,
+            f"unknown run type {run_type!r} — expected one of "
+            f"{sorted(_STAGE_OPTIONS)}",
+        )
+    hints = get_type_hints(options)
+    declared = fields(options)
+    names = [f.name for f in declared]
+    if not isinstance(doc, dict):
+        raise _stage_config_error(
+            run_type, f"{doc!r} is not a table of {run_type} options"
+        )
+    unknown = sorted(set(doc) - set(names))
+    if unknown:
+        raise _stage_config_error(
+            run_type,
+            f"unknown key(s) {unknown} — expected one key per name: {sorted(names)}",
+        )
+    missing = [
+        f.name
+        for f in declared
+        if f.name not in doc and f.default is MISSING and f.default_factory is MISSING
+    ]
+    if missing:
+        raise _stage_config_error(run_type, f"missing required key(s): {missing}")
+    for key, value in doc.items():
+        hint = hints[key]
+        if not _compatible(value, hint):
+            raise _stage_config_error(
+                run_type,
+                f"{run_type}: key {key!r} must be {_human_hint(hint)} "
+                f"(got {value!r})",
+            )
+    kwargs = {key: _from_plain(value, hints[key]) for key, value in doc.items()}
+    return options(**kwargs)
+
+
 # --- TOML config file ---------------------------------------------------------
 
 
@@ -462,6 +540,62 @@ def write_config(config: PipelineConfig, path: Path | str) -> Path:
     with open(path, "wb") as handle:
         tomli_w.dump(config.to_dict(), handle)
     log.info("pipeline config: written to %s", path)
+    return path
+
+
+def stage_config_document(
+    run_type: str, doc: dict[str, Any]
+) -> dict[str, Any]:
+    """One stage's flat options document from either config shape.
+
+    The stage's own flat config (its keys are exactly the stage options
+    dataclass's field names — the TUI stage screens write this) is
+    returned unchanged; a sectioned document — a ``[pipeline]`` section
+    and/or known stage sections — resolves through
+    ``PipelineConfig.from_dict`` and yields this stage's resolved options
+    as a flat document (chain wiring and run-level values included).
+    """
+    sectioned = "pipeline" in doc or any(
+        stage in doc and isinstance(doc[stage], dict) for stage in _STAGES
+    )
+    if not sectioned:
+        return doc
+    options = getattr(PipelineConfig.from_dict(doc), run_type)
+    return {
+        key: _to_plain(value)
+        for key, value in options.to_dict().items()
+        if value is not None
+    }
+
+
+def read_stage_config(run_type: str, path: Path | str) -> dict[str, Any]:
+    """Read a config file for one stage as a flat options document (see
+    :func:`stage_config_document` for the two accepted shapes)."""
+    path = Path(path)
+    try:
+        with open(path, "rb") as handle:
+            doc = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as exc:
+        raise _stage_config_error(run_type, f"{path}: not valid TOML: {exc}") from exc
+    log.info("%s config: reading %s", run_type, path)
+    return stage_config_document(run_type, doc)
+
+
+def write_stage_config(run_type: str, options: Options, path: Path | str) -> Path:
+    """Write ``options`` as ``run_type``'s flat TOML config file.
+
+    The effective document — the options'
+    :meth:`~colony_tracking._options.Options.to_dict` minus the ``None``
+    values — is written whole, defaults included, so the file is
+    self-contained and round-trips through the dataclass's ``from_dict``.
+    Parent directories are created. Returns the path.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = {key: value for key, value in options.to_dict().items() if value is not None}
+    with open(path, "wb") as handle:
+        tomli_w.dump(doc, handle)
+    log.info("%s config: written to %s", run_type, path)
     return path
 
 

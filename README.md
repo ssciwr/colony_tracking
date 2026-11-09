@@ -325,7 +325,9 @@ file. A stage screen suggests its config beside the stage's output
 tree (`<out-dir's parent>/difference.toml`; analysis, which writes into
 an out root, suggests `<out-root>/analysis.toml`); the chain suggests
 `<out-root>/pipeline.toml`. *Load TOML…* reads a run type's config back
-into its screens (a load resets, it never merges). Config-only mode is
+into its screens (a load resets, it never merges); a stage screen accepts
+its own flat TOML as well as a sectioned `pipeline.toml` (the stage's
+wired options are derived from it). Config-only mode is
 the same flow without a run: fill what you need, *Write TOML…*, quit,
 and run the CLI later — the chain via
 `colony-tracking pipeline --config <file>`, or a stage via

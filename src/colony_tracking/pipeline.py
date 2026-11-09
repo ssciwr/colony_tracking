@@ -543,16 +543,34 @@ def write_config(config: PipelineConfig, path: Path | str) -> Path:
     return path
 
 
-def read_stage_config(run_type: str, path: Path | str) -> dict[str, Any]:
-    """Read a config file for one stage as a flat options document.
+def stage_config_document(
+    run_type: str, doc: dict[str, Any]
+) -> dict[str, Any]:
+    """One stage's flat options document from either config shape.
 
-    Two shapes are accepted: the stage's own flat config (its keys are
-    exactly the stage options dataclass's field names — the TUI stage
-    screens write this) is returned unchanged; a sectioned document — a
-    ``[pipeline]`` section and/or known stage sections — resolves through
+    The stage's own flat config (its keys are exactly the stage options
+    dataclass's field names — the TUI stage screens write this) is
+    returned unchanged; a sectioned document — a ``[pipeline]`` section
+    and/or known stage sections — resolves through
     ``PipelineConfig.from_dict`` and yields this stage's resolved options
     as a flat document (chain wiring and run-level values included).
     """
+    sectioned = "pipeline" in doc or any(
+        stage in doc and isinstance(doc[stage], dict) for stage in _STAGES
+    )
+    if not sectioned:
+        return doc
+    options = getattr(PipelineConfig.from_dict(doc), run_type)
+    return {
+        key: _to_plain(value)
+        for key, value in options.to_dict().items()
+        if value is not None
+    }
+
+
+def read_stage_config(run_type: str, path: Path | str) -> dict[str, Any]:
+    """Read a config file for one stage as a flat options document (see
+    :func:`stage_config_document` for the two accepted shapes)."""
     path = Path(path)
     try:
         with open(path, "rb") as handle:
@@ -560,16 +578,7 @@ def read_stage_config(run_type: str, path: Path | str) -> dict[str, Any]:
     except tomllib.TOMLDecodeError as exc:
         raise _stage_config_error(run_type, f"{path}: not valid TOML: {exc}") from exc
     log.info("%s config: reading %s", run_type, path)
-    if "pipeline" in doc or any(
-        stage in doc and isinstance(doc[stage], dict) for stage in _STAGES
-    ):
-        options = getattr(PipelineConfig.from_dict(doc), run_type)
-        return {
-            key: _to_plain(value)
-            for key, value in options.to_dict().items()
-            if value is not None
-        }
-    return doc
+    return stage_config_document(run_type, doc)
 
 
 def write_stage_config(run_type: str, options: Options, path: Path | str) -> Path:

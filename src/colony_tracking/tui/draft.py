@@ -27,9 +27,11 @@ without importing the TUI.
 validated, raising :class:`~colony_tracking.pipeline.ConfigError` with
 the machinery's exact wordings (logged through :data:`colony_tracking.log`,
 shown verbatim by a screen's action gate). :meth:`ConfigDraft.load`
-replaces the draft with a config TOML of its run type and validates
-structure only; owned keys, missing requireds, and mistyped values pass
-and surface verbatim at the next resolve.
+replaces the draft with a config TOML of its run type. A flat stage
+document is validated structurally only — owned keys, missing requireds,
+and mistyped values pass and surface verbatim at the next resolve — while
+a sectioned pipeline document loaded into a stage draft resolves to that
+stage's wired options.
 :func:`resolve_loaded_paths` is the load dialogs' follow-up: it rebases a
 loaded draft's relative path values onto the directory they were written
 from, so a file saved from one working directory keeps working when the
@@ -57,6 +59,7 @@ from ..pipeline import (
     _config_error,
     _stage_config_error,
     resolve_stage_document,
+    stage_config_document,
     write_config,
     write_stage_config,
 )
@@ -399,10 +402,16 @@ class ConfigDraft:
     def load(self, path: Path | str) -> Path:
         """Read a config TOML of this run type into the draft, replacing
         the draft's content with the file's (a load resets, it never
-        merges). Structural validation only: unknown sections/keys are
-        refused with the resolvers' wordings; owned keys, missing
+        merges). Returns the path.
+
+        A stage draft accepts its own flat document and a sectioned
+        ``pipeline.toml``: the latter resolves through
+        ``PipelineConfig.from_dict`` to the stage's wired options (run
+        level and derived values included), so the draft becomes fully
+        explicit. A flat document is validated structurally only —
+        unknown keys are refused at load, while owned keys, missing
         requireds, and mistyped values surface verbatim at the next
-        :meth:`resolve`. Returns the path.
+        :meth:`resolve`.
         """
         path = Path(path)
         try:
@@ -418,6 +427,7 @@ class ConfigDraft:
             self.run_level = dict(doc.get(RUN_LEVEL, {}))
             self.stages = {stage: dict(doc.get(stage, {})) for stage in STAGES}
         else:
+            doc = stage_config_document(self.run_type, doc)
             names = {f.name for f in fields(_STAGE_OPTIONS[self.run_type])}
             unknown = sorted(set(doc) - names)
             if unknown:

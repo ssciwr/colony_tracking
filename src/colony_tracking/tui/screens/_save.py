@@ -16,7 +16,9 @@ outputs.
 
 :class:`LoadConfigDialog` is the read door: it asks for a path and loads
 the file into the caller's draft through
-:meth:`~colony_tracking.tui.draft.ConfigDraft.load`. An unreadable or
+:meth:`~colony_tracking.tui.draft.ConfigDraft.load`. A stage screen's
+draft accepts both its own flat TOML and a sectioned ``pipeline.toml``
+(the stage's wired options are derived from it). An unreadable or
 structurally wrong file is reported inside the dialog, which stays open;
 a success notifies, dismisses with the loaded path, and the caller
 screen refreshes its forms from the (reset) draft on resume. A loaded

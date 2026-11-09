@@ -35,6 +35,10 @@ root under ``<out_root>/<name of the root>/``:
   ``growth_curves_<n>_ancestor(s).png`` growth-curve plot per ancestor count
   (suppressed by ``no_plots``); per-well QA overlays ``qa/<well>_rim.png``
   (suppressed by ``no_qa``);
+- the four plots ``growth_curves_by_ancestors.png``,
+  ``mean_area_by_ancestors.png``, ``growth_rates_by_ancestors.png`` and
+  ``abs_growth_by_well.png`` (suppressed by ``no_plots``); per-well QA
+  overlays ``qa/<well>_rim.png`` (suppressed by ``no_qa``);
 - and, directly under ``out_root``, the shared ``well_geometry.csv`` cache of
   the fitted well circles.
 
@@ -109,6 +113,13 @@ time, coloured by ancestor count), one growth-curve figure per ancestor
 count, mean area per ancestor group (buckets with < 3 members not drawn;
 group opacity fades with member count unless ``no_group_alpha``); rate
 distributions per group (box + strip, symlog absolute-growth panel).
+time, coloured by ancestor count); mean area per ancestor group (buckets with
+< 3 members not drawn; group opacity fades with member count unless
+``no_group_alpha``); rate distributions per group (box + strip, symlog
+absolute-growth panel); and a per-well overview: one absolute-growth box plot
+per well at its 96-well plate position, a shared y-axis across all panels,
+drawing every computed rate (flagged colonies and bad wells included) so a
+misbehaving well stands out.
 
 ``plots_only`` re-renders everything derived from an existing trajectories
 CSV with no image IO. Colonies/trajectories CSVs written by the prototype
@@ -119,6 +130,7 @@ new writes always use the canonical names.
 
 from __future__ import annotations
 
+import re
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -175,11 +187,12 @@ def _radial_minima(
     rows = np.arange(prof.shape[0])
     lo = np.clip(i - 30, 0, prof.shape[1])
     hi = np.clip(i + 31, 0, prof.shape[1])
-    nb_mean = np.array([prof[k, lo[k]:hi[k]].mean() for k in rows])
+    nb_mean = np.array([prof[k, lo[k] : hi[k]].mean() for k in rows])
     depth = np.nanmax(prof, axis=1) - np.nanmin(prof, axis=1)
     keep = row_ok & (prof[rows, i] <= nb_mean - dip * (depth + 1e-9))
-    return np.c_[cy + rs[i[keep]] * np.sin(angs[keep]),
-                 cx + rs[i[keep]] * np.cos(angs[keep])]
+    return np.c_[
+        cy + rs[i[keep]] * np.sin(angs[keep]), cx + rs[i[keep]] * np.cos(angs[keep])
+    ]
 
 
 def _circle_fit(pts: np.ndarray) -> tuple[float, float, float]:
@@ -187,7 +200,7 @@ def _circle_fit(pts: np.ndarray) -> tuple[float, float, float]:
     a = np.c_[pts[:, 0], pts[:, 1], np.ones(len(pts))]
     c, *_ = np.linalg.lstsq(a, pts[:, 0] ** 2 + pts[:, 1] ** 2, rcond=None)
     cy, cx = c[0] / 2, c[1] / 2
-    return cy, cx, np.sqrt(c[2] + cy ** 2 + cx ** 2)
+    return cy, cx, np.sqrt(c[2] + cy**2 + cx**2)
 
 
 def _trim_fit(
@@ -233,8 +246,9 @@ def _fit_frame(path) -> tuple[float, float, float] | None:
     coarse = _trim_fit(pts, tol=30)
     if coarse is None or not (R_MIN < coarse[2] < R_MAX):
         return None
-    pts = _radial_minima(sm, coarse[0], coarse[1], coarse[2] - 70,
-                         coarse[2] + 70, dip=0.02)
+    pts = _radial_minima(
+        sm, coarse[0], coarse[1], coarse[2] - 70, coarse[2] + 70, dip=0.02
+    )
     if len(pts) < 40:
         return None
     fit = _trim_fit(pts, tol=25)
@@ -243,8 +257,13 @@ def _fit_frame(path) -> tuple[float, float, float] | None:
     cy, cx, r, std, _ = fit
     ang = (np.degrees(np.arctan2(pts[:, 0] - cy, pts[:, 1] - cx)) + 360) % 360
     cov = len(np.unique((ang // 30).astype(int)))
-    if not (R_MIN < r < R_MAX and CENTER_MIN < cy < CENTER_MAX
-            and CENTER_MIN < cx < CENTER_MAX and std < 20 and cov >= 8):
+    if not (
+        R_MIN < r < R_MAX
+        and CENTER_MIN < cy < CENTER_MAX
+        and CENTER_MIN < cx < CENTER_MAX
+        and std < 20
+        and cov >= 8
+    ):
         return None
     return cy, cx, r
 
@@ -311,8 +330,12 @@ def rim_stats(rows, seg_dir, geo, rim_width: int) -> dict:
         if not path.exists():
             if frame not in warned:
                 warned.add(frame)
-                log.warning("[%s] LO%03d: missing label image %s; rim fractions "
-                            "empty", frows[0]["well"], frame, path.name)
+                log.warning(
+                    "[%s] LO%03d: missing label image %s; rim fractions empty",
+                    frows[0]["well"],
+                    frame,
+                    path.name,
+                )
             continue
         lab = io.read_label_image(path)
         if zone is None:
@@ -367,12 +390,15 @@ def build_trajectories(rows, rim_fracs, options):
       flagged pre_existing are dropped from the aggregates and plots over
       their whole lifetime, not from the CSVs.
     """
-    t_hours = {int(r["frame"]): t for r, t in
-               zip(rows, t_hours_of([r["t_seconds"] for r in rows]))}
+    t_hours = {
+        int(r["frame"]): t
+        for r, t in zip(rows, t_hours_of([r["t_seconds"] for r in rows]))
+    }
     # (well, colony_id) keys: the prototype flow feeds one well at a time,
     # but the grouping must not bleed across wells either way.
-    order = sorted(rows, key=lambda r: (str(r["well"]), int(r["frame"]),
-                                        int(r["colony_id"])))
+    order = sorted(
+        rows, key=lambda r: (str(r["well"]), int(r["frame"]), int(r["colony_id"]))
+    )
     per_colony = {}
     for r in order:
         per_colony.setdefault((r["well"], int(r["colony_id"])), []).append(r)
@@ -428,11 +454,10 @@ def build_trajectories(rows, rim_fracs, options):
             # never flags.
             per_image = []
             for i, (l1, a1) in enumerate(valid):
-                for l2, a2 in valid[i + 1:]:
+                for l2, a2 in valid[i + 1 :]:
                     if l2 - l1 >= 2:
                         if a1 > 0:
-                            per_image.append(
-                                ((a2 - a1) / a1) / (l2 - l1))
+                            per_image.append(((a2 - a1) / a1) / (l2 - l1))
                         break
             if per_image and min(per_image) <= options.min_growth_per_frame:
                 no_growth = 1
@@ -444,19 +469,25 @@ def build_trajectories(rows, rim_fracs, options):
         cid = int(r["colony_id"])
         base = baseline[(r["well"], cid)]
         th = t_hours[int(r["frame"])]
-        out.append({
-            "well": r["well"], "frame": int(r["frame"]),
-            "t_hours": round(th, 3),
-            "colony_id": cid, "group_id": int(r["group_id"]),
-            "merged_with": r["merged_with"], "ancestors": r["ancestors"],
-            "pre_existing": int(r["pre_existing"]),
-            "area_px": int(r["area_px"]),
-            "age_h": round(th - base[1], 3) if base else None,
-            "rim_frac": round(r["rim_frac"], 4) if r["rim_frac"] is not None
-            else None,
-            "rim_excluded": r["rim_excluded"],
-            "no_growth": r["no_growth"],
-        })
+        out.append(
+            {
+                "well": r["well"],
+                "frame": int(r["frame"]),
+                "t_hours": round(th, 3),
+                "colony_id": cid,
+                "group_id": int(r["group_id"]),
+                "merged_with": r["merged_with"],
+                "ancestors": r["ancestors"],
+                "pre_existing": int(r["pre_existing"]),
+                "area_px": int(r["area_px"]),
+                "age_h": round(th - base[1], 3) if base else None,
+                "rim_frac": round(r["rim_frac"], 4)
+                if r["rim_frac"] is not None
+                else None,
+                "rim_excluded": r["rim_excluded"],
+                "no_growth": r["no_growth"],
+            }
+        )
     return out
 
 
@@ -476,11 +507,12 @@ def split_bad(traj, options):
     for r in traj:
         if r["no_growth"]:
             per_well_bad.setdefault(r["well"], set()).add(r["colony_id"])
-    excluded = {w for w, ids in per_well_bad.items()
-                if len(ids) >= options.max_bad_segments
-                and not options.keep_bad_wells}
-    traj_f = [r for r in traj
-              if r["well"] not in excluded and not r["no_growth"]]
+    excluded = {
+        w
+        for w, ids in per_well_bad.items()
+        if len(ids) >= options.max_bad_segments and not options.keep_bad_wells
+    }
+    traj_f = [r for r in traj if r["well"] not in excluded and not r["no_growth"]]
     return traj_f, per_well_bad, excluded
 
 
@@ -530,10 +562,10 @@ def write_good_trajectories(traj_f, out_dir):
     for r in good:
         buckets.setdefault(int(r["ancestors"]), []).append(r)
     for n, rows in sorted(buckets.items()):
-        io.write_csv_rows(out_dir / f"trajectories_ancestors_{n}.csv",
-                          rows, TRAJ_FIELDS)
-    log.info("%d good row(s) in %d ancestor bucket(s) written",
-             len(good), len(buckets))
+        io.write_csv_rows(
+            out_dir / f"trajectories_ancestors_{n}.csv", rows, TRAJ_FIELDS
+        )
+    log.info("%d good row(s) in %d ancestor bucket(s) written", len(good), len(buckets))
     return len(buckets)
 
 
@@ -568,10 +600,12 @@ def write_good_rates(rates_f, out_dir):
     for r in good:
         buckets.setdefault(int(r["max_ancestors"]), []).append(r)
     for n, rows in sorted(buckets.items()):
-        io.write_csv_rows(out_dir / f"rates_ancestors_{n}.csv", rows,
-                          RATE_FIELDS)
-    log.info("%d good rate row(s) in %d max-ancestors bucket(s) written",
-             len(good), len(buckets))
+        io.write_csv_rows(out_dir / f"rates_ancestors_{n}.csv", rows, RATE_FIELDS)
+    log.info(
+        "%d good rate row(s) in %d max-ancestors bucket(s) written",
+        len(good),
+        len(buckets),
+    )
     return len(buckets)
 
 
@@ -605,11 +639,13 @@ def growth_rates(traj):
         valid = [r for r in crows if not r["rim_excluded"]]
         ex_frame = next((r["frame"] for r in crows if r["rim_excluded"]), None)
         row = {
-            "well": well, "colony_id": cid,
+            "well": well,
+            "colony_id": cid,
             "group_id": crows[0]["group_id"],
             "first_frame": valid[0]["frame"] if valid else crows[0]["frame"],
             "last_frame": valid[-1]["frame"] if valid else crows[-1]["frame"],
-            "n_frames": len(crows), "n_frames_valid": len(valid),
+            "n_frames": len(crows),
+            "n_frames_valid": len(valid),
             "area_first": valid[0]["area_px"] if valid else None,
             "area_last": valid[-1]["area_px"] if valid else None,
             "max_ancestors": max(r["ancestors"] for r in crows),
@@ -623,11 +659,12 @@ def growth_rates(traj):
             a = np.array([r["area_px"] for r in valid], dtype=float)
             if t[-1] > t[0] and (a > 0).all():
                 k, _ = np.polyfit(t, np.log(a), 1)
-                rate = float(k)                     # h^-1
+                rate = float(k)  # h^-1
                 abs_rate = float((a[-1] - a[0]) / (t[-1] - t[0]))
         row["growth_rate_per_h"] = None if rate is None else round(rate, 5)
-        row["growth_doublings_per_day"] = (None if rate is None
-                                           else round(rate * 24 / np.log(2), 3))
+        row["growth_doublings_per_day"] = (
+            None if rate is None else round(rate * 24 / np.log(2), 3)
+        )
         row["abs_growth_px_per_h"] = None if abs_rate is None else round(abs_rate, 1)
         out.append(row)
     return out
@@ -655,14 +692,17 @@ def aggregate_areas(traj):
     rows = []
     for (frame, n), rs in sorted(groups.items()):
         areas = np.array([r["area_px"] for r in rs], dtype=float)
-        rows.append({
-            "frame": frame,
-            "t_hours": round(float(np.mean(frame_time[frame])), 3),
-            "ancestors": n, "n_colonies": len(rs),
-            "n_wells": len({r["well"] for r in rs}),
-            "mean_area_px": round(float(areas.mean()), 1),
-            "median_area_px": round(float(np.median(areas)), 1),
-        })
+        rows.append(
+            {
+                "frame": frame,
+                "t_hours": round(float(np.mean(frame_time[frame])), 3),
+                "ancestors": n,
+                "n_colonies": len(rs),
+                "n_wells": len({r["well"] for r in rs}),
+                "mean_area_px": round(float(areas.mean()), 1),
+                "median_area_px": round(float(np.median(areas)), 1),
+            }
+        )
     return rows
 
 
@@ -683,22 +723,55 @@ def aggregate_rates(rates):
     for n, rs in sorted(groups.items()):
         dd = np.array([r["growth_doublings_per_day"] for r in rs], dtype=float)
         ab = np.array([r["abs_growth_px_per_h"] for r in rs], dtype=float)
-        rows.append({
-            "max_ancestors": n, "n_colonies": len(rs),
-            "mean_doublings_per_day": round(float(dd.mean()), 3),
-            "median_doublings_per_day": round(float(np.median(dd)), 3),
-            "mean_abs_growth_px_per_h": round(float(ab.mean()), 1),
-            "median_abs_growth_px_per_h": round(float(np.median(ab)), 1),
-        })
+        rows.append(
+            {
+                "max_ancestors": n,
+                "n_colonies": len(rs),
+                "mean_doublings_per_day": round(float(dd.mean()), 3),
+                "median_doublings_per_day": round(float(np.median(dd)), 3),
+                "mean_abs_growth_px_per_h": round(float(ab.mean()), 1),
+                "median_abs_growth_px_per_h": round(float(np.median(ab)), 1),
+            }
+        )
     return rows
 
 
 # ---------------------------------------------------------------- plots ------
 
 
+#: The 96-well plate layout: rows A-H, columns 1-12 (wells like ``-A001``).
+PLATE_ROWS = "ABCDEFGH"
+PLATE_COLS = 12
+
 #: One colour per ancestor-count group; counts above 9 share the last.
-COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
-          "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
+COLORS = [
+    "#1f77b4",
+    "#d62728",
+    "#2ca02c",
+    "#9467bd",
+    "#ff7f0e",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22",
+    "#17becf",
+]
+
+
+def well_grid_cell(well):
+    """Plate-grid cell ``(row, column)`` of a well, both 0-based.
+
+    Wells are named ``-<A-H><nnn>``: ``-A001`` maps to row 0, column 0 and
+    ``-H012`` to row 7, column 11. Returns None when the name does not fit
+    the 96-well layout.
+    """
+    m = re.fullmatch(r"-([A-H])(\d{3})", str(well))
+    if m is None:
+        return None
+    col = int(m.group(2)) - 1
+    if not 0 <= col < PLATE_COLS:
+        return None
+    return PLATE_ROWS.index(m.group(1)), col
 
 
 def group_color(n):
@@ -726,6 +799,117 @@ def group_alpha(n, n_ref, floor=0.25):
     return floor + (1.0 - floor) * float(np.sqrt(min(n, n_ref) / n_ref))
 
 
+def plot_abs_growth_grid(
+    rates, wells, out_path, excluded=(), per_well_bad=None, well_names=""
+):
+    """Per-well absolute-growth box plots, one panel per well.
+
+    Each panel sits at its well's position on the 96-well plate grid (rows
+    A-H, columns 1-12) and shows that well's colonies only, so a well that
+    misbehaves stands out by position. The y-axis is shared and identically
+    limited across every panel for direct comparison; only the left column
+    carries tick labels. Wells excluded from the aggregates (bad wells) get
+    a red title, wells with bad segments below the exclusion threshold an
+    orange one. Each title carries the well name and its colony count; a
+    well without a computed rate reads ``no rate``.
+
+    Unlike the pooled plots this uses every computed absolute growth rate
+    (bad and pre-existing colonies included): the point is to keep
+    misbehaviour visible, not to analyse the good pool. Wells that do not
+    fit the plate-name layout are skipped with a warning.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    per_well_bad = per_well_bad or {}
+    excluded = set(excluded)
+    cells = {w: well_grid_cell(w) for w in wells}
+    cells = {w: c for w, c in cells.items() if c is not None}
+    if not cells:
+        log.warning("no wells in the plate layout; no per-well growth grid")
+        return
+    r0 = min(c[0] for c in cells.values())
+    r1 = max(c[0] for c in cells.values())
+    c0 = min(c[1] for c in cells.values())
+    c1 = max(c[1] for c in cells.values())
+    nrows, ncols = r1 - r0 + 1, c1 - c0 + 1
+
+    values = {}
+    for r in rates:
+        if r["abs_growth_px_per_h"] is None:
+            continue
+        values.setdefault(r["well"], []).append(float(r["abs_growth_px_per_h"]))
+    all_vals = np.array([v for vs in values.values() for v in vs], dtype=float)
+
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(max(4.0, 1.55 * ncols), max(3.0, 1.15 * nrows)),
+        sharey=True,
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for ax in axes.flat:
+        ax.set_xticks([])
+        ax.tick_params(axis="x", length=0)
+        ax.tick_params(axis="y", labelsize=7)
+
+    for well, (row, col) in cells.items():
+        ax = axes[row - r0, col - c0]
+        vals = values.get(well, [])
+        if well in excluded:
+            color = "#d62728"
+        elif per_well_bad.get(well):
+            color = "#ff7f0e"
+        else:
+            color = "#1f77b4"
+        if vals:
+            ax.boxplot(
+                [vals],
+                positions=[0],
+                widths=0.6,
+                patch_artist=True,
+                showfliers=False,
+                medianprops={"color": "k"},
+                boxprops={"facecolor": color, "alpha": 0.55},
+                whiskerprops={"color": color},
+                capprops={"color": color},
+            )
+        else:
+            ax.text(
+                0.5,
+                0.5,
+                "no rate",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=6,
+                color="0.55",
+            )
+        ax.set_xlim(-0.75, 0.75)
+        ax.set_xticks([])  # boxplot otherwise re-adds a tick at x=0
+        ax.set_title(
+            f"{well}\nn={len(vals)}", fontsize=6, color=color, linespacing=0.9, pad=2
+        )
+    for ax in axes[:, 1:].flat:
+        ax.tick_params(labelleft=False)
+
+    if all_vals.size:
+        lo, hi = float(all_vals.min()), float(all_vals.max())
+        pad = (hi - lo) * 0.08 if hi > lo else (abs(hi) * 0.1 or 1.0)
+        for ax in axes.flat:
+            ax.set_ylim(lo - pad, hi + pad)
+            if lo < 0 < hi:
+                ax.axhline(0, color="0.8", lw=0.5, zorder=0)
+
+    fig.supylabel("absolute growth (px / h)")
+    fig.suptitle(f"absolute growth rate by well{well_names}", fontsize=11)
+    fig.savefig(out_path, dpi=130)
+    plt.close(fig)
+
+
 def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
     """Individual colony trajectories: absolute area on both time axes.
 
@@ -737,6 +921,7 @@ def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
     group (the combined plot).
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -751,9 +936,10 @@ def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
 
     group_note = f" ({group_label(ancestors)})" if ancestors is not None else ""
     seen = set()
-    for ax, xkey, xlabel in ((axes[0], "t_hours", "well time (h)"),
-                             (axes[1], "age_h",
-                              "hours since colony's first valid frame")):
+    for ax, xkey, xlabel in (
+        (axes[0], "t_hours", "well time (h)"),
+        (axes[1], "age_h", "hours since colony's first valid frame"),
+    ):
         for crows in per_colony.values():
             crows.sort(key=lambda r: r["frame"])
             runs, cur, last = [], [], None
@@ -766,9 +952,15 @@ def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
             runs.append((last, cur))
             for n, run in runs:
                 seen.add(n)
-                ax.plot([r[xkey] for r in run], [r["area_px"] for r in run],
-                        color=group_color(n), lw=0.8, alpha=0.35, marker="o",
-                        ms=1.8)
+                ax.plot(
+                    [r[xkey] for r in run],
+                    [r["area_px"] for r in run],
+                    color=group_color(n),
+                    lw=0.8,
+                    alpha=0.35,
+                    marker="o",
+                    ms=1.8,
+                )
         ax.set_yscale("log")
         ax.set_xlabel(xlabel)
         ax.set_ylabel("colony area (px)")
@@ -777,8 +969,7 @@ def plot_growth_curves(traj, out_path, well_names="", ancestors=None):
         for n in sorted(seen):
             ax.plot([], [], color=group_color(n), lw=2, label=group_label(n))
         ax.legend(fontsize=8)
-    axes[0].set_title(
-        f"colony growth, absolute time{group_note}{well_names}")
+    axes[0].set_title(f"colony growth, absolute time{group_note}{well_names}")
     axes[1].set_title(f"colony growth, time since first appearance{group_note}")
     fig.suptitle("")
     fig.savefig(out_path, dpi=130)
@@ -792,12 +983,21 @@ def plot_growth_curves_per_ancestor(traj, out_dir, well_names=""):
     two-panel growth-curve figure (``growth_curves_1_ancestor.png``,
     ``growth_curves_2_ancestors.png``, ...), restricted to that group.
     """
-    groups = sorted({r["ancestors"] for r in traj
-                     if not r["rim_excluded"] and r["age_h"] is not None})
+    groups = sorted(
+        {
+            r["ancestors"]
+            for r in traj
+            if not r["rim_excluded"] and r["age_h"] is not None
+        }
+    )
     for n in groups:
         name = group_label(n).replace(" ", "_")
-        plot_growth_curves(traj, Path(out_dir) / f"growth_curves_{name}.png",
-                           well_names=well_names, ancestors=n)
+        plot_growth_curves(
+            traj,
+            Path(out_dir) / f"growth_curves_{name}.png",
+            well_names=well_names,
+            ancestors=n,
+        )
 
 
 def plot_mean_areas(traj, areas_agg, out_path, well_names="", alpha_on=True):
@@ -811,6 +1011,7 @@ def plot_mean_areas(traj, areas_agg, out_path, well_names="", alpha_on=True):
     The legend shows each group's peak support.
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -822,23 +1023,36 @@ def plot_mean_areas(traj, areas_agg, out_path, well_names="", alpha_on=True):
     by_n = {}
     for r in areas_agg:
         by_n.setdefault(r["ancestors"], []).append(r)
-    n_ref = max((max(r["n_colonies"] for r in rs) for rs in by_n.values()),
-                default=1)
+    n_ref = max((max(r["n_colonies"] for r in rs) for rs in by_n.values()), default=1)
     for n, rs in sorted(by_n.items()):
-        rs = sorted((r for r in rs if r["n_colonies"] >= MIN_MEMBERS),
-                    key=lambda r: r["frame"])
+        rs = sorted(
+            (r for r in rs if r["n_colonies"] >= MIN_MEMBERS), key=lambda r: r["frame"]
+        )
         if not rs:
             continue
         peak = max(r["n_colonies"] for r in rs)
-        a_line = (group_alpha(int(np.median([r["n_colonies"] for r in rs])),
-                              n_ref) if alpha_on else 0.8)
-        ax.plot([r["t_hours"] for r in rs], [r["mean_area_px"] for r in rs],
-                color=group_color(n), alpha=a_line, lw=1.2)
-        ax.scatter([r["t_hours"] for r in rs], [r["mean_area_px"] for r in rs],
-                   s=14, color=group_color(n),
-                   alpha=[group_alpha(r["n_colonies"], n_ref) if alpha_on
-                          else 0.8 for r in rs],
-                   label=f"{group_label(n)} (n up to {peak})")
+        a_line = (
+            group_alpha(int(np.median([r["n_colonies"] for r in rs])), n_ref)
+            if alpha_on
+            else 0.8
+        )
+        ax.plot(
+            [r["t_hours"] for r in rs],
+            [r["mean_area_px"] for r in rs],
+            color=group_color(n),
+            alpha=a_line,
+            lw=1.2,
+        )
+        ax.scatter(
+            [r["t_hours"] for r in rs],
+            [r["mean_area_px"] for r in rs],
+            s=14,
+            color=group_color(n),
+            alpha=[
+                group_alpha(r["n_colonies"], n_ref) if alpha_on else 0.8 for r in rs
+            ],
+            label=f"{group_label(n)} (n up to {peak})",
+        )
     ax.set_yscale("log")
     ax.set_xlabel("well time (h)")
     ax.set_ylabel("mean colony area (px)")
@@ -853,23 +1067,34 @@ def plot_mean_areas(traj, areas_agg, out_path, well_names="", alpha_on=True):
             continue
         # frames are hourly; bin to whole hours so T-timestamp jitter
         # (+-2 ms between wells) does not split each age into sub-buckets
-        buckets.setdefault((round(r["age_h"]), r["ancestors"]), []).append(
-            r["area_px"])
+        buckets.setdefault((round(r["age_h"]), r["ancestors"]), []).append(r["area_px"])
     n_ref = max((len(v) for v in buckets.values()), default=1)
     for n in sorted({k[1] for k in buckets}):
-        pts = sorted((age, np.mean(v), len(v)) for (age, nn), v in
-                     buckets.items() if nn == n and len(v) >= MIN_MEMBERS)
+        pts = sorted(
+            (age, np.mean(v), len(v))
+            for (age, nn), v in buckets.items()
+            if nn == n and len(v) >= MIN_MEMBERS
+        )
         if not pts:
             continue
-        a_line = (group_alpha(int(np.median([p[2] for p in pts])), n_ref)
-                  if alpha_on else 0.8)
-        ax.plot([p[0] for p in pts], [p[1] for p in pts], color=group_color(n),
-                alpha=a_line, lw=1.2)
-        ax.scatter([p[0] for p in pts], [p[1] for p in pts], s=14,
-                   color=group_color(n),
-                   alpha=[group_alpha(p[2], n_ref) if alpha_on else 0.8
-                          for p in pts],
-                   label=f"{group_label(n)} (n up to {max(p[2] for p in pts)})")
+        a_line = (
+            group_alpha(int(np.median([p[2] for p in pts])), n_ref) if alpha_on else 0.8
+        )
+        ax.plot(
+            [p[0] for p in pts],
+            [p[1] for p in pts],
+            color=group_color(n),
+            alpha=a_line,
+            lw=1.2,
+        )
+        ax.scatter(
+            [p[0] for p in pts],
+            [p[1] for p in pts],
+            s=14,
+            color=group_color(n),
+            alpha=[group_alpha(p[2], n_ref) if alpha_on else 0.8 for p in pts],
+            label=f"{group_label(n)} (n up to {max(p[2] for p in pts)})",
+        )
     ax.set_yscale("log")
     ax.set_xlabel("hours since colony's first valid frame")
     ax.set_ylabel("mean colony area (px)")
@@ -886,6 +1111,7 @@ def plot_growth_rates(rates, out_path, well_names="", alpha_on=True):
     read as lower-confidence (disable with ``no_group_alpha``).
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -901,14 +1127,19 @@ def plot_growth_rates(rates, out_path, well_names="", alpha_on=True):
         plt.close(fig)
         return
     n_ref = max(len(groups[n]) for n in ns)
-    alphas = {n: group_alpha(len(groups[n]), n_ref) if alpha_on else 0.8
-              for n in ns}
+    alphas = {n: group_alpha(len(groups[n]), n_ref) if alpha_on else 0.8 for n in ns}
     data_dd = [[r["growth_doublings_per_day"] for r in groups[n]] for n in ns]
     data_ab = [[r["abs_growth_px_per_h"] for r in groups[n]] for n in ns]
 
     ax = axes[0]
-    bp = ax.boxplot(data_dd, positions=ns, widths=0.6, showfliers=False,
-                    patch_artist=True, medianprops={"color": "k"})
+    bp = ax.boxplot(
+        data_dd,
+        positions=ns,
+        widths=0.6,
+        showfliers=False,
+        patch_artist=True,
+        medianprops={"color": "k"},
+    )
     for patch, n in zip(bp["boxes"], ns):
         patch.set_facecolor(group_color(n))
         patch.set_alpha(0.25 + 0.5 * (alphas[n] - 0.25))
@@ -919,24 +1150,41 @@ def plot_growth_rates(rates, out_path, well_names="", alpha_on=True):
     ax.set_ylim(dd_min * 0.99, dd_top)
     rng = np.random.default_rng(0)
     for n, vals in zip(ns, data_dd):
-        ax.plot(rng.uniform(n - 0.15, n + 0.15, len(vals)), vals, ".",
-                color=group_color(n), ms=3, alpha=alphas[n])
-        ax.annotate(f"n={len(vals)}", (n, dd_top), ha="center", va="top",
-                    fontsize=8)
+        ax.plot(
+            rng.uniform(n - 0.15, n + 0.15, len(vals)),
+            vals,
+            ".",
+            color=group_color(n),
+            ms=3,
+            alpha=alphas[n],
+        )
+        ax.annotate(f"n={len(vals)}", (n, dd_top), ha="center", va="top", fontsize=8)
     ax.set_xticks(ns)
     ax.set_xlabel("number of ancestors (max per colony)")
     ax.set_ylabel("growth rate (doublings / day)")
     ax.set_title(f"specific growth rate{well_names}", pad=10)
 
     ax = axes[1]
-    bp = ax.boxplot(data_ab, positions=ns, widths=0.6, showfliers=False,
-                    patch_artist=True, medianprops={"color": "k"})
+    bp = ax.boxplot(
+        data_ab,
+        positions=ns,
+        widths=0.6,
+        showfliers=False,
+        patch_artist=True,
+        medianprops={"color": "k"},
+    )
     for patch, n in zip(bp["boxes"], ns):
         patch.set_facecolor(group_color(n))
         patch.set_alpha(0.25 + 0.5 * (alphas[n] - 0.25))
     for n, vals in zip(ns, data_ab):
-        ax.plot(rng.uniform(n - 0.15, n + 0.15, len(vals)), vals, ".",
-                color=group_color(n), ms=3, alpha=alphas[n])
+        ax.plot(
+            rng.uniform(n - 0.15, n + 0.15, len(vals)),
+            vals,
+            ".",
+            color=group_color(n),
+            ms=3,
+            alpha=alphas[n],
+        )
     ab_min = min(min(v) for v in data_ab)
     ab_max = max(max(v) for v in data_ab)
     # fit the (sym)log axis to the data - the default symlog range wastes
@@ -992,11 +1240,9 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
         last = max(r["frame"] for r in rows)
     elif frames:
         last = max(f.frame for f in frames)
-        log.info("[%s] no colony rows; rim-only QA overlay for frame %d",
-                 well, last)
+        log.info("[%s] no colony rows; rim-only QA overlay for frame %d", well, last)
     else:
-        log.warning("[%s] no colony rows and no raw frames; no QA overlay",
-                    well)
+        log.warning("[%s] no colony rows and no raw frames; no QA overlay", well)
         return
     lrows = [r for r in rows if r["frame"] == last]
     srcs = [f.path for f in frames if f.frame == last]
@@ -1008,8 +1254,7 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
     rgb = np.stack([u8] * 3, -1)
     well_dir = Path(seg_root) / well
     labels = sorted(well_dir.glob(f"*--LO{last:03d}--*__labels.tif"))
-    lab = io.read_label_image(labels[0]) if labels \
-        else np.zeros(im.shape, np.uint32)
+    lab = io.read_label_image(labels[0]) if labels else np.zeros(im.shape, np.uint32)
     if lab.any():
 
         def tint(rgb, m, edge, color):
@@ -1017,9 +1262,10 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
             edge, both in ``color``."""
             sel = np.zeros_like(m, dtype=np.float32)
             sel[m] = 0.45
-            rgb = (rgb * (1 - sel[..., None])
-                   + np.array(color, np.float32) * sel[..., None]
-                   ).astype(np.uint8)
+            rgb = (
+                rgb * (1 - sel[..., None])
+                + np.array(color, np.float32) * sel[..., None]
+            ).astype(np.uint8)
             rgb[edge] = color
             return rgb
 
@@ -1037,50 +1283,102 @@ def qa_overlay(well, rows, seg_root, geo, options, out_path):
                 rgb = tint(rgb, m, edge, (255, 40, 40))
             else:
                 rgb[edge] = (40, 220, 40)
-    yy, xx = np.mgrid[0:im.shape[0], 0:im.shape[1]]
+    yy, xx = np.mgrid[0 : im.shape[0], 0 : im.shape[1]]
     d = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
     rgb[np.abs(d - R) < QA_RING_HALF_WIDTH_PX] = (60, 120, 255)
-    rgb[np.abs(d - (R - options.rim_width_px)) < QA_RING_HALF_WIDTH_PX] = \
-        (255, 160, 40)
-    Image.fromarray(rgb).resize((512, 512), Image.Resampling.BILINEAR) \
-        .save(out_path)
+    rgb[np.abs(d - (R - options.rim_width_px)) < QA_RING_HALF_WIDTH_PX] = (255, 160, 40)
+    Image.fromarray(rgb).resize((512, 512), Image.Resampling.BILINEAR).save(out_path)
 
 
 # ------------------------------------------------------------- pipeline -----
 
 
 #: The canonical trajectories.csv columns (spec: I/O contract).
-TRAJ_FIELDS = ["well", "frame", "t_hours", "colony_id", "group_id",
-               "merged_with", "ancestors", "pre_existing", "area_px",
-               "age_h", "rim_frac", "rim_excluded", "no_growth"]
+TRAJ_FIELDS = [
+    "well",
+    "frame",
+    "t_hours",
+    "colony_id",
+    "group_id",
+    "merged_with",
+    "ancestors",
+    "pre_existing",
+    "area_px",
+    "age_h",
+    "rim_frac",
+    "rim_excluded",
+    "no_growth",
+]
 
 #: Typed columns when reading a trajectories CSV back (``plots_only``);
 #: empty fields come back as None.
-TRAJ_TYPES = {"frame": int, "t_hours": float, "colony_id": int,
-              "group_id": int, "ancestors": int, "pre_existing": int,
-              "area_px": int, "age_h": float, "rim_frac": float,
-              "rim_excluded": int, "no_growth": int}
+TRAJ_TYPES = {
+    "frame": int,
+    "t_hours": float,
+    "colony_id": int,
+    "group_id": int,
+    "ancestors": int,
+    "pre_existing": int,
+    "area_px": int,
+    "age_h": float,
+    "rim_frac": float,
+    "rim_excluded": int,
+    "no_growth": int,
+}
 
 #: The canonical growth_rates.csv columns (spec: I/O contract).
-RATE_FIELDS = ["well", "colony_id", "group_id", "first_frame", "last_frame",
-               "n_frames", "n_frames_valid", "area_first", "area_last",
-               "max_ancestors", "rim_excluded_frame", "growth_rate_per_h",
-               "growth_doublings_per_day", "abs_growth_px_per_h",
-               "no_growth", "pre_existing"]
+RATE_FIELDS = [
+    "well",
+    "colony_id",
+    "group_id",
+    "first_frame",
+    "last_frame",
+    "n_frames",
+    "n_frames_valid",
+    "area_first",
+    "area_last",
+    "max_ancestors",
+    "rim_excluded_frame",
+    "growth_rate_per_h",
+    "growth_doublings_per_day",
+    "abs_growth_px_per_h",
+    "no_growth",
+    "pre_existing",
+]
 
 #: The canonical bad_segments.csv columns (spec: I/O contract).
-BAD_FIELDS = ["well", "colony_id", "first_frame", "last_frame",
-              "n_frames_valid", "area_first", "area_last", "n_bad_in_well",
-              "well_excluded"]
+BAD_FIELDS = [
+    "well",
+    "colony_id",
+    "first_frame",
+    "last_frame",
+    "n_frames_valid",
+    "area_first",
+    "area_last",
+    "n_bad_in_well",
+    "well_excluded",
+]
 
 #: The canonical areas_by_ancestors.csv columns (spec: I/O contract).
-AREAS_FIELDS = ["frame", "t_hours", "ancestors", "n_colonies", "n_wells",
-                "mean_area_px", "median_area_px"]
+AREAS_FIELDS = [
+    "frame",
+    "t_hours",
+    "ancestors",
+    "n_colonies",
+    "n_wells",
+    "mean_area_px",
+    "median_area_px",
+]
 
 #: The canonical rates_by_ancestors.csv columns (spec: I/O contract).
-RATES_FIELDS = ["max_ancestors", "n_colonies", "mean_doublings_per_day",
-                "median_doublings_per_day", "mean_abs_growth_px_per_h",
-                "median_abs_growth_px_per_h"]
+RATES_FIELDS = [
+    "max_ancestors",
+    "n_colonies",
+    "mean_doublings_per_day",
+    "median_doublings_per_day",
+    "mean_abs_growth_px_per_h",
+    "median_abs_growth_px_per_h",
+]
 
 
 def load_geometry(well, options, cache):
@@ -1095,12 +1393,19 @@ def load_geometry(well, options, cache):
     if well in cache:
         return cache[well]
     raw_dir = Path(options.raw_dir)
-    frames = (io.discover_wells(raw_dir, wells=[well]).get(well, [])[:3]
-              if raw_dir.is_dir() else [])
+    frames = (
+        io.discover_wells(raw_dir, wells=[well]).get(well, [])[:3]
+        if raw_dir.is_dir()
+        else []
+    )
     g = fit_well_circle([f.path for f in frames])
     if g is None:
-        log.warning("[%s] no plausible well circle found in %d frame(s); "
-                    "rim exclusion disabled for this well", well, len(frames))
+        log.warning(
+            "[%s] no plausible well circle found in %d frame(s); "
+            "rim exclusion disabled for this well",
+            well,
+            len(frames),
+        )
     cache[well] = g
     return g
 
@@ -1120,20 +1425,30 @@ def process_well(well, seg_root, options, out_dir, geometry):
     n_ex = sum(r["rim_excluded"] for r in traj)
     bad = {r["colony_id"] for r in traj if r["no_growth"]}
     if geo:
-        log.info("[%s] %d rows, %d rim-excluded (R=%.0f, zone>%d px, frac>%g)",
-                 well, len(traj), n_ex, geo[2], options.rim_width_px,
-                 options.rim_overlap_max)
+        log.info(
+            "[%s] %d rows, %d rim-excluded (R=%.0f, zone>%d px, frac>%g)",
+            well,
+            len(traj),
+            n_ex,
+            geo[2],
+            options.rim_width_px,
+            options.rim_overlap_max,
+        )
     else:
-        log.info("[%s] %d rows, rim exclusion unavailable (no well circle)",
-                 well, len(traj))
+        log.info(
+            "[%s] %d rows, rim exclusion unavailable (no well circle)", well, len(traj)
+        )
     if bad:
-        log.info("[%s] %d bad segment(s) [no_growth]: ids %s",
-                 well, len(bad), ",".join(str(i) for i in sorted(bad)))
+        log.info(
+            "[%s] %d bad segment(s) [no_growth]: ids %s",
+            well,
+            len(bad),
+            ",".join(str(i) for i in sorted(bad)),
+        )
     if not options.no_qa and geo:
         qa_dir = Path(out_dir) / "qa"
         qa_dir.mkdir(parents=True, exist_ok=True)
-        qa_overlay(well, traj, seg_root, geo, options,
-                   qa_dir / f"{well}_rim.png")
+        qa_overlay(well, traj, seg_root, geo, options, qa_dir / f"{well}_rim.png")
     return traj
 
 
@@ -1158,61 +1473,83 @@ def write_outputs(traj, options, out_dir):
     io.write_csv_rows(out_dir / "growth_rates.csv", rates, RATE_FIELDS)
 
     traj_f, per_well_bad, excluded = split_bad(traj, options)
-    rates_f = [r for r in rates
-               if r["well"] not in excluded and not r["no_growth"]]
+    rates_f = [r for r in rates if r["well"] not in excluded and not r["no_growth"]]
     if not options.keep_pre_existing:
         pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
         traj_f = [r for r in traj_f if (r["well"], r["colony_id"]) not in pre]
-        rates_f = [r for r in rates_f
-                   if (r["well"], r["colony_id"]) not in pre]
-        log.info("%d pre-existing segment(s) excluded from aggregates/plots",
-                 len(pre))
+        rates_f = [r for r in rates_f if (r["well"], r["colony_id"]) not in pre]
+        log.info("%d pre-existing segment(s) excluded from aggregates/plots", len(pre))
     n_bad_total = sum(len(ids) for ids in per_well_bad.values())
-    log.info("%d bad segment(s) in %d well(s)%s%s",
-             n_bad_total, len(per_well_bad),
-             f"; {len(excluded)} well(s) excluded from aggregates/plots: "
-             f"{sorted(excluded)}" if excluded else "",
-             " (--keep_bad_wells set)" if excluded and options.keep_bad_wells
-             else "")
+    log.info(
+        "%d bad segment(s) in %d well(s)%s%s",
+        n_bad_total,
+        len(per_well_bad),
+        f"; {len(excluded)} well(s) excluded from aggregates/plots: {sorted(excluded)}"
+        if excluded
+        else "",
+        " (--keep_bad_wells set)" if excluded and options.keep_bad_wells else "",
+    )
     write_good_trajectories(traj_f, out_dir)
     write_good_rates(rates_f, out_dir)
 
     io.write_csv_rows(
         out_dir / "bad_segments.csv",
-        [{"well": r["well"], "colony_id": r["colony_id"],
-          "first_frame": r["first_frame"],
-          "last_frame": r["last_frame"],
-          "n_frames_valid": r["n_frames_valid"],
-          "area_first": r["area_first"], "area_last": r["area_last"],
-          "n_bad_in_well": len(per_well_bad[r["well"]]),
-          "well_excluded": int(r["well"] in excluded)}
-         for r in rates if r["no_growth"]],
-        BAD_FIELDS)
+        [
+            {
+                "well": r["well"],
+                "colony_id": r["colony_id"],
+                "first_frame": r["first_frame"],
+                "last_frame": r["last_frame"],
+                "n_frames_valid": r["n_frames_valid"],
+                "area_first": r["area_first"],
+                "area_last": r["area_last"],
+                "n_bad_in_well": len(per_well_bad[r["well"]]),
+                "well_excluded": int(r["well"] in excluded),
+            }
+            for r in rates
+            if r["no_growth"]
+        ],
+        BAD_FIELDS,
+    )
 
     areas_agg = aggregate_areas(traj_f)
-    io.write_csv_rows(out_dir / "areas_by_ancestors.csv", areas_agg,
-                      AREAS_FIELDS)
-    io.write_csv_rows(out_dir / "rates_by_ancestors.csv",
-                      aggregate_rates(rates_f), RATES_FIELDS)
+    io.write_csv_rows(out_dir / "areas_by_ancestors.csv", areas_agg, AREAS_FIELDS)
+    io.write_csv_rows(
+        out_dir / "rates_by_ancestors.csv", aggregate_rates(rates_f), RATES_FIELDS
+    )
 
     if not options.no_plots:
         n_wells = len({r["well"] for r in traj_f})
         n_wells_all = len({r["well"] for r in traj})
-        n_note = (f" ({n_wells} of {n_wells_all} wells, {len(traj_f)} rows)"
-                  if n_wells < n_wells_all
-                  else f" ({n_wells} wells, {len(traj_f)} rows)")
-        plot_growth_curves(traj_f,
-                           out_dir / "growth_curves_by_ancestors.png",
-                           well_names=n_note)
+        n_note = (
+            f" ({n_wells} of {n_wells_all} wells, {len(traj_f)} rows)"
+            if n_wells < n_wells_all
+            else f" ({n_wells} wells, {len(traj_f)} rows)"
+        )
+        plot_growth_curves(
+            traj_f, out_dir / "growth_curves_by_ancestors.png", well_names=n_note
+        )
         plot_growth_curves_per_ancestor(traj_f, out_dir, well_names=n_note)
-        plot_mean_areas(traj_f, areas_agg,
-                        out_dir / "mean_area_by_ancestors.png",
-                        well_names=n_note,
-                        alpha_on=not options.no_group_alpha)
-        plot_growth_rates(rates_f,
-                          out_dir / "growth_rates_by_ancestors.png",
-                          well_names=n_note,
-                          alpha_on=not options.no_group_alpha)
+        plot_mean_areas(
+            traj_f,
+            areas_agg,
+            out_dir / "mean_area_by_ancestors.png",
+            well_names=n_note,
+            alpha_on=not options.no_group_alpha,
+        )
+        plot_growth_rates(
+            rates_f,
+            out_dir / "growth_rates_by_ancestors.png",
+            well_names=n_note,
+            alpha_on=not options.no_group_alpha,
+        )
+        plot_abs_growth_grid(
+            rates,
+            sorted({r["well"] for r in traj}),
+            out_dir / "abs_growth_by_well.png",
+            excluded=excluded,
+            per_well_bad=per_well_bad,
+        )
     return rates, areas_agg, per_well_bad, excluded
 
 
@@ -1239,8 +1576,7 @@ class AnalysisSummary:
     #: One entry per root that produced outputs, keyed by root name.
     roots: dict[str, RootSummary] = field(default_factory=dict)
     #: The fitted well circles actually used, well -> (cy, cx, R).
-    geometry: dict[str, tuple[float, float, float]] = field(
-        default_factory=dict)
+    geometry: dict[str, tuple[float, float, float]] = field(default_factory=dict)
     #: Segmentation roots that failed with an exception (by name).
     failures: list[str] = field(default_factory=list)
     #: Wells that failed inside an otherwise-completed root, by root name.
@@ -1252,8 +1588,9 @@ class AnalysisSummary:
         return sorted({w for ws in self.failed_wells.values() for w in ws})
 
 
-def _root_summary(name, traj, options, per_well_bad, excluded, wells=None,
-                  failed_wells=()):
+def _root_summary(
+    name, traj, options, per_well_bad, excluded, wells=None, failed_wells=()
+):
     """The shared RootSummary tail of the two analysis paths.
 
     Collects the pre-existing (well, colony_id) set; ``per_well_bad`` and
@@ -1265,12 +1602,16 @@ def _root_summary(name, traj, options, per_well_bad, excluded, wells=None,
         wells = len({r["well"] for r in traj})
     pre = {(r["well"], r["colony_id"]) for r in traj if r["pre_existing"]}
     return RootSummary(
-        name=name, wells=wells,
+        name=name,
+        wells=wells,
         colonies=len({(r["well"], r["colony_id"]) for r in traj}),
-        rows=len(traj), rim_excluded=sum(r["rim_excluded"] for r in traj),
+        rows=len(traj),
+        rim_excluded=sum(r["rim_excluded"] for r in traj),
         bad_segments=sum(len(ids) for ids in per_well_bad.values()),
-        excluded_wells=sorted(excluded), pre_existing=len(pre),
-        failed_wells=list(failed_wells))
+        excluded_wells=sorted(excluded),
+        pre_existing=len(pre),
+        failed_wells=list(failed_wells),
+    )
 
 
 def _replot(name, out_dir, options):
@@ -1303,12 +1644,15 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry, failed_wells):
     colony rows).
     """
     t0 = time.time()
-    wells = sorted({w for w in (io.parse_well(p.name)
-                                for p in seg_root.iterdir() if p.is_dir())
-                    if w})
+    wells = sorted(
+        {
+            w
+            for w in (io.parse_well(p.name) for p in seg_root.iterdir() if p.is_dir())
+            if w
+        }
+    )
     if options.wells:
-        requested = [w for chunk in options.wells for w in chunk.split(",")
-                     if w]
+        requested = [w for chunk in options.wells for w in chunk.split(",") if w]
         missing = [w for w in requested if w not in wells]
         if missing:
             log.warning("%s: requested wells not found: %s", name, missing)
@@ -1321,8 +1665,7 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry, failed_wells):
     for i, well in enumerate(wells):
         log.info("== %s: well %d/%d ==", name, i + 1, len(wells))
         try:
-            traj.extend(process_well(well, seg_root, options, out_dir,
-                                     geometry))
+            traj.extend(process_well(well, seg_root, options, out_dir, geometry))
         except Exception:
             failed_wells.append(well)
             log.error("[%s] FAILED\n%s", well, traceback.format_exc())
@@ -1332,11 +1675,18 @@ def _process_seg_dir(seg_root, name, out_dir, options, geometry, failed_wells):
         return None
 
     _, _, per_well_bad, excluded = write_outputs(traj, options, out_dir)
-    summary = _root_summary(name, traj, options, per_well_bad, excluded,
-                            len(wells), failed_wells)
-    log.info("%s done: %d wells, %d colonies, %d rows (%d rim-excluded), "
-             "%.1fs", name, summary.wells, summary.colonies, summary.rows,
-             summary.rim_excluded, time.time() - t0)
+    summary = _root_summary(
+        name, traj, options, per_well_bad, excluded, len(wells), failed_wells
+    )
+    log.info(
+        "%s done: %d wells, %d colonies, %d rows (%d rim-excluded), %.1fs",
+        name,
+        summary.wells,
+        summary.colonies,
+        summary.rows,
+        summary.rim_excluded,
+        time.time() - t0,
+    )
     return summary
 
 
@@ -1360,11 +1710,9 @@ def run_analysis(options: AnalysisOptions) -> AnalysisSummary:
 
     # the shared geometry cache (skipped by plots_only, which never fits)
     geometry: dict[str, tuple[float, float, float] | None] = {}
-    if geo_path.exists() and not options.refresh_geometry \
-            and not options.plots_only:
+    if geo_path.exists() and not options.refresh_geometry and not options.plots_only:
         geometry.update(io.read_geometry(geo_path))
-        log.info("loaded %d cached well circles from %s", len(geometry),
-                 geo_path.name)
+        log.info("loaded %d cached well circles from %s", len(geometry), geo_path.name)
 
     summary = AnalysisSummary()
     for seg_root in options.seg_dirs:
@@ -1377,8 +1725,9 @@ def run_analysis(options: AnalysisOptions) -> AnalysisSummary:
             if options.plots_only:
                 root = _replot(name, out_dir, options)
             else:
-                root = _process_seg_dir(seg_root, name, out_dir, options,
-                                        geometry, failed_wells)
+                root = _process_seg_dir(
+                    seg_root, name, out_dir, options, geometry, failed_wells
+                )
             if root is not None:
                 summary.roots[name] = root
         except Exception:
@@ -1386,8 +1735,9 @@ def run_analysis(options: AnalysisOptions) -> AnalysisSummary:
             summary.failures.append(name)
         if failed_wells:
             summary.failed_wells[name] = failed_wells
-            log.error("%s: %d well(s) failed: %s", name, len(failed_wells),
-                      failed_wells)
+            log.error(
+                "%s: %d well(s) failed: %s", name, len(failed_wells), failed_wells
+            )
 
     if not options.plots_only:
         io.write_geometry(geo_path, {w: g for w, g in geometry.items() if g})

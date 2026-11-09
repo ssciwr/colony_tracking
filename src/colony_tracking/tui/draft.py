@@ -47,6 +47,7 @@ from typing import Any, get_args, get_origin, get_type_hints
 
 from .. import log
 from .._options import Options, _to_plain, _union_members
+from ..config import FlatConfig
 from ..pipeline import (
     ConfigError,
     PipelineConfig,
@@ -414,28 +415,23 @@ class ConfigDraft:
         :meth:`resolve`.
         """
         path = Path(path)
-        try:
-            with open(path, "rb") as handle:
-                doc = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as exc:
-            message = f"{path}: not valid TOML: {exc}"
-            if self.is_pipeline:
-                raise _config_error(message) from exc
-            raise _stage_config_error(self.run_type, message) from exc
         if self.is_pipeline:
+            try:
+                with open(path, "rb") as handle:
+                    doc = tomllib.load(handle)
+            except tomllib.TOMLDecodeError as exc:
+                raise _config_error(
+                    f"{path}: not valid TOML: {exc}"
+                ) from exc
             _check_pipeline_sections(doc)
             self.run_level = dict(doc.get(RUN_LEVEL, {}))
             self.stages = {stage: dict(doc.get(stage, {})) for stage in STAGES}
         else:
-            doc = stage_config_document(self.run_type, doc)
-            names = {f.name for f in fields(_STAGE_OPTIONS[self.run_type])}
-            unknown = sorted(set(doc) - names)
-            if unknown:
-                raise _stage_config_error(
-                    self.run_type,
-                    f"unknown key(s) {unknown} — expected one key per name: "
-                    f"{sorted(names)}",
-                )
+            flat = FlatConfig(self.run_type, _STAGE_OPTIONS[self.run_type])
+            doc = stage_config_document(
+                self.run_type, flat.read_document(path)
+            )
+            flat.validate_structure(doc)
             self.run_level = {}
             self.stages = {self.run_type: dict(doc)}
         log.info("%s config: loaded %s", self.run_type, path)

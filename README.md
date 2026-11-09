@@ -208,6 +208,12 @@ frame number.
 The finetuning track. Three steps, each with its own flags: prepare the
 data, train the decoder, evaluate the result.
 
+Each step also takes `--config <file>`: a flat TOML config with one
+snake_case key per option of that step (its flags below, `--config`
+excepted), exactly what the TUI's finetune screens write. Command-line
+flags override the file's values, and required options may come from the
+file instead of the flags.
+
 Input frames may be raw frames or difference frames (the `difference`
 stage's output): they are interchangeable, and every frame goes through the
 same 1/99 uint8 stretch. Labels pair with input frames by well and frame
@@ -224,6 +230,7 @@ Build the well-split h5 training set from input frames and label images.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the step's own flat config (one key per option, what the TUI writes). Command-line flags override its values. |
 | `--image-dir` | `required` | Directory of input frames (raw or difference frames; flat or per-well layout). |
 | `--label-dir` | `required` | Directory of ground-truth label images; labels pair with input frames by well and frame, and files whose stem ends in _labels (e.g. <frame-stem>__labels.tif) are the label set (the label set defines the image set). |
 | `--out-dir` | `required` | Directory to write the well-split h5 set (train/ and val/) into. |
@@ -241,6 +248,7 @@ Run micro-sam decoder training on the prepared split.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the step's own flat config (one key per option, what the TUI writes). Command-line flags override its values. |
 | `--data-dir` | `required` | Directory with the train/ and val/ h5 subfolders (the train prepare output). |
 | `--out-dir` | `required` | Directory for the checkpoints and TensorBoard logs. |
 | `--model-type` | `vit_b_lm` | SAM variant; 'vit_b_lm' is the default and matches the segment stage. 'vit_t' (MobileSAM) is the lightest option but needs the optional mobile_sam package and its weights. |
@@ -260,6 +268,7 @@ Benchmark a checkpoint: per-instance IoU on the held-out split.
 
 | Option | Default | Description |
 | --- | --- | --- |
+| `--config` | `none` | TOML config file: the step's own flat config (one key per option, what the TUI writes). Command-line flags override its values. |
 | `--data-dir` | `required` | Directory with the train/ and val/ h5 subfolders (the train prepare output). |
 | `--split` | `val` | Split to evaluate (val / train). |
 | `--checkpoint` | `none` | Finetuned checkpoint; omit to evaluate the pretrained base model. |

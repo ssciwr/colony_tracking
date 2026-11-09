@@ -15,7 +15,9 @@ The ``difference``, ``segment``, and ``analyze`` subcommands also take
 stage screens write) or a sectioned ``pipeline.toml`` (whose ``[pipeline]``
 run level and chain wiring resolve to this stage's options). Explicit flags
 override the file's values; required flags can be satisfied by the file.
-``train`` takes no config file.
+The ``train prepare``, ``train train``, and ``train evaluate`` steps take
+``--config <file>`` too, reading the step's own flat document (one key per
+option of its dataclass) with the same precedence.
 
 The exit-code contract: 0 success, 1 runtime error (a stage exception, or a
 summary that reports failed work — logged at ERROR with context), 2 usage
@@ -34,7 +36,7 @@ import sys
 import tomllib
 from dataclasses import MISSING, fields
 from pathlib import Path
-from typing import get_args, get_origin, get_type_hints
+from typing import Callable, get_args, get_origin, get_type_hints
 
 from . import log
 from ._options import (
@@ -58,6 +60,7 @@ from .finetune import (
     run_prepare,
     run_train,
 )
+from .finetune.config import read_step_document, resolve_step_document
 from .pipeline import (
     ConfigError,
     PipelineConfig,
@@ -243,6 +246,24 @@ def _explicit_stage_kwargs(args: argparse.Namespace, cls: type) -> dict:
     }
 
 
+def _merged_document(
+    args: argparse.Namespace, cls: type, read_document: Callable[[Path], dict]
+) -> dict:
+    """The config document with the explicitly given flags merged over it.
+
+    ``--config`` supplies the base document (nothing when it is omitted);
+    configurable flags suppress their argparse defaults, so a present field
+    is always explicit and overrides exactly its own key. Merging the plain
+    flags before resolution lets the file satisfy every omitted option and
+    keeps a missing required option a :class:`ConfigError` (exit code 2).
+    """
+    doc: dict = {}
+    if getattr(args, "config", None) is not None:
+        doc = read_document(args.config)
+    doc.update(_explicit_stage_kwargs(args, cls))
+    return doc
+
+
 def _stage_options(args: argparse.Namespace, run_type: str, cls: type):
     """One stage's options: its config document (flat, or resolved from a
     pipeline config) with the explicitly given flags merged over it.
@@ -251,10 +272,9 @@ def _stage_options(args: argparse.Namespace, run_type: str, cls: type):
     omitted options take their dataclass defaults. A missing required
     option surfaces as :class:`ConfigError` (exit code 2).
     """
-    doc: dict = {}
-    if getattr(args, "config", None) is not None:
-        doc = read_stage_config(run_type, args.config)
-    doc.update(_explicit_stage_kwargs(args, cls))
+    doc = _merged_document(
+        args, cls, lambda path: read_stage_config(run_type, path)
+    )
     return resolve_stage_document(run_type, doc)
 
 
@@ -284,10 +304,21 @@ _STAGE_CONFIG_HELP = (
     "Command-line flags override its values."
 )
 
+#: The finetune steps' config file help.
+_FINETUNE_CONFIG_HELP = (
+    "TOML config file: the step's own flat config (one key per option, what "
+    "the TUI writes). Command-line flags override its values."
+)
+
 
 def _add_stage_config_flag(parser: argparse.ArgumentParser) -> None:
     """Add ``--config`` to a stage subcommand."""
     parser.add_argument("--config", type=Path, help=_STAGE_CONFIG_HELP)
+
+
+def _add_finetune_config_flag(parser: argparse.ArgumentParser) -> None:
+    """Add ``--config`` to a ``train`` sub-subcommand."""
+    parser.add_argument("--config", type=Path, help=_FINETUNE_CONFIG_HELP)
 
 
 #: The pipeline's run-level settings — the only flags the ``pipeline``
@@ -414,10 +445,21 @@ def _run_napari() -> None:
 
 
 def _train_options(args: argparse.Namespace):
-    """The finetune options for the given ``train`` sub-subcommand."""
+    """The finetune options for the given ``train`` sub-subcommand: its
+    flat config file (optional — omit it to drive the step from the command
+    line alone) with the explicitly given flags merged over it.
+
+    A flag overrides exactly its own option, while the file still supplies
+    everything the command line omits. A missing required option surfaces
+    as :class:`ConfigError` (exit code 2).
+    """
+    step = args.train_command
     cls = {"prepare": PrepareOptions, "train": TrainOptions,
-           "evaluate": EvaluateOptions}[args.train_command]
-    return cls(**_stage_kwargs(args, cls))
+           "evaluate": EvaluateOptions}[step]
+    doc = _merged_document(
+        args, cls, lambda path: read_step_document(step, path)
+    )
+    return resolve_step_document(step, doc)
 
 
 def _train_run(args: argparse.Namespace):
@@ -481,18 +523,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     train_subparsers = train_parser.add_subparsers(
         dest="train_command", required=True, metavar="command")
-    _add_flags(train_subparsers.add_parser(
-        "prepare",
-        help="Build the well-split h5 training set from input frames and labels.",
-    ), PrepareOptions)
-    _add_flags(train_subparsers.add_parser(
-        "train",
-        help="Run micro-sam decoder training on the prepared split.",
-    ), TrainOptions)
-    _add_flags(train_subparsers.add_parser(
-        "evaluate",
-        help="Benchmark a checkpoint: per-instance IoU on the held-out split.",
-    ), EvaluateOptions)
+    for name, cls, help_text in (
+        (
+            "prepare",
+            PrepareOptions,
+            "Build the well-split h5 training set from input frames and labels.",
+        ),
+        (
+            "train",
+            TrainOptions,
+            "Run micro-sam decoder training on the prepared split.",
+        ),
+        (
+            "evaluate",
+            EvaluateOptions,
+            "Benchmark a checkpoint: per-instance IoU on the held-out split.",
+        ),
+    ):
+        step_parser = train_subparsers.add_parser(name, help=help_text)
+        _add_finetune_config_flag(step_parser)
+        _add_flags(step_parser, cls, configurable=True)
     subparsers.add_parser(
         "tui",
         help="The terminal user interface: configure stages, write the TOML "

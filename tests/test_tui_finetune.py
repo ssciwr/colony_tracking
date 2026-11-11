@@ -1113,9 +1113,9 @@ def test_run_this_step_writes_the_toml_then_runs_train_with_the_live_log(
             # printed stdout/stderr lines are plain: no level tag prefix
             assert "loading dataset..." in lines
             assert "val loader ready" in lines
-            assert " 30%|### |" in lines
-            assert not any("10%" in line for line in lines)  # collapsed
-            assert not any("20%" in line for line in lines)
+            assert " 10%|# |" in lines  # immediate first snapshot
+            assert not any("20%" in line for line in lines)  # throttled
+            assert " 30%|### |" in lines  # final frame at the newline
             assert "finished — ok" in str(
                 run_screen.query_one("#run-status", Static).render()
             )
@@ -1315,8 +1315,8 @@ def test_printed_output_capture_is_finetune_only(monkeypatch, tmp_path):
 
 def test_stream_flushes_do_not_end_a_line():
     """tqdm flushes after every repaint write; a flush is not a line
-    boundary, so repaints separated by ``flush()`` still collapse to the
-    last segment (and end-of-run emits that segment exactly once)."""
+    boundary. The first frame is the immediate snapshot, the rest are
+    throttled, and end-of-run emits the last frame exactly once."""
     lines: list[str] = []
 
     def on_output(line: str) -> None:
@@ -1327,12 +1327,13 @@ def test_stream_flushes_do_not_end_a_line():
             sys.stdout.write(f"\r{percent}%")
             sys.stdout.flush()
 
-    assert lines == ["100%"]
+    assert lines == ["10%", "100%"]
 
 
 def test_a_tqdm_like_write_flush_sequence_ending_in_a_newline_is_one_line():
     """The real bar's shape: repaint, flush, repaint, flush, … and a final
-    newline when it closes. Only the closed line reaches the pane."""
+    newline when it closes. The pane sees the immediate first snapshot
+    and the closed line, not one line per repaint."""
     lines: list[str] = []
 
     def on_output(line: str) -> None:
@@ -1344,7 +1345,27 @@ def test_a_tqdm_like_write_flush_sequence_ending_in_a_newline_is_one_line():
             sys.stdout.flush()
         sys.stdout.write("\n")
 
-    assert lines == ["100%|" + "#" * 100 + " |"]
+    assert lines == [
+        "10%|" + "#" * 10 + " |",
+        "100%|" + "#" * 100 + " |",
+    ]
+
+
+def test_repaint_snapshots_are_throttled_to_the_interval():
+    """Repaints are snapshots, not lines: one is emitted immediately, then
+    only after ``min_interval`` has elapsed. The final frame always comes
+    out at the end."""
+    from colony_tracking.tui.records import _LineWriter
+
+    ticks = iter([0.0, 1.0, 11.0])
+    lines: list[str] = []
+    writer = _LineWriter(
+        lines.append, min_interval=10.0, clock=lambda: next(ticks)
+    )
+    writer.write("\r0%\r50%\r75%\r100%")
+    writer.finish()
+
+    assert lines == ["0%", "75%", "100%"]
 
 
 def test_a_crlf_split_across_writes_is_still_a_line_end():
@@ -1378,6 +1399,34 @@ def test_a_real_tqdm_bar_becomes_a_bounded_number_of_lines():
             pass
 
     assert 1 <= len(lines) <= 2, lines
+    assert "100%" in lines[-1]
+
+
+def test_a_real_tqdm_bar_announces_progress_before_it_closes():
+    """A long training run must show the bar while it is still running:
+    tqdm ends its line only when the bar closes (torch_em never closes it
+    before ``fit`` returns), so waiting for a newline leaves the pane
+    silent for the whole epoch. Progress must surface as periodic
+    snapshots between repaints."""
+    import tqdm
+
+    lines: list[str] = []
+
+    def on_output(line: str) -> None:
+        lines.append(line)
+
+    with output_capture(deliverer(None), on_output):
+        # torch_em drives the bar with ``update`` (it iterates its data
+        # loader), so tqdm's iterator auto-close never runs; the bar is
+        # still open here, exactly like during ``fit``.
+        bar = tqdm.tqdm(total=6, miniters=1, mininterval=0, file=None)
+        for _ in range(6):
+            bar.update(1)
+        assert lines, "no progress reached the pane during the run"
+        assert "0%" in lines[0]
+
+    # The stream's end emits the last frame, even though torch_em never
+    # closes the bar itself.
     assert "100%" in lines[-1]
 
 

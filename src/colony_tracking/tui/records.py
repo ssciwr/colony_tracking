@@ -11,10 +11,12 @@ handlers.
 Finetune steps also print: micro-sam/torch_em write progress to
 stdout/stderr and draw a tqdm bar there, not through the package logger.
 :func:`output_capture` is that separate door: it redirects the two streams
-into plain unprefixed lines, collapsing carriage-return repaints (even
-across the per-write flushes tqdm makes) to their last segment so a bar
-does not flood the pane. The runner uses it for finetune kinds only; the
-stages' logging is left untouched.
+into plain unprefixed lines, turning carriage-return repaints (even across
+the per-write flushes tqdm makes) into periodic snapshots — immediate, then
+at most one per :data:`SNAPSHOT_INTERVAL` — so a long bar shows it is
+alive without flooding the pane. The final frame is always emitted when
+the stream ends. The runner uses it for finetune kinds only; the stages'
+logging is left untouched.
 
 With a running textual ``App`` (the normal TUI case) records and output
 lines are marshalled onto the UI thread through ``App.call_from_thread``
@@ -26,12 +28,20 @@ from __future__ import annotations
 
 import io
 import logging
+import time
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Any, Callable, Iterator
 
 from textual.app import App
 
 from .. import log
+
+#: Minimum seconds between progress snapshots from one carriage-return
+#: repaint stream. A bar redraws many times per second; one snapshot per
+#: interval shows it is alive without flooding the log pane. The first
+#: snapshot is immediate, and the final one is always emitted at the
+#: run's end, so even a short run shows both ends of the bar.
+SNAPSHOT_INTERVAL = 10.0
 
 
 class _ForwardHandler(logging.Handler):
@@ -87,21 +97,31 @@ class _LineWriter(io.TextIOBase):
 
     Newlines end a line, and so does CRLF (even when the two characters
     arrive in separate writes). A lone carriage return is a tqdm repaint:
-    everything since the previous ``\\r`` is the same line's next frame, so
-    it is discarded until the line ends. That makes a bar one line per
-    finished line (its last segment), however many frames it drew, instead
-    of a line per refresh flooding the pane. An unterminated line is
-    emitted once by :meth:`finish` (the run's end), and empty lines are
-    dropped.
+    everything since the previous ``\\r`` is the same line's next frame.
+    Frames are snapshots of one line, so they are emitted at most once
+    per :data:`SNAPSHOT_INTERVAL` (the first immediately) instead of one
+    line per refresh — a long training run shows the bar while it runs,
+    and a fast one cannot flood the pane. An unterminated line's last
+    frame is emitted once by :meth:`finish` (the run's end), and empty
+    lines are dropped.
     """
 
     encoding = "utf-8"
     errors = "replace"
 
-    def __init__(self, emit: Callable[[str], None]) -> None:
+    def __init__(
+        self,
+        emit: Callable[[str], None],
+        *,
+        min_interval: float = SNAPSHOT_INTERVAL,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         super().__init__()
         self._emit = emit
         self._buffer = ""
+        self._min_interval = min_interval
+        self._clock = clock
+        self._last_snapshot: float | None = None
 
     def writable(self) -> bool:
         return True
@@ -125,7 +145,8 @@ class _LineWriter(io.TextIOBase):
                     # across writes: defer it (with its segment) until the
                     # next write, which re-reads it in context.
                     break
-                else:  # a repaint: drop the segment drawn before it
+                else:  # a repaint: snapshot the frame drawn before it
+                    self._emit_snapshot(data, start, index)
                     index += 1
                     start = index
             elif char == "\n":
@@ -143,6 +164,21 @@ class _LineWriter(io.TextIOBase):
         segment = data[start:end]
         if segment:
             self._emit(segment)
+
+    def _emit_snapshot(self, data: str, start: int, end: int) -> None:
+        """Emit one repaint frame as a line, throttled to one per
+        ``min_interval`` — the first frame is immediate so a slow bar
+        appears as soon as it draws."""
+        segment = data[start:end]
+        if not segment:
+            return
+        now = self._clock()
+        if (
+            self._last_snapshot is None
+            or now - self._last_snapshot >= self._min_interval
+        ):
+            self._emit(segment)
+            self._last_snapshot = now
 
     def flush(self) -> None:
         """No-op: a flush is not a line boundary.
@@ -177,12 +213,13 @@ def output_capture(
 
     Each completed line is delivered through ``deliver`` (the
     :func:`deliverer` wrapper of the running app), exactly like a log
-    record, so the pane sees it on the UI thread; a carriage-return
-    repaint is kept as the same line's last segment. A stream flush is
-    not a line boundary (tqdm flushes after every repaint), so only
-    :meth:`_LineWriter.finish` emits the final unterminated line, once. A
-    delivery failure never kills the run (the UI may be closing as the
-    step writes), and the original streams are restored on exit.
+    record, so the pane sees it on the UI thread. A carriage-return
+    repaint stream is delivered as periodic snapshots (see
+    :class:`_LineWriter`), and :meth:`_LineWriter.finish` emits the final
+    unterminated frame once. A stream flush is not a line boundary (tqdm
+    flushes after every repaint). A delivery failure never kills the run
+    (the UI may be closing as the step writes), and the original streams
+    are restored on exit.
     """
 
     def emit(line: str) -> None:

@@ -41,10 +41,16 @@ from colony_tracking import (
     AnalysisSummary,
     DifferenceOptions,
     DifferenceSummary,
+    EvaluateOptions,
+    EvaluateSummary,
     PipelineConfig,
     PipelineSummary,
+    PrepareOptions,
+    PrepareSummary,
     SegmentationOptions,
     SegmentationSummary,
+    TrainOptions,
+    TrainSummary,
     log,
 )
 from colony_tracking.difference import WellResult
@@ -62,6 +68,9 @@ _RUN_FUNCTION = {
     "segmentation": "run_segmentation",
     "analysis": "run_analysis",
     "pipeline": "run_pipeline",
+    "prepare": "run_prepare",
+    "train": "run_train",
+    "evaluate": "run_evaluate",
 }
 
 
@@ -99,6 +108,28 @@ def _ana_options(tmp_path: Path) -> AnalysisOptions:
     )
 
 
+def _prepare_options(tmp_path: Path) -> PrepareOptions:
+    """A minimal resolved prepare step config (its own flat document)."""
+    return PrepareOptions(
+        image_dir=tmp_path / "images",
+        label_dir=tmp_path / "labels",
+        out_dir=tmp_path / "h5",
+    )
+
+
+def _train_options(tmp_path: Path) -> TrainOptions:
+    """A minimal resolved train step config (its own flat document)."""
+    return TrainOptions(
+        data_dir=tmp_path / "h5",
+        out_dir=tmp_path / "train_out",
+    )
+
+
+def _evaluate_options(tmp_path: Path) -> EvaluateOptions:
+    """A minimal resolved evaluate step config (its own flat document)."""
+    return EvaluateOptions(data_dir=tmp_path / "h5")
+
+
 def _diff_summary(failed: int = 0) -> DifferenceSummary:
     return DifferenceSummary(wells={}, processed=1, skipped=0, failed=failed)
 
@@ -113,12 +144,18 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
         "segmentation": _seg_options(tmp_path),
         "analysis": _ana_options(tmp_path),
         "pipeline": _config(tmp_path),
+        "prepare": _prepare_options(tmp_path),
+        "train": _train_options(tmp_path),
+        "evaluate": _evaluate_options(tmp_path),
     }[kind]
     summaries = {
         "difference": _diff_summary(),
         "segmentation": SegmentationSummary(wells=1, processed=1, skipped=0),
         "analysis": AnalysisSummary(),
         "pipeline": PipelineSummary(status="ok"),
+        "prepare": PrepareSummary(),
+        "train": TrainSummary(),
+        "evaluate": EvaluateSummary(),
     }
     calls = []
 
@@ -144,8 +181,8 @@ def test_start_runs_the_kind_on_its_own_config(monkeypatch, tmp_path, kind):
 
 
 def test_unknown_kind_is_rejected(tmp_path):
-    with pytest.raises(ValueError, match="unknown run kind 'train'"):
-        runner.start("train", _config(tmp_path), on_done=lambda handle: None)
+    with pytest.raises(ValueError, match="unknown run kind 'bogus'"):
+        runner.start("bogus", _config(tmp_path), on_done=lambda handle: None)
 
 
 # --- one run at a time ------------------------------------------------------------
@@ -219,6 +256,12 @@ def test_summary_failed_maps_the_cli_exit_1_semantics():
     assert runner.summary_failed(
         PipelineSummary(status="failed", failed_stage="difference")
     )
+    assert not runner.summary_failed(PrepareSummary())
+    assert runner.summary_failed(PrepareSummary(error="no labels found"))
+    assert not runner.summary_failed(TrainSummary())
+    assert runner.summary_failed(TrainSummary(error="no training files"))
+    assert not runner.summary_failed(EvaluateSummary())
+    assert runner.summary_failed(EvaluateSummary(error="no images in x/val"))
 
 
 def test_failed_summary_lines_are_the_cli_wording():
@@ -263,6 +306,21 @@ def test_failed_summary_lines_are_the_cli_wording():
     assert runner.failed_summary_lines("pipeline", pipeline) == [
         "pipeline: the difference stage failed"
     ]
+    prepare = PrepareSummary(error="no such label directory: x")
+    assert runner.failed_summary_lines("prepare", prepare) == [
+        "train prepare: no such label directory: x"
+    ]
+    train = TrainSummary(error="no training files in x/train")
+    assert runner.failed_summary_lines("train", train) == [
+        "train train: no training files in x/train"
+    ]
+    evaluate = EvaluateSummary(error="no images in x/val")
+    assert runner.failed_summary_lines("evaluate", evaluate) == [
+        "train evaluate: no images in x/val"
+    ]
+    assert runner.failed_summary_lines("prepare", PrepareSummary()) == []
+    assert runner.failed_summary_lines("train", TrainSummary()) == []
+    assert runner.failed_summary_lines("evaluate", EvaluateSummary()) == []
     assert runner.failed_summary_lines("difference", _diff_summary()) == []
 
 
@@ -392,9 +450,9 @@ def test_the_app_launches_and_navigates():
             home = app.screen
             assert isinstance(home, HomeScreen)
             menu = home.query_one(OptionList)
-            # The Train entry is disabled…
-            assert menu.get_option("train").disabled
-            # …the real entries are not.
+            # The Finetune entry is live (its own submenu opens)…
+            assert not menu.get_option("finetune").disabled
+            # …as are the stage entries.
             assert not menu.get_option("quick_start").disabled
             menu.focus()
             await pilot.pause()

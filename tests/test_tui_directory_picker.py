@@ -1,8 +1,11 @@
 """Tests for the path fields' browse buttons and the picker.
 
-Every single-``Path`` field renders with a *browse* button in its field
-row — the reset button's click-only precedent (``can_focus`` off), so tab
-and the arrow-key field walk stay field-to-field. The press opens the
+Every directory-valued single-``Path`` field renders with a *browse*
+button in its field row — the reset button's click-only precedent
+(``can_focus`` off), so tab and the arrow-key field walk stay
+field-to-field. (File-valued fields, marked
+:class:`~colony_tracking._options.FilePath`, open the file dialogs
+instead; see ``tests/test_tui_file_picker.py``.) The press opens the
 directory-picker modal, textual-fspicker's ``SelectDirectory``, driven
 headless here: picking a directory writes it into the field's input, and
 the normal on-change flow stores it — on a stage screen into that
@@ -27,6 +30,7 @@ from pathlib import Path
 from typing import Literal
 
 import pytest
+from conftest import click_widget
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.widgets import Button, Input
@@ -97,14 +101,6 @@ def _run_form(form: OptionForm, observe) -> None:
             await observe(app, form, pilot)
 
     asyncio.run(scenario())
-
-
-async def _click(pilot, app: App, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
 
 
 async def _wait_loaded(pilot, nav) -> None:
@@ -193,20 +189,20 @@ def test_a_new_registry_entry_gets_browse_buttons_for_its_path_fields(
     """One registry entry adds the whole section — its Path field's browse
     button included (none on the non-path field)."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 60)) as pilot:
-            app.drafts["pipeline"].stages["train"] = {}
+            app.drafts["pipeline"].stages["future"] = {}
             app.push_screen(ConfigScreen())
             await pilot.pause()
             assert isinstance(
-                app.screen.query_one("#browse-cfg-train-label-dir"), BrowseButton
+                app.screen.query_one("#browse-cfg-future-label-dir"), BrowseButton
             )
             with pytest.raises(NoMatches):
-                app.screen.query_one("#browse-cfg-train-mode")
+                app.screen.query_one("#browse-cfg-future-mode")
 
     asyncio.run(scenario())
 
@@ -288,7 +284,7 @@ def test_stage_browse_picks_into_the_stages_own_draft(stage, key, tmp_path):
             field = screen.form.query_one(f"#{field_id}", Input)
             field.value = str(tmp_path)
             await pilot.pause()
-            await _click(pilot, app, f"#browse-{field_id}")
+            await click_widget(pilot, app, f"#browse-{field_id}")
             assert isinstance(app.screen, SelectDirectory)
             assert app.screen.query_one("DirectoryNavigation").location == tmp_path
             await _pick_subdir(pilot, app, target)
@@ -317,7 +313,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert not app.screen.gate_open
             app.screen.query_one("#qs-raw-dir", Input).value = str(raw)
             await pilot.pause()
-            await _click(pilot, app, "#browse-qs-raw-dir")
+            await click_widget(pilot, app, "#browse-qs-raw-dir")
             assert isinstance(app.screen, SelectDirectory)
             assert app.screen.query_one("DirectoryNavigation").location == raw
             await _pick_subdir(pilot, app, wells)
@@ -328,7 +324,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert not quick.gate_open  # the out root is still missing
             # the out root: an empty input starts the picker at the working
             # directory; drive it to the tmp tree and select that
-            await _click(pilot, app, "#browse-qs-out-root")
+            await click_widget(pilot, app, "#browse-qs-out-root")
             nav = app.screen.query_one("DirectoryNavigation")
             nav.location = tmp_path
             await pilot.pause()
@@ -337,7 +333,7 @@ def test_quick_start_browse_picks_into_the_draft_and_gate(tmp_path):
             assert app.drafts["pipeline"].get(RUN_LEVEL, "out_root") == str(tmp_path)
             assert quick.gate_open
             # a later browse, cancelled: nothing changes
-            await _click(pilot, app, "#browse-qs-out-root")
+            await click_widget(pilot, app, "#browse-qs-out-root")
             assert isinstance(app.screen, SelectDirectory)
             await pilot.press("escape")
             await pilot.pause()

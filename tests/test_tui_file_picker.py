@@ -1,4 +1,4 @@
-"""Tests for the config dialogs' file pickers.
+"""Tests for the file dialogs: the config doors and file-valued fields.
 
 Both config-file doors carry the forms' *browse* button in their path
 row — the shared ``BrowseButton``, click-only like every path field's
@@ -8,6 +8,12 @@ directory, filtered to ``*.toml`` with an all-files fallback. Choosing a
 file is the confirmation: the path lands in the dialog's input and the
 draft is loaded or written at once. Cancelling the picker changes
 nothing.
+
+The option forms' file-valued path fields — those whose declared type
+carries :class:`~colony_tracking._options.FilePath`, i.e. the segment and
+evaluate checkpoints (open) and the evaluate JSON report (save) — get the
+same treatment with their own suffix filter, while directory-valued path
+fields keep the directory picker.
 
 Async ``Pilot`` scenarios run through ``asyncio.run`` (no async test
 plugin in the dev group); the file pickers are driven headlessly, so no
@@ -20,6 +26,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from conftest import click_widget
 from textual.widgets import Input
 
 from colony_tracking.tui.app import ColonyTuiApp
@@ -30,7 +37,9 @@ from colony_tracking.tui.screens._save import (
     LoadConfigDialog,
     SaveConfigDialog,
 )
-from textual_fspicker import FileOpen, FileSave
+from colony_tracking.tui.screens.stage import StageScreen
+from colony_tracking.tui.screens.step import StepScreen
+from textual_fspicker import FileOpen, FileSave, SelectDirectory
 
 #: How long a test waits for a picker screen or a dialog result.
 _TIMEOUT = 10.0
@@ -154,6 +163,135 @@ def test_save_browse_picks_a_name_and_writes_it_at_once(tmp_path: Path) -> None:
         assert results[0][0] == picked
 
     _run(dialog, observe)
+
+
+# --- the option forms: file-valued fields get the file dialogs ----------------------
+
+
+def _run_screen(screen, observe) -> None:
+    """Mount ``screen`` on the real app and hand the app, screen, and pilot
+    to ``observe`` inside the session."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test(size=(100, 44)) as pilot:
+            app.push_screen(screen)
+            await pilot.pause()
+            await observe(app, screen, pilot)
+
+    asyncio.run(scenario())
+
+
+def test_the_evaluate_checkpoint_browses_with_the_file_open_dialog(
+    tmp_path: Path,
+) -> None:
+    """``evaluate.checkpoint`` is a file to read: its browse button opens
+    ``FileOpen`` (filtered to ``*.pt`` with the all-files fallback), and the
+    picked file lands in the input and the draft."""
+    checkpoint = tmp_path / "best.pt"
+    checkpoint.write_bytes(b"weights")
+
+    async def observe(app, screen, pilot):
+        screen.form.query_one("#evaluate-data-dir", Input).value = str(tmp_path)
+        checkpoint_field = screen.form.query_one("#evaluate-checkpoint", Input)
+        checkpoint_field.value = str(tmp_path)
+        await pilot.pause()
+        await click_widget(pilot, app, "#browse-evaluate-checkpoint")
+        await _wait_until(pilot, lambda: isinstance(app.screen, FileOpen))
+        picker = app.screen
+        nav = picker.query_one("DirectoryNavigation")
+        assert nav.location == tmp_path
+        assert nav.file_filter.name == "Checkpoints (*.pt)"
+        assert nav.file_filter(Path("best.pt"))
+        assert not nav.file_filter(Path("report.json"))
+        await _choose(pilot, app, checkpoint.name)
+        await _wait_until(pilot, lambda: app.screen is screen)
+        assert checkpoint_field.value == str(checkpoint)
+        assert app.drafts["evaluate"].get("evaluate", "checkpoint") == str(checkpoint)
+        assert screen.gate_open
+
+    _run_screen(StepScreen("evaluate"), observe)
+
+
+def test_the_evaluate_report_browses_with_the_file_save_dialog(tmp_path: Path) -> None:
+    """``evaluate.output`` is a file to write: its browse button opens
+    ``FileSave`` (filtered to ``*.json`` with the all-files fallback), and
+    the chosen path lands in the input and the draft."""
+    report = tmp_path / "report.json"
+
+    async def observe(app, screen, pilot):
+        screen.form.query_one("#evaluate-data-dir", Input).value = str(tmp_path)
+        output_field = screen.form.query_one("#evaluate-output", Input)
+        output_field.value = str(tmp_path)
+        await pilot.pause()
+        await click_widget(pilot, app, "#browse-evaluate-output")
+        await _wait_until(pilot, lambda: isinstance(app.screen, FileSave))
+        picker = app.screen
+        nav = picker.query_one("DirectoryNavigation")
+        assert nav.location == tmp_path
+        assert nav.file_filter.name == "JSON reports (*.json)"
+        assert nav.file_filter(Path("report.json"))
+        assert not nav.file_filter(Path("best.pt"))
+        await _choose(pilot, app, report.name)
+        await _wait_until(pilot, lambda: app.screen is screen)
+        assert output_field.value == str(report)
+        assert app.drafts["evaluate"].get("evaluate", "output") == str(report)
+        assert screen.gate_open
+
+    _run_screen(StepScreen("evaluate"), observe)
+
+
+def test_the_evaluate_data_dir_keeps_the_directory_picker(tmp_path: Path) -> None:
+    """A directory-valued path field keeps the directory picker: the
+    evaluate ``data_dir`` browse opens ``SelectDirectory``, not a file
+    dialog."""
+    (picked := tmp_path / "h5").mkdir()
+
+    async def observe(app, screen, pilot):
+        data_dir = screen.form.query_one("#evaluate-data-dir", Input)
+        data_dir.value = str(tmp_path)
+        await pilot.pause()
+        await click_widget(pilot, app, "#browse-evaluate-data-dir")
+        await _wait_until(pilot, lambda: isinstance(app.screen, SelectDirectory))
+        nav = app.screen.query_one("DirectoryNavigation")
+        nav.location = tmp_path
+        await pilot.pause()
+        nav.highlighted = 1
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert nav.location == picked
+        assert await pilot.click("#select")
+        await _wait_until(pilot, lambda: app.screen is screen)
+        assert data_dir.value == str(picked)
+        assert app.drafts["evaluate"].get("evaluate", "data_dir") == str(picked)
+
+    _run_screen(StepScreen("evaluate"), observe)
+
+
+def test_the_segmentation_checkpoint_browses_with_the_file_open_dialog(
+    tmp_path: Path,
+) -> None:
+    """The existing ``segmentation.checkpoint`` field is file-valued too:
+    its browse button now opens ``FileOpen`` instead of the directory
+    picker, and the pick lands in the stage's own draft."""
+    checkpoint = tmp_path / "sam_colony.pt"
+    checkpoint.write_bytes(b"weights")
+
+    async def observe(app, screen, pilot):
+        checkpoint_field = screen.form.query_one("#segmentation-checkpoint", Input)
+        checkpoint_field.value = str(tmp_path)
+        await pilot.pause()
+        await click_widget(pilot, app, "#browse-segmentation-checkpoint")
+        await _wait_until(pilot, lambda: isinstance(app.screen, FileOpen))
+        await _choose(pilot, app, checkpoint.name)
+        await _wait_until(pilot, lambda: app.screen is screen)
+        assert checkpoint_field.value == str(checkpoint)
+        assert app.drafts["segmentation"].get("segmentation", "checkpoint") == str(
+            checkpoint
+        )
+
+    _run_screen(StageScreen("segmentation"), observe)
 
 
 def test_cancelling_the_picker_changes_nothing() -> None:

@@ -9,7 +9,10 @@ UI: the app survives any run failure.
 
 The screen starts its own run on mount — ``runner.start`` with the
 screen's app — so the log handler attaches before the worker thread
-spawns and no record is lost. Status comes from the summary objects
+spawns and no record is lost. A finetune step's printed stdout/stderr
+(the micro-sam/torch_em progress and tqdm bar) arrives through the same
+seam as plain unprefixed lines; the stage kinds never produce them.
+Status comes from the summary objects
 alone (log text is never parsed for status); the single exception is
 the current-stage hint during a pipeline run, which recognizes the
 exact structured marker ``run_pipeline`` emits as it starts a chain
@@ -56,6 +59,7 @@ from textual.screen import Screen
 from textual.widgets import Footer, Header, RichLog, Static
 
 from ..._options import Options
+from ...finetune import EvaluateSummary, PrepareSummary, TrainSummary
 from ...pipeline import (
     AnalysisSummary,
     ConfigError,
@@ -65,7 +69,7 @@ from ...pipeline import (
     SegmentationSummary,
 )
 from .. import runner
-from ..draft import STAGES, ConfigDraft
+from ..draft import FINETUNE_RUN_TYPES, STAGES, ConfigDraft
 from ..runner import ACTIVE_MESSAGE, RunHandle, failed_summary_lines
 from ._save import SaveConfigDialog
 
@@ -75,6 +79,10 @@ from ._save import SaveConfigDialog
 #: marker, never its formatted text — drives the status line's
 #: current-stage hint without parsing log text.
 _STAGE_START_TEMPLATE = "pipeline: %s → %s"
+
+#: The indent of a summary block's continuation lines (under the
+#: left-aligned stage/step name column).
+_CONTINUATION = " " * 13
 
 #: Rich style per log level for the pane's records (INFO stays plain).
 _LEVEL_STYLES: dict[int, str] = {
@@ -140,6 +148,63 @@ def _stage_detail(summary: Any) -> str:
     return detail
 
 
+def _prepare_summary_lines(summary: PrepareSummary) -> list[str]:
+    """The prepare step's summary block: the written pairs and the
+    well-level split, then the train/val wells, from the summary object
+    alone."""
+    detail = (
+        f"pairs {summary.n_pairs} · train {summary.n_train} "
+        f"({len(summary.train_wells)} well(s)) · val {summary.n_val} "
+        f"({len(summary.val_wells)} well(s)) · instances "
+        f"{summary.n_instances} · dropped labels {summary.n_dropped} · "
+        f"labels without input frame {summary.n_missing_images}"
+    )
+    lines = [f"prepare      {detail}"]
+    if summary.train_wells:
+        lines.append(f"{_CONTINUATION}train wells: {', '.join(summary.train_wells)}")
+    if summary.val_wells:
+        lines.append(f"{_CONTINUATION}val wells: {', '.join(summary.val_wells)}")
+    return lines
+
+
+def _checkpoint_line(summary: TrainSummary | EvaluateSummary) -> list[str]:
+    """The checkpoint continuation line shared by the train and evaluate
+    summary blocks, when the summary reports one."""
+    if summary.checkpoint is None:
+        return []
+    return [f"{_CONTINUATION}checkpoint: {summary.checkpoint}"]
+
+
+def _train_summary_lines(summary: TrainSummary) -> list[str]:
+    """The train step's summary block: the split's image counts, the
+    smoke-test shapes when one ran, and the best checkpoint when it
+    exists — from the summary object alone."""
+    lines = [
+        f"train        train {summary.n_train_images} images · "
+        f"val {summary.n_val_images} images"
+    ]
+    if summary.smoke_test:
+        lines.append(
+            f"{_CONTINUATION}smoke test: raw {summary.smoke_raw_shape} · "
+            f"label {summary.smoke_label_shape}"
+        )
+    return [*lines, *_checkpoint_line(summary)]
+
+
+def _evaluate_summary_lines(summary: EvaluateSummary) -> list[str]:
+    """The evaluate step's summary block: the scored images and instances,
+    the IoU distribution, the thresholds, and the clipped count, then the
+    checkpoint when one was scored — from the summary object alone."""
+    detail = (
+        f"images {summary.n_images} · split {summary.split} · instances "
+        f"{summary.n_instances} · mean IoU {summary.mean_iou:.3f} · median "
+        f"IoU {summary.median_iou:.3f} · IoU>=0.5 {summary.iou_at_05:.3f} · "
+        f"IoU>=0.75 {summary.iou_at_075:.3f} · IoU>=0.9 "
+        f"{summary.iou_at_09:.3f} · larger than a tile {summary.n_clipped}"
+    )
+    return [f"evaluate     {detail}", *_checkpoint_line(summary)]
+
+
 def _pipeline_summary_lines(summary: PipelineSummary) -> list[str]:
     """The per-stage lines of a pipeline summary, in chain order: the
     stages that completed carry their summaries; the stage that failed
@@ -165,6 +230,12 @@ def _summary_lines(kind: str, summary: object) -> list[str]:
     lines driven by the summary objects."""
     if isinstance(summary, PipelineSummary):
         return _pipeline_summary_lines(summary)
+    if isinstance(summary, PrepareSummary):
+        return _prepare_summary_lines(summary)
+    if isinstance(summary, TrainSummary):
+        return _train_summary_lines(summary)
+    if isinstance(summary, EvaluateSummary):
+        return _evaluate_summary_lines(summary)
     return [f"{kind:<13}{_stage_detail(summary)}"]
 
 
@@ -220,6 +291,17 @@ def _report(app: App[Any], message: str) -> str:
     (``[difference]``) and paths, which markup would eat."""
     app.notify(message, severity="error", markup=False)
     return message
+
+
+def _resume_hint(kind: str) -> str:
+    """What starting ``kind`` again does: a pipeline stage resumes via its
+    per-well done markers, training resumes from its output directory, and
+    the other finetune steps simply run again."""
+    if kind == "train":
+        return "re-running with the same output directory resumes training"
+    if kind in FINETUNE_RUN_TYPES:
+        return "re-running starts it again"
+    return "the next start resumes via done markers"
 
 
 class RunScreen(Screen[None]):
@@ -285,6 +367,7 @@ class RunScreen(Screen[None]):
                     self.config,
                     on_done=self._on_done,
                     on_record=self._on_record,
+                    on_output=self._on_output,
                     app=self.app,
                 )
             except RuntimeError as err:  # a run slipped in meanwhile
@@ -315,14 +398,19 @@ class RunScreen(Screen[None]):
             self._current_stage = f"{marker[0]} → {marker[1]}"
             self._refresh_running_status()
 
+    def _on_output(self, line: str) -> None:
+        """One plain stdout/stderr line of a finetune step: into the pane
+        unprefixed (the step's own output, not a log record)."""
+        self.query_one("#run-log", RichLog).write(line)
+
     def _refresh_running_status(self) -> None:
         """The live status line: what is running, since when, the
         no-cancellation note, and — during a pipeline run — the chain
         stage the markers say is running now."""
         running = (
             f"running {self.kind} (started {self._started_at}) — no "
-            "cancellation: quitting (Ctrl-Q) is safe, the next "
-            "start resumes via done markers"
+            f"cancellation: quitting (Ctrl-Q) is safe, "
+            f"{_resume_hint(self.kind)}"
         )
         lines = [running]
         if self._current_stage is not None:
@@ -403,3 +491,23 @@ def open_stage_run(app: App[Any], draft: ConfigDraft, stage: str) -> str | None:
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r} — expected one of {list(STAGES)}")
     return _open_run(app, draft, stage)
+
+
+def open_step_run(app: App[Any], draft: ConfigDraft, step: str) -> str | None:
+    """Start one finetune step on its own — the step screens' action.
+
+    The same direct-run flow the stage screens use: the step's own flat
+    TOML is written first (reproducibility), then the run screen runs it
+    in-process on the resolved options. ``step`` is a live finetune run
+    type (:data:`~colony_tracking.tui.draft.FINETUNE_RUN_TYPES`); an
+    unregistered step is a programming error.
+
+    Returns the problem message when a check failed (also reported in
+    the UI), None once the flow is underway.
+    """
+    if step not in FINETUNE_RUN_TYPES:
+        raise ValueError(
+            f"unknown finetune step {step!r} — expected one of "
+            f"{list(FINETUNE_RUN_TYPES)}"
+        )
+    return _open_run(app, draft, step)

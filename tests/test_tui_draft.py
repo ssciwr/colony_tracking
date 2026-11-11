@@ -32,10 +32,18 @@ from colony_tracking import PipelineConfig
 from colony_tracking._options import (
     AnalysisOptions,
     DifferenceOptions,
+    EvaluateOptions,
+    PrepareOptions,
     SegmentationOptions,
 )
+from colony_tracking.finetune.config import read_step_options
 from colony_tracking.pipeline import _OWNED, ConfigError, read_config
-from colony_tracking.tui.draft import RUN_TYPES, ConfigDraft, resolve_loaded_paths
+from colony_tracking.tui.draft import (
+    RUN_TYPES,
+    TOML_NAMES,
+    ConfigDraft,
+    resolve_loaded_paths,
+)
 
 
 def _complete_draft() -> ConfigDraft:
@@ -313,12 +321,12 @@ def test_stage_drafts_store_their_owned_keys(run_type, key, value, plain):
 
 
 def test_unknown_run_type_is_refused():
-    """A run type no registry knows refuses to construct a draft (``train``
-    is not a config section any more — a run type would own one)."""
+    """A run type no registry knows refuses to construct a draft (a name
+    that is neither a stage, the chain, nor a live finetune step)."""
     with pytest.raises(ConfigError) as info:
-        ConfigDraft("train")
+        ConfigDraft("bogus")
     assert str(info.value) == (
-        f"unknown run type 'train' — expected one of {list(RUN_TYPES)}"
+        f"unknown run type 'bogus' — expected one of {list(RUN_TYPES)}"
     )
 
 
@@ -618,6 +626,179 @@ def test_loaded_relative_paths_resolve_against_their_written_directory(
     assert draft.get("difference", "out_dir") == str(
         (out / "difference").resolve()
     )
+
+
+# --- the prepare step: a first-class run type ---------------------------------------
+
+#: A tuned, fully self-contained prepare document (every key ordinary).
+_PREPARE_DOC: dict[str, Any] = {
+    "image_dir": "/data/images",
+    "label_dir": "/data/labels",
+    "out_dir": "/data/h5",
+    "val_fraction": 0.3,
+    "max_val_wells": 2,
+    "min_instances": 2,
+    "n_workers": 4,
+    "val_wells": ["-C006", "-D007"],
+}
+
+
+def _complete_prepare_draft() -> ConfigDraft:
+    """A prepare draft carrying the tuned document above."""
+    draft = ConfigDraft("prepare")
+    for key, value in _PREPARE_DOC.items():
+        draft.set("prepare", key, value)
+    return draft
+
+
+def test_the_live_steps_are_registered_run_types():
+    """``prepare``, ``train``, and ``evaluate`` are the TUI's finetune run
+    types, each with its own flat config TOML name and options dataclass."""
+    assert {"prepare", "train", "evaluate"} <= set(RUN_TYPES)
+    assert TOML_NAMES["prepare"] == "prepare.toml"
+    assert TOML_NAMES["train"] == "train.toml"
+    assert TOML_NAMES["evaluate"] == "evaluate.toml"
+    assert ConfigDraft("prepare").run_type == "prepare"
+    assert ConfigDraft("train").run_type == "train"
+    assert ConfigDraft("evaluate").run_type == "evaluate"
+
+
+def test_evaluate_resolve_uses_the_shared_finetune_machinery(caplog):
+    """The evaluate draft resolves through ``colony_tracking.finetune.config``
+    with that machinery's own wordings: its one required key, logged under
+    the step's prefix; the file-valued paths stay plain path strings."""
+    expected = "missing required key(s): ['data_dir']"
+    with pytest.raises(ConfigError) as info:
+        ConfigDraft("evaluate").resolve()
+    assert str(info.value) == expected
+    assert f"evaluate config: {expected}" in caplog.text
+    draft = ConfigDraft("evaluate")
+    draft.set("evaluate", "data_dir", "/data/h5")
+    draft.set("evaluate", "checkpoint", "/models/best.pt")
+    draft.set("evaluate", "output", "/reports/bench.json")
+    assert draft.resolve() == EvaluateOptions.from_dict(
+        {
+            "data_dir": "/data/h5",
+            "checkpoint": "/models/best.pt",
+            "output": "/reports/bench.json",
+        }
+    )
+
+
+def test_train_resolve_uses_the_shared_finetune_machinery(caplog):
+    """The train draft resolves through ``colony_tracking.finetune.config``
+    with that machinery's own wordings: the missing requireds in
+    declaration order, logged under the step's prefix."""
+    expected = "missing required key(s): ['data_dir', 'out_dir']"
+    with pytest.raises(ConfigError) as info:
+        ConfigDraft("train").resolve()
+    assert str(info.value) == expected
+    assert f"train config: {expected}" in caplog.text
+
+
+def test_prepare_document_is_flat_and_detached():
+    """The prepare draft's document is flat — one table of
+    ``PrepareOptions`` fields, no run level — and its list value is
+    detached."""
+    draft = _complete_prepare_draft()
+    assert draft.is_pipeline is False
+    assert draft.run_level == {}
+    assert list(draft.stages) == ["prepare"]
+    doc = draft.document()
+    assert doc == _PREPARE_DOC
+    doc["val_wells"].append("-E008")
+    assert draft.get("prepare", "val_wells") == ["-C006", "-D007"]
+
+
+def test_prepare_resolve_uses_the_shared_finetune_machinery(caplog):
+    """The prepare draft resolves through ``colony_tracking.finetune.config``
+    with that machinery's own wordings: the missing requireds in
+    declaration order, logged under the step's prefix."""
+    expected = "missing required key(s): ['image_dir', 'label_dir', 'out_dir']"
+    with pytest.raises(ConfigError) as info:
+        ConfigDraft("prepare").resolve()
+    assert str(info.value) == expected
+    assert f"prepare config: {expected}" in caplog.text
+
+
+def test_prepare_resolve_equals_from_dict_of_the_literal_document():
+    """A complete prepare draft resolves to exactly the options object the
+    equivalent flat document builds."""
+    draft = _complete_prepare_draft()
+    assert draft.resolve() == PrepareOptions.from_dict(_PREPARE_DOC)
+
+
+def test_prepare_write_is_the_flat_toml_the_cli_reads(tmp_path):
+    """A prepare draft writes its own ``prepare.toml``: defaults filled,
+    parents created, and the file reads back through the shared finetune
+    reader."""
+    draft = _complete_prepare_draft()
+    path = tmp_path / "configs" / "prepare.toml"
+    options = draft.write(path)
+    assert options == draft.resolve()
+    assert isinstance(options, PrepareOptions)
+    with open(path, "rb") as handle:
+        doc = tomllib.load(handle)
+    assert doc == {k: v for k, v in options.to_dict().items() if v is not None}
+    assert read_step_options("prepare", path) == options
+
+
+def test_prepare_load_resets_the_draft(tmp_path, caplog):
+    """Reading a prepare TOML replaces the draft (a load resets, never
+    merges) and validates its structure with the finetune machinery's
+    wording; a typo is refused at load."""
+    fixture = tmp_path / "prepare.toml"
+    fixture.write_text(
+        'image_dir = "/data/images"\nlabel_dir = "/data/labels"\n'
+        'out_dir = "/data/h5"\n'
+    )
+    draft = ConfigDraft("prepare")
+    draft.set("prepare", "n_workers", 2)
+    draft.set("prepare", "val_wells", ["-A001"])
+    with caplog.at_level(logging.INFO, logger="colony_tracking"):
+        returned = draft.load(fixture)
+    assert returned == fixture
+    assert draft.document() == {
+        "image_dir": "/data/images",
+        "label_dir": "/data/labels",
+        "out_dir": "/data/h5",
+    }
+    assert f"prepare config: loaded {fixture}" in caplog.text
+    unknown = tmp_path / "unknown.toml"
+    unknown.write_text('image_dir = "/i"\nnonsense = 1\n')
+    with pytest.raises(ConfigError, match="unknown key"):
+        draft.load(unknown)
+
+
+def test_prepare_draft_refuses_foreign_sections():
+    """The prepare draft edits its own section only — the same
+    independence every stage draft enforces."""
+    draft = ConfigDraft("prepare")
+    with pytest.raises(ConfigError, match="the prepare draft edits its "
+                       "\\[prepare\\] section only"):
+        draft.set("pipeline", "raw_dir", "/data/raw")
+
+
+def test_prepare_loaded_relative_paths_resolve_against_their_directory(
+    monkeypatch, tmp_path
+):
+    """A prepare config saved from another directory has its relative path
+    values rebased onto the directory it was written from."""
+    project = tmp_path / "project"
+    (project / "images").mkdir(parents=True)
+    (project / "labels").mkdir()
+    config = project / "prepare.toml"
+    config.write_text(
+        'image_dir = "images"\nlabel_dir = "labels"\nout_dir = "h5"\n'
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    draft = ConfigDraft("prepare")
+    draft.load(config)
+    base = resolve_loaded_paths(draft, config)
+    assert base == project.resolve()
+    assert draft.get("prepare", "image_dir") == str((project / "images").resolve())
 
 
 # --- the four drafts are independent ---------------------------------------------

@@ -78,9 +78,9 @@ from __future__ import annotations
 import dataclasses
 import tomllib
 import traceback
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Callable, Literal, get_args, get_origin, get_type_hints
+from typing import Any, Callable, Literal, get_type_hints
 
 import tomli_w
 
@@ -93,7 +93,13 @@ from ._options import (
     SegmentationOptions,
     _from_plain,
     _to_plain,
-    _union_members,
+)
+from .config import (
+    ConfigError,
+    FlatConfig,
+    _compatible,
+    config_error,
+    value_message,
 )
 from .analysis import AnalysisSummary, run_analysis
 from .difference import DifferenceSummary, run_difference
@@ -133,14 +139,6 @@ _OWNED_REASON: dict[tuple[str, str], str] = {
 }
 
 
-class ConfigError(ValueError):
-    """An invalid pipeline config: unknown key/section, owned key, missing
-    required key, mistyped value, or malformed TOML.
-
-    Logged with a clear message and raised; the CLI maps it to exit code 2.
-    """
-
-
 def _reference_number(reference: Reference) -> int | None:
     """The numeric frame number of a reference (``"first"`` → None)."""
     if isinstance(reference, bool) or not isinstance(reference, int):
@@ -170,66 +168,16 @@ def _derived_segment_root(out_root: Path, reference: Reference) -> Path:
 # --- config validation ----------------------------------------------------------
 
 
-#: Scalar hint → (plain-value predicate, phrase, plural phrase): one table
-#: shared by ``_human_hint`` and ``_compatible`` so the wording cannot drift.
-_SCALARS: dict[type, tuple[Callable[[Any], bool], str, str]] = {
-    Path: (lambda v: isinstance(v, str), "a path string", "path strings"),
-    bool: (lambda v: isinstance(v, bool), "true or false", "booleans"),
-    int: (lambda v: isinstance(v, int) and not isinstance(v, bool),
-          "an integer", "integers"),
-    float: (lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
-            "a number", "numbers"),
-    str: (lambda v: isinstance(v, str), "a string", "strings"),
-}
-#: phrase → plural, derived from the same table.
-_PLURAL = {phrase: plural for _, (_, phrase, plural) in _SCALARS.items()}
-
-
-def _human_hint(hint: Any) -> str:
-    """A human-readable description of a type hint (for error messages)."""
-    origin, args = get_origin(hint), get_args(hint)
-    if origin is Literal:
-        return " or ".join(repr(a) for a in args)
-    if origin in (list, tuple):
-        item = _human_hint(args[0])
-        return f"a list of {_PLURAL.get(item, item)}"
-    if (members := _union_members(hint)) is not None:  # a Union
-        return " or ".join(_human_hint(a) for a in members)
-    if args:  # another parameterized hint: list its members
-        return " or ".join(_human_hint(a) for a in args if a is not type(None))
-    if hint in _SCALARS:
-        return _SCALARS[hint][1]
-    return getattr(hint, "__name__", str(hint))
-
-
-def _compatible(value: Any, hint: Any) -> bool:
-    """Whether a plain (TOML) value can be read as the declared field type."""
-    origin, args = get_origin(hint), get_args(hint)
-    if origin is Literal:
-        return value in args
-    if origin in (list, tuple):
-        return isinstance(value, list) and all(
-            _compatible(v, args[0]) for v in value)
-    if (members := _union_members(hint)) is not None:  # a Union
-        return (value is None and type(None) in args) or any(
-            _compatible(value, a) for a in members)
-    scalar = _SCALARS.get(hint)
-    return scalar[0](value) if scalar else True  # unhinted/unknown: accept
-
-
 def _check_value(where: str, name: str, value: Any, hint: Any) -> None:
     """Log and raise a usage error when a config value has the wrong type."""
     if _compatible(value, hint):
         return
-    message = f"{where}: key {name!r} must be {_human_hint(hint)} (got {value!r})"
-    log.error("pipeline config: %s", message)
-    raise ConfigError(message)
+    raise config_error("pipeline", value_message(where, name, value, hint))
 
 
 def _config_error(message: str) -> ConfigError:
     """Log a config error clearly, then return it for raising."""
-    log.error("pipeline config: %s", message)
-    return ConfigError(message)
+    return config_error("pipeline", message)
 
 
 @dataclass(kw_only=True)
@@ -361,8 +309,10 @@ class PipelineConfig(Options):
             opts = getattr(self, stage)
             doc[stage] = {
                 key: value
-                for key, value in opts.to_dict().items()
-                if value is not None and key not in _OWNED[stage]
+                for key, value in FlatConfig(stage, type(opts))
+                .document(opts)
+                .items()
+                if key not in _OWNED[stage]
             }
         return doc
 
@@ -462,8 +412,19 @@ def _stage_config_error(run_type: str, message: str) -> ConfigError:
     """Log one stage config error with the run type's own prefix, then
     return it for raising (the per-run-type counterpart of
     :func:`_config_error`)."""
-    log.error("%s config: %s", run_type, message)
-    return ConfigError(message)
+    return config_error(run_type, message)
+
+
+def _stage_options_for(run_type: str) -> type[Options]:
+    """The flat-document options dataclass of a known stage run type."""
+    options = _STAGE_OPTIONS.get(run_type)
+    if options is None:
+        raise _stage_config_error(
+            run_type,
+            f"unknown run type {run_type!r} — expected one of "
+            f"{sorted(_STAGE_OPTIONS)}",
+        )
+    return options
 
 
 def resolve_stage_document(run_type: str, doc: dict[str, Any]) -> Options:
@@ -479,43 +440,8 @@ def resolve_stage_document(run_type: str, doc: dict[str, Any]) -> Options:
     defaults. Every field is ordinary — no owned-key refusal, nothing
     derived.
     """
-    options = _STAGE_OPTIONS.get(run_type)
-    if options is None:
-        raise _stage_config_error(
-            run_type,
-            f"unknown run type {run_type!r} — expected one of "
-            f"{sorted(_STAGE_OPTIONS)}",
-        )
-    hints = get_type_hints(options)
-    declared = fields(options)
-    names = [f.name for f in declared]
-    if not isinstance(doc, dict):
-        raise _stage_config_error(
-            run_type, f"{doc!r} is not a table of {run_type} options"
-        )
-    unknown = sorted(set(doc) - set(names))
-    if unknown:
-        raise _stage_config_error(
-            run_type,
-            f"unknown key(s) {unknown} — expected one key per name: {sorted(names)}",
-        )
-    missing = [
-        f.name
-        for f in declared
-        if f.name not in doc and f.default is MISSING and f.default_factory is MISSING
-    ]
-    if missing:
-        raise _stage_config_error(run_type, f"missing required key(s): {missing}")
-    for key, value in doc.items():
-        hint = hints[key]
-        if not _compatible(value, hint):
-            raise _stage_config_error(
-                run_type,
-                f"{run_type}: key {key!r} must be {_human_hint(hint)} "
-                f"(got {value!r})",
-            )
-    kwargs = {key: _from_plain(value, hints[key]) for key, value in doc.items()}
-    return options(**kwargs)
+    options = _stage_options_for(run_type)
+    return FlatConfig(run_type, options).resolve(doc)
 
 
 # --- TOML config file ---------------------------------------------------------
@@ -561,24 +487,16 @@ def stage_config_document(
     if not sectioned:
         return doc
     options = getattr(PipelineConfig.from_dict(doc), run_type)
-    return {
-        key: _to_plain(value)
-        for key, value in options.to_dict().items()
-        if value is not None
-    }
+    return FlatConfig(run_type, type(options)).document(options)
 
 
 def read_stage_config(run_type: str, path: Path | str) -> dict[str, Any]:
     """Read a config file for one stage as a flat options document (see
     :func:`stage_config_document` for the two accepted shapes)."""
-    path = Path(path)
-    try:
-        with open(path, "rb") as handle:
-            doc = tomllib.load(handle)
-    except tomllib.TOMLDecodeError as exc:
-        raise _stage_config_error(run_type, f"{path}: not valid TOML: {exc}") from exc
-    log.info("%s config: reading %s", run_type, path)
-    return stage_config_document(run_type, doc)
+    options = _stage_options_for(run_type)
+    return stage_config_document(
+        run_type, FlatConfig(run_type, options).read_document(path)
+    )
 
 
 def write_stage_config(run_type: str, options: Options, path: Path | str) -> Path:
@@ -590,13 +508,7 @@ def write_stage_config(run_type: str, options: Options, path: Path | str) -> Pat
     self-contained and round-trips through the dataclass's ``from_dict``.
     Parent directories are created. Returns the path.
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    doc = {key: value for key, value in options.to_dict().items() if value is not None}
-    with open(path, "wb") as handle:
-        tomli_w.dump(doc, handle)
-    log.info("%s config: written to %s", run_type, path)
-    return path
+    return FlatConfig(run_type, type(options)).write(options, path)
 
 
 # --- orchestration --------------------------------------------------------------

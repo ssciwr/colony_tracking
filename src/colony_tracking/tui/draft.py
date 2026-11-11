@@ -1,9 +1,10 @@
 """ConfigDraft: the TUI's config document per run type.
 
-Each run type (:data:`RUN_TYPES` — the pipeline chain and one per stage)
-edits a plain, TOML-shaped document of its own and writes and reads its
-own config TOML (:data:`TOML_NAMES`); nothing a draft stores, resolves,
-or suggests comes from another run type's configuration or outputs.
+Each run type (:data:`RUN_TYPES` — the pipeline chain, one per stage, and
+the live finetune steps) edits a plain, TOML-shaped document of its own
+and writes and reads its own config TOML (:data:`TOML_NAMES`); nothing a
+draft stores, resolves, or suggests comes from another run type's
+configuration or outputs.
 
 The pipeline draft keeps the sectioned ``pipeline.toml`` shape — the
 ``[pipeline]`` run level plus one optional section per stage, plain
@@ -22,6 +23,12 @@ a standalone run's config derives nothing. The flat-document machinery
 :func:`~colony_tracking.pipeline.write_stage_config`) lives in
 :mod:`colony_tracking.pipeline`, so the stage CLIs read the same files
 without importing the TUI.
+
+A finetune step draft (:data:`FINETUNE_RUN_TYPES`) is the same flat,
+fully-explicit shape, but resolves, writes, and loads through
+:mod:`colony_tracking.finetune.config` — the machinery the CLI's
+``train <step> --config`` uses — so a prepare draft and a
+``train prepare --config`` read one document format.
 
 :meth:`ConfigDraft.resolve` is where a draft's values are fully
 validated, raising :class:`~colony_tracking.pipeline.ConfigError` with
@@ -47,6 +54,13 @@ from typing import Any, get_args, get_origin, get_type_hints
 
 from .. import log
 from .._options import Options, _to_plain, _union_members
+from ..config import FlatConfig
+from ..finetune.config import (
+    STEP_OPTIONS as FINETUNE_STEP_OPTIONS,
+    resolve_step_document,
+    step_config,
+    write_step_config,
+)
 from ..pipeline import (
     ConfigError,
     PipelineConfig,
@@ -64,9 +78,19 @@ from ..pipeline import (
     write_stage_config,
 )
 
+#: The finetune steps the TUI edits — one flat document each, resolved
+#: through :mod:`colony_tracking.finetune.config`.
+FINETUNE_RUN_TYPES: tuple[str, ...] = ("prepare", "train", "evaluate")
+
 #: The run types the TUI edits — one :class:`ConfigDraft` (and one config
 #: TOML) per type.
-RUN_TYPES: tuple[str, ...] = ("pipeline", "difference", "segmentation", "analysis")
+RUN_TYPES: tuple[str, ...] = (
+    "pipeline",
+    "difference",
+    "segmentation",
+    "analysis",
+    *FINETUNE_RUN_TYPES,
+)
 
 #: The stage sections of a pipeline document (the config's stage names,
 #: also the standalone stage run types).
@@ -78,6 +102,9 @@ TITLES: dict[str, str] = {
     "difference": "Difference",
     "segmentation": "Segment",
     "analysis": "Analyze",
+    "prepare": "Prepare",
+    "train": "Train",
+    "evaluate": "Evaluate",
 }
 
 #: Each run type's own config file name.
@@ -86,6 +113,9 @@ TOML_NAMES: dict[str, str] = {
     "difference": "difference.toml",
     "segmentation": "segmentation.toml",
     "analysis": "analysis.toml",
+    "prepare": "prepare.toml",
+    "train": "train.toml",
+    "evaluate": "evaluate.toml",
 }
 
 #: The run-level section of a pipeline draft document (``[pipeline]``).
@@ -109,12 +139,25 @@ def _is_path_hint(hint: Any) -> bool:
     return hint is Path
 
 
+def _options_of(run_type: str) -> type[Options]:
+    """The options dataclass a non-pipeline run type's draft describes: a
+    pipeline stage's or a live finetune step's."""
+    if run_type in FINETUNE_RUN_TYPES:
+        return FINETUNE_STEP_OPTIONS[run_type]
+    return _STAGE_OPTIONS[run_type]
+
+
+def _is_finetune(run_type: str) -> bool:
+    """Whether ``run_type`` is a finetune step registered with the TUI."""
+    return run_type in FINETUNE_RUN_TYPES
+
+
 def _path_hints(run_type: str) -> dict[str, dict[str, Any]]:
     """The declared types of the draft's fields, by section: the run level
     and every stage section for the pipeline draft, the own section for a
-    stage draft (which has no run level)."""
+    standalone run type's draft (which has no run level)."""
     if run_type != "pipeline":
-        return {run_type: get_type_hints(_STAGE_OPTIONS[run_type])}
+        return {run_type: get_type_hints(_options_of(run_type))}
     hints = {"pipeline": get_type_hints(PipelineConfig)}
     for stage, options in _STAGE_OPTIONS.items():
         hints[stage] = get_type_hints(options)
@@ -386,6 +429,8 @@ class ConfigDraft:
         """
         if self.is_pipeline:
             return PipelineConfig.from_dict(self.document())
+        if _is_finetune(self.run_type):
+            return resolve_step_document(self.run_type, self.document())
         return resolve_stage_document(self.run_type, self.document())
 
     def write(self, path: Path | str) -> PipelineConfig | Options:
@@ -395,6 +440,8 @@ class ConfigDraft:
         config = self.resolve()
         if self.is_pipeline:
             write_config(config, path)
+        elif _is_finetune(self.run_type):
+            write_step_config(self.run_type, config, path)
         else:
             write_stage_config(self.run_type, config, path)
         return config
@@ -414,28 +461,29 @@ class ConfigDraft:
         :meth:`resolve`.
         """
         path = Path(path)
-        try:
-            with open(path, "rb") as handle:
-                doc = tomllib.load(handle)
-        except tomllib.TOMLDecodeError as exc:
-            message = f"{path}: not valid TOML: {exc}"
-            if self.is_pipeline:
-                raise _config_error(message) from exc
-            raise _stage_config_error(self.run_type, message) from exc
         if self.is_pipeline:
+            try:
+                with open(path, "rb") as handle:
+                    doc = tomllib.load(handle)
+            except tomllib.TOMLDecodeError as exc:
+                raise _config_error(
+                    f"{path}: not valid TOML: {exc}"
+                ) from exc
             _check_pipeline_sections(doc)
             self.run_level = dict(doc.get(RUN_LEVEL, {}))
             self.stages = {stage: dict(doc.get(stage, {})) for stage in STAGES}
+        elif _is_finetune(self.run_type):
+            flat = step_config(self.run_type)
+            doc = flat.read_document(path)
+            flat.validate_structure(doc)
+            self.run_level = {}
+            self.stages = {self.run_type: dict(doc)}
         else:
-            doc = stage_config_document(self.run_type, doc)
-            names = {f.name for f in fields(_STAGE_OPTIONS[self.run_type])}
-            unknown = sorted(set(doc) - names)
-            if unknown:
-                raise _stage_config_error(
-                    self.run_type,
-                    f"unknown key(s) {unknown} — expected one key per name: "
-                    f"{sorted(names)}",
-                )
+            flat = FlatConfig(self.run_type, _STAGE_OPTIONS[self.run_type])
+            doc = stage_config_document(
+                self.run_type, flat.read_document(path)
+            )
+            flat.validate_structure(doc)
             self.run_level = {}
             self.stages = {self.run_type: dict(doc)}
         log.info("%s config: loaded %s", self.run_type, path)

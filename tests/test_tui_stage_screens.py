@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Literal, get_origin, get_type_hints
 
 import pytest
+from conftest import click_widget
 from textual.css.query import NoMatches
 from textual.widgets import Button, Checkbox, Input, Select, Static
 
@@ -98,14 +99,6 @@ def _section_of(app: ColonyTuiApp, run_type: str) -> dict:
     return {} if draft.is_pipeline else draft.stages[run_type]
 
 
-async def _click(pilot, app: ColonyTuiApp, selector: str) -> None:
-    """Scroll a (possibly folded-away) widget into view and click it."""
-    app.screen.query_one(selector).scroll_visible(animate=False)
-    await pilot.pause()
-    assert await pilot.click(selector), selector
-    await pilot.pause()
-
-
 #: The required fields' example texts (the ticket's copy table): the
 #: ``required:`` gray copy, keyed by field name.
 _REQUIRED = {
@@ -147,23 +140,23 @@ def test_a_new_registry_entry_slots_in(monkeypatch):
     stage needs: the same screen class renders its form, including the
     select/tuple kinds."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:
             draft = app.drafts["pipeline"]
-            draft.stages["train"] = {}
-            stage = StageScreen("train", draft)
+            draft.stages["future"] = {}
+            stage = StageScreen("future", draft)
             app.push_screen(stage)
             await pilot.pause()
-            assert isinstance(stage.form.query_one("#train-mode"), Select)
-            assert isinstance(stage.form.query_one("#train-shape"), Input)
-            assert isinstance(stage.form.query_one("#train-label-dir"), Input)
-            stage.form.query_one("#train-mode", Select).value = "b"
+            assert isinstance(stage.form.query_one("#future-mode"), Select)
+            assert isinstance(stage.form.query_one("#future-shape"), Input)
+            assert isinstance(stage.form.query_one("#future-label-dir"), Input)
+            stage.form.query_one("#future-mode", Select).value = "b"
             await pilot.pause()
-            assert draft.get("train", "mode") == "b"
+            assert draft.get("future", "mode") == "b"
 
     asyncio.run(scenario())
 
@@ -295,7 +288,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             reference.value = "3"
             await pilot.pause()
             assert reference.placeholder == "first"  # the gray is unchanged
-            await _click(pilot, app, "#reset-difference-reference")
+            await click_widget(pilot, app, "#reset-difference-reference")
             reference = difference.form.query_one("#difference-reference", Input)
             assert reference.value == ""
             assert reference.placeholder == "first"
@@ -309,7 +302,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             select.value = "diff"
             await pilot.pause()
             assert _section_of(app, "segmentation") == {"input": "diff"}
-            await _click(pilot, app, "#reset-segmentation-input")
+            await click_widget(pilot, app, "#reset-segmentation-input")
             await pilot.pause()
             assert select.value is Select.NULL
             assert select.prompt == "raw"
@@ -322,7 +315,7 @@ def test_a_reset_restores_the_gray_on_a_stage_screen_too():
             dry_run.value = True
             await pilot.pause()
             assert _section_of(app, "difference") == {"dry_run": True}
-            await _click(pilot, app, "#reset-difference-dry-run")
+            await click_widget(pilot, app, "#reset-difference-dry-run")
             await pilot.pause()
             assert dry_run.value is False
             assert _section_of(app, "difference") == {}
@@ -776,18 +769,18 @@ def test_select_overlay_keeps_arrow_precedence(monkeypatch):
     dropdown, further downs navigate the overlay, and the screen's
     field-stepping binding never steals the key."""
     monkeypatch.setitem(
-        STAGES, "train", StageSpec("train", "Train", FutureStageOptions)
+        STAGES, "future", StageSpec("future", "Future", FutureStageOptions)
     )
 
     async def scenario() -> None:
         app = ColonyTuiApp()
         async with app.run_test(size=(100, 44)) as pilot:
             draft = app.drafts["pipeline"]
-            draft.stages["train"] = {}
-            stage = StageScreen("train", draft)
+            draft.stages["future"] = {}
+            stage = StageScreen("future", draft)
             app.push_screen(stage)
             await pilot.pause()
-            mode = stage.form.query_one("#train-mode", Select)
+            mode = stage.form.query_one("#future-mode", Select)
             mode.focus()
             await pilot.pause()
             await pilot.press("down")  # the Select's own binding: open
@@ -795,14 +788,14 @@ def test_select_overlay_keeps_arrow_precedence(monkeypatch):
             assert mode.expanded
             await pilot.press("down")  # the overlay's highlight moves
             await pilot.pause()
-            shape = stage.form.query_one("#train-shape")
+            shape = stage.form.query_one("#future-shape")
             assert app.focused is not shape  # the focus stayed with the select
             await pilot.press("down")
             await pilot.pause()
             await pilot.press("enter")  # pick the highlighted literal
             await pilot.pause()
             assert not mode.expanded
-            assert draft.get("train", "mode") == "b"
+            assert draft.get("future", "mode") == "b"
             assert app.focused is mode  # the focus came back to the field
 
     asyncio.run(scenario())

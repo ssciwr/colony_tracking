@@ -64,14 +64,20 @@ visible at a glance.
 
 Browse
 ------
-A single-``Path`` field also carries a *browse* button in its field row:
-pressing it opens the directory-picker modal, textualize's
-``textual-fspicker`` package (:class:`~textual_fspicker.SelectDirectory`).
-The picker starts at the field's current value's nearest existing
-directory (:func:`picker_location`), and the picked directory lands in
-the input as if typed — the normal on-change flow parses and stores it;
-cancelling closes the picker and changes nothing. A list-of-path field
-(``seg_dirs``) keeps manual entry.
+A single-``Path`` field also carries a *browse* button in its field row.
+The picker it opens depends on the field's declared type: a directory
+gets the directory-picker modal (textual-fspicker's
+``SelectDirectory``), while a field marked with
+:class:`~colony_tracking._options.FilePath` — ``Annotated[Path,
+FilePath(...)]``, read here from the dataclass's declared type — gets the
+matching file dialog: ``FileOpen`` for a file the run reads (a
+checkpoint), ``FileSave`` for one it writes (a JSON report), filtered to
+the field's conventional suffix with an all-files fallback
+(:func:`~colony_tracking.tui.pickers.file_filters`). The picker starts at
+the current value's nearest existing directory (:func:`picker_location`),
+and the picked path lands in the input as if typed — the normal on-change
+flow parses and stores it; cancelling closes the picker and changes
+nothing. A list-of-path field (``seg_dirs``) keeps manual entry.
 """
 
 from __future__ import annotations
@@ -80,7 +86,16 @@ import re
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import MISSING, dataclass, fields
 from pathlib import Path
-from typing import Any, ClassVar, Final, Literal, get_args, get_origin, get_type_hints
+from typing import (
+    Annotated,
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 from rich.text import Text
 from textual import events
@@ -99,21 +114,27 @@ from textual.widgets import (
     Select,
     Static,
 )
+from textual_fspicker import FileOpen, FileSave
 
 from .._options import (
+    FilePath,
     Options,
     Reference,
     _union_members,
     parse_reference,
 )
-from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS, _human_hint
+from ..config import _human_hint
+from ..pipeline import ConfigError, PipelineConfig, _RUN_LEVEL_FIELDS
 from .draft import ConfigDraft
 from .pickers import (
     BROWSE_BUTTON_CSS,
     BROWSE_LABEL,
     BrowseButton,
+    file_filters,
     open_directory_picker,
+    open_picker,
     picker_location,
+    value_file_name,
 )
 from .screens._save import SaveConfigDialog
 
@@ -166,7 +187,7 @@ def parse_field(text: str, hint: Any) -> Any:
     """Parse one field's typed text into its plain draft value.
 
     Blank text returns :data:`UNSET`; a parse failure raises
-    :class:`FieldError` with a short human message (the pipeline's
+    :class:`FieldError` with a short human message (the config reader's
     ``_human_hint`` wording, except the reference field's, which is the
     shared :func:`~colony_tracking._options.parse_reference` message).
     """
@@ -256,13 +277,17 @@ class _NoDefault:
 NO_DEFAULT: Final[_NoDefault] = _NoDefault()
 
 #: Required fields' example texts — the ``required:`` gray copy, keyed by
-#: field name (these are all the required keys of the pipeline's own
-#: options dataclasses; an unmapped required key falls back to its name).
+#: field name (the required keys of the pipeline stages' and finetune
+#: steps' options dataclasses; an unmapped required key falls back to its
+#: name).
 REQUIRED_EXAMPLES: Final[dict[str, str]] = {
     "raw_dir": "/path/to/raw-plate-frames",
     "out_root": "/path/to/output-root",
     "out_dir": "/path/to/output-dir",
     "seg_dirs": "/path/to/segmentation-trees",
+    "image_dir": "/path/to/input-frames",
+    "label_dir": "/path/to/label-images",
+    "data_dir": "/path/to/h5-dataset",
 }
 
 #: The gray text of a field whose declared default is ``None``.
@@ -303,13 +328,41 @@ class FieldSpec:
     placeholder: str = ""
     #: The widget's label (``kebab(key)`` when empty).
     label: str = ""
+    #: The file dialog a file-valued path field browses with, or ``None``
+    #: for a directory-valued path field (the directory picker) or a
+    #: non-path field (no browse button).
+    file: FilePath | None = None
+
+
+def _file_path(hint: Any) -> FilePath | None:
+    """The :class:`~colony_tracking._options.FilePath` marker on ``hint``,
+    however deeply the annotation is nested under an optional union, or
+    ``None`` when the field is not file-valued."""
+    if get_origin(hint) is Annotated:
+        return next(
+            (meta for meta in get_args(hint)[1:] if isinstance(meta, FilePath)),
+            None,
+        )
+    members = _union_members(hint)
+    if members is not None:
+        for member in members:
+            found = _file_path(member)
+            if found is not None:
+                return found
+    return None
 
 
 def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec, ...]:
     """The form specs of a dataclass: one :class:`FieldSpec` per field in
     declaration order (hint, help, default, and the blank field's gray
-    text — :func:`placeholder_text`), restricted to ``keys`` when given."""
+    text — :func:`placeholder_text`), restricted to ``keys`` when given.
+
+    The declared type also decides a path field's browse dialog: a field
+    annotated with :class:`~colony_tracking._options.FilePath` carries
+    that marker, everything else is a directory (or not a path at all).
+    """
     hints = get_type_hints(cls)
+    annotated = get_type_hints(cls, include_extras=True)
     out = []
     for f in fields(cls):
         if keys is not None and f.name not in keys:
@@ -326,6 +379,7 @@ def specs_of(cls: type, keys: Collection[str] | None = None) -> tuple[FieldSpec,
                 f.metadata.get("help", ""),
                 default,
                 placeholder_text(f.name, default),
+                file=_file_path(annotated[f.name]),
             )
         )
     return tuple(out)
@@ -636,15 +690,30 @@ class OptionForm(VerticalScroll):
         self._changed()
 
     def _open_picker(self, spec: FieldSpec) -> None:
-        """Open the directory picker for ``spec``, starting at the input's
-        current value's nearest existing directory; the picked directory
-        lands in the input, and the normal change flow does the rest."""
+        """Open ``spec``'s picker, starting at the input's current value's
+        nearest existing directory: the directory picker for a directory
+        field, the field's file dialog for a file-valued one. The picked
+        path lands in the input, and the normal change flow does the rest."""
         widget = self.query_one(f"#{self._field_id(spec.key)}", Input)
+        location = picker_location(widget.value)
 
         def accept(path: Path) -> None:
             widget.value = str(path)
 
-        open_directory_picker(self.app, picker_location(widget.value), accept)
+        file = spec.file
+        if file is None:
+            open_directory_picker(self.app, location, accept)
+            return
+        picker_type, verb = (
+            (FileOpen, "Open") if file.dialog == "open" else (FileSave, "Save")
+        )
+        picker = picker_type(
+            location,
+            title=f"{verb} {file.label}",
+            filters=file_filters(file.label, file.suffix),
+            default_file=value_file_name(widget.value) or None,
+        )
+        open_picker(self.app, picker, accept)
 
     def _apply_text(self, spec: FieldSpec, text: str) -> None:
         """Parse ``text`` for ``spec`` and write it — or mark the field

@@ -27,7 +27,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from conftest import DiskSpec, build_mini_plate
+from conftest import DiskSpec, build_mini_plate, home_index
 from textual.widgets import Input, OptionList, RichLog, Static
 
 from colony_tracking import (
@@ -43,6 +43,7 @@ from colony_tracking.tui.app import ColonyTuiApp
 from colony_tracking.tui.forms import kebab
 from colony_tracking.tui.screens._save import SaveConfigDialog
 from colony_tracking.tui.screens.config import ConfigScreen
+from colony_tracking.tui.screens.home import ENTRIES as HOME_ENTRIES
 from colony_tracking.tui.screens.home import HomeScreen
 from colony_tracking.tui.screens.quick_start import QuickStartScreen
 from colony_tracking.tui.screens.run import RunScreen
@@ -51,8 +52,16 @@ from colony_tracking.tui.screens.stage import StageScreen
 #: How long a test waits for navigation or a (small, fast) run to finish.
 _TIMEOUT = 10.0
 
-#: The home menu's row order (the ENTRIES tuple in screens/home.py).
-_QUICK_START, _DIFFERENCE, _SEGMENTATION, _ANALYSIS, _CONFIG = range(5)
+#: The home menu's row order, read off the live ENTRIES tuple rather than
+#: hardcoded (rows have been added, the finetune submenu among them).
+_HOME_IDS = [
+    option_id for option_id, _label, _target in HOME_ENTRIES
+]
+_QUICK_START = home_index("quick_start")
+_DIFFERENCE = home_index("difference")
+_SEGMENTATION = home_index("segmentation")
+_ANALYSIS = home_index("analysis")
+_CONFIG = home_index("config")
 
 #: The gate wording each stage screen shows while its own draft is empty.
 _MISSING_REQUIRED = {
@@ -136,6 +145,24 @@ async def _await_done(pilot, screen: RunScreen):
     assert handle is not None and handle.done.is_set(), "the run never finished"
     await pilot.pause()
     return handle
+
+
+# --- the home menu: every destination live -------------------------------------------
+
+
+def test_the_home_menu_has_no_disabled_rows():
+    """Every top-level destination is live: the disabled ``Train —
+    planned`` row is gone (it became the ``Finetune`` submenu)."""
+
+    async def scenario() -> None:
+        app = ColonyTuiApp()
+        async with app.run_test():
+            assert isinstance(app.screen, HomeScreen)
+            menu = app.screen.query_one("#home-menu", OptionList)
+            assert [option.id for option in menu.options] == _HOME_IDS
+            assert not [option for option in menu.options if option.disabled]
+
+    asyncio.run(scenario())
 
 
 # --- the headline flow: home → quick start → the real chain -------------------------
